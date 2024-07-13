@@ -100,7 +100,7 @@ class PipeWireSettingsApp(QWidget):
         layout.addLayout(node_layout)
 
         latency_layout = QHBoxLayout()
-        latency_label = QLabel("Latency Offset:")
+        latency_label = QLabel("Latency Offset (samples):")
         self.latency_input = QLineEdit()
         latency_layout.addWidget(latency_label)
         latency_layout.addWidget(self.latency_input)

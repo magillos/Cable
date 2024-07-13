@@ -6,7 +6,9 @@ I wanted to make my workflow bit easier so I asked Claude 3.5 Sonnet to write it
 If you wonder what Latency option does, look [here](https://pipewire.pages.freedesktop.org/wireplumber/daemon/configuration/alsa.html#alsa-extra-latency-properties). 
 
 
-Just run:
+
+
+To start just run:
 `python Cable.py`
 
 ![](https://github.com/magillos/Cable/blob/main/Cable.png)

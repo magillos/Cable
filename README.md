@@ -5,4 +5,4 @@ I wanted to make my workflow bit easier so I asked Cloude Sonned 3.5 to write fo
 Just run:
 `python Cable.py`
 
-![](https://github.com/magillos/Cable/blob/main/Cable.py)
+![](https://github.com/magillos/Cable/blob/main/Cable.png)

@@ -2,7 +2,7 @@ import sys
 import subprocess
 import json
 import re
-from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLineEdit, QPushButton, QLabel, QSpacerItem, QSizePolicy
+from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLineEdit, QPushButton, QLabel, QSpacerItem, QSizePolicy, QMessageBox
 from PyQt5.QtGui import QFont
 from PyQt5.QtCore import Qt
 
@@ -114,12 +114,12 @@ class PipeWireSettingsApp(QWidget):
         restart_layout = QHBoxLayout()
 
         self.restart_wireplumber_button = QPushButton("Restart Wireplumber")
-        self.restart_wireplumber_button.clicked.connect(self.restart_wireplumber)
+        self.restart_wireplumber_button.clicked.connect(self.confirm_restart_wireplumber)
         self.set_button_style(self.restart_wireplumber_button)
         restart_layout.addWidget(self.restart_wireplumber_button)
 
         self.restart_pipewire_button = QPushButton("Restart Pipewire")
-        self.restart_pipewire_button.clicked.connect(self.restart_pipewire)
+        self.restart_pipewire_button.clicked.connect(self.confirm_restart_pipewire)
         self.set_button_style(self.restart_pipewire_button)
         restart_layout.addWidget(self.restart_pipewire_button)
 
@@ -142,19 +142,33 @@ class PipeWireSettingsApp(QWidget):
             }
         """)
 
+    def confirm_restart_wireplumber(self):
+        reply = QMessageBox.question(self, 'Confirm Restart', 
+                                     "Are you sure you want to restart Wireplumber?",
+                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply == QMessageBox.Yes:
+            self.restart_wireplumber()
+
+    def confirm_restart_pipewire(self):
+        reply = QMessageBox.question(self, 'Confirm Restart', 
+                                     "Are you sure you want to restart Pipewire?",
+                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply == QMessageBox.Yes:
+            self.restart_pipewire()
+
     def restart_wireplumber(self):
         try:
             subprocess.run(["systemctl", "restart", "--user", "wireplumber"], check=True)
-            print("Wireplumber restarted successfully")
+            QMessageBox.information(self, "Success", "Wireplumber restarted successfully")
         except subprocess.CalledProcessError as e:
-            print(f"Error restarting Wireplumber: {e}")
+            QMessageBox.critical(self, "Error", f"Error restarting Wireplumber: {e}")
 
     def restart_pipewire(self):
         try:
             subprocess.run(["systemctl", "restart", "--user", "pipewire"], check=True)
-            print("Pipewire restarted successfully")
+            QMessageBox.information(self, "Success", "Pipewire restarted successfully")
         except subprocess.CalledProcessError as e:
-            print(f"Error restarting Pipewire: {e}")
+            QMessageBox.critical(self, "Error", f"Error restarting Pipewire: {e}")
 
     def load_devices(self):
         self.device_combo.clear()

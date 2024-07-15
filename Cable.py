@@ -2,7 +2,7 @@ import sys
 import subprocess
 import json
 import re
-from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLineEdit, QPushButton, QLabel, QSpacerItem, QSizePolicy, QMessageBox
+from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLineEdit, QPushButton, QLabel, QSpacerItem, QSizePolicy, QMessageBox, QGroupBox
 from PyQt5.QtGui import QFont
 from PyQt5.QtCore import Qt
 
@@ -10,124 +10,140 @@ class PipeWireSettingsApp(QWidget):
     def __init__(self):
         super().__init__()
         self.initUI()
-        self.profile_index_map = {}  # To store the mapping between profile names and indices
-        self.load_current_settings()  # Load current settings when the app starts
+        self.profile_index_map = {}
+        self.load_current_settings()
 
-    def create_section_title(self, title):
-        label = QLabel(title)
-        font = label.font()
-        font.setPointSize(font.pointSize() + 2)
-        font.setBold(True)
-        label.setFont(font)
-        label.setAlignment(Qt.AlignCenter)
-        return label
+    def create_section_group(self, title, layout):
+        group = QGroupBox()
+        group.setLayout(layout)
+        
+        # Create a new font for the title
+        title_font = QFont()
+        title_font.setBold(True)
+        title_font.setPointSize(title_font.pointSize() + 1)
+        
+        # Create a label for the title with the new font
+        title_label = QLabel(title)
+        title_label.setFont(title_font)
+        title_label.setAlignment(Qt.AlignCenter)
+        
+        # Add the title label to the top of the layout
+        layout.insertWidget(0, title_label)
+        
+        return group
 
     def initUI(self):
-        layout = QVBoxLayout()
-        layout.addItem(QSpacerItem(20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding))
-        # Audio Profile Section
-        layout.addWidget(self.create_section_title("Audio Profile"))
+        main_layout = QVBoxLayout()
+        main_layout.addItem(QSpacerItem(20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding))
 
+        # Audio Profile Section
+        profile_layout = QVBoxLayout()
         device_layout = QHBoxLayout()
         device_label = QLabel("Audio Device:")
         self.device_combo = QComboBox()
         device_layout.addWidget(device_label)
         device_layout.addWidget(self.device_combo)
-        layout.addLayout(device_layout)
+        profile_layout.addLayout(device_layout)
 
-        profile_layout = QHBoxLayout()
+        profile_select_layout = QHBoxLayout()
         profile_label = QLabel("Device Profile:")
         self.profile_combo = QComboBox()
-        profile_layout.addWidget(profile_label)
-        profile_layout.addWidget(self.profile_combo)
-        layout.addLayout(profile_layout)
+        profile_select_layout.addWidget(profile_label)
+        profile_select_layout.addWidget(self.profile_combo)
+        profile_layout.addLayout(profile_select_layout)
 
         self.apply_profile_button = QPushButton("Apply Profile")
         self.apply_profile_button.clicked.connect(self.apply_profile_settings)
-        layout.addWidget(self.apply_profile_button)
+        profile_layout.addWidget(self.apply_profile_button)
+
+        main_layout.addWidget(self.create_section_group("Audio Profile", profile_layout))
 
         # Quantum Section
-        layout.addWidget(self.create_section_title("Quantum"))
-
-        quantum_layout = QHBoxLayout()
+        quantum_layout = QVBoxLayout()
+        quantum_select_layout = QHBoxLayout()
         quantum_label = QLabel("Quantum/Buffer:")
         self.quantum_combo = QComboBox()
         quantum_values = [16, 32, 48, 64, 96, 128, 144, 192, 240, 256, 512, 1024, 2048]
         for value in quantum_values:
             self.quantum_combo.addItem(str(value))
-        quantum_layout.addWidget(quantum_label)
-        quantum_layout.addWidget(self.quantum_combo)
-        layout.addLayout(quantum_layout)
+        quantum_select_layout.addWidget(quantum_label)
+        quantum_select_layout.addWidget(self.quantum_combo)
+        quantum_layout.addLayout(quantum_select_layout)
 
         self.apply_quantum_button = QPushButton("Apply Quantum")
         self.apply_quantum_button.clicked.connect(self.apply_quantum_settings)
-        layout.addWidget(self.apply_quantum_button)
+        quantum_layout.addWidget(self.apply_quantum_button)
 
         self.reset_quantum_button = QPushButton("Reset Quantum")
         self.reset_quantum_button.clicked.connect(self.reset_quantum_settings)
-        layout.addWidget(self.reset_quantum_button)
+        quantum_layout.addWidget(self.reset_quantum_button)
+
+        main_layout.addWidget(self.create_section_group("Quantum", quantum_layout))
 
         # Sample Rate Section
-        layout.addWidget(self.create_section_title("Sample Rate"))
-
-        sample_rate_layout = QHBoxLayout()
+        sample_rate_layout = QVBoxLayout()
+        sample_rate_select_layout = QHBoxLayout()
         sample_rate_label = QLabel("Sample Rate:")
         self.sample_rate_combo = QComboBox()
         sample_rate_values = [44100, 48000, 88200, 96000, 176400, 192000]
         for value in sample_rate_values:
             self.sample_rate_combo.addItem(str(value))
-        sample_rate_layout.addWidget(sample_rate_label)
-        sample_rate_layout.addWidget(self.sample_rate_combo)
-        layout.addLayout(sample_rate_layout)
+        sample_rate_select_layout.addWidget(sample_rate_label)
+        sample_rate_select_layout.addWidget(self.sample_rate_combo)
+        sample_rate_layout.addLayout(sample_rate_select_layout)
 
         self.apply_sample_rate_button = QPushButton("Apply Sample Rate")
         self.apply_sample_rate_button.clicked.connect(self.apply_sample_rate_settings)
-        layout.addWidget(self.apply_sample_rate_button)
+        sample_rate_layout.addWidget(self.apply_sample_rate_button)
 
         self.reset_sample_rate_button = QPushButton("Reset Sample Rate")
         self.reset_sample_rate_button.clicked.connect(self.reset_sample_rate_settings)
-        layout.addWidget(self.reset_sample_rate_button)
+        sample_rate_layout.addWidget(self.reset_sample_rate_button)
+
+        main_layout.addWidget(self.create_section_group("Sample Rate", sample_rate_layout))
 
         # Latency Section
-        layout.addWidget(self.create_section_title("Latency"))
-
-        node_layout = QHBoxLayout()
+        latency_layout = QVBoxLayout()
+        node_select_layout = QHBoxLayout()
         node_label = QLabel("Audio Node:")
         self.node_combo = QComboBox()
-        self.node_combo.addItem("Choose Node")  # Add "Choose Node" option
-        node_layout.addWidget(node_label)
-        node_layout.addWidget(self.node_combo)
-        layout.addLayout(node_layout)
+        self.node_combo.addItem("Choose Node")
+        node_select_layout.addWidget(node_label)
+        node_select_layout.addWidget(self.node_combo)
+        latency_layout.addLayout(node_select_layout)
 
-        latency_layout = QHBoxLayout()
+        latency_input_layout = QHBoxLayout()
         latency_label = QLabel("Latency Offset (samples):")
         self.latency_input = QLineEdit()
-        latency_layout.addWidget(latency_label)
-        latency_layout.addWidget(self.latency_input)
-        layout.addLayout(latency_layout)
+        latency_input_layout.addWidget(latency_label)
+        latency_input_layout.addWidget(self.latency_input)
+        latency_layout.addLayout(latency_input_layout)
 
         self.apply_latency_button = QPushButton("Apply Latency")
         self.apply_latency_button.clicked.connect(self.apply_latency_settings)
-        layout.addWidget(self.apply_latency_button)
+        latency_layout.addWidget(self.apply_latency_button)
 
-           # Restart Buttons Section
-        restart_layout = QHBoxLayout()
+        main_layout.addWidget(self.create_section_group("Latency", latency_layout))
 
+        # Restart Buttons Section
+        restart_layout = QVBoxLayout()
+        restart_buttons_layout = QHBoxLayout()
         self.restart_wireplumber_button = QPushButton("Restart Wireplumber")
         self.restart_wireplumber_button.clicked.connect(self.confirm_restart_wireplumber)
         self.set_button_style(self.restart_wireplumber_button)
-        restart_layout.addWidget(self.restart_wireplumber_button)
+        restart_buttons_layout.addWidget(self.restart_wireplumber_button)
 
         self.restart_pipewire_button = QPushButton("Restart Pipewire")
         self.restart_pipewire_button.clicked.connect(self.confirm_restart_pipewire)
         self.set_button_style(self.restart_pipewire_button)
-        restart_layout.addWidget(self.restart_pipewire_button)
+        restart_buttons_layout.addWidget(self.restart_pipewire_button)
 
-        layout.addLayout(restart_layout)
+        restart_layout.addLayout(restart_buttons_layout)
+        main_layout.addWidget(self.create_section_group("Restart Services", restart_layout))
 
-        self.setLayout(layout)
+        self.setLayout(main_layout)
         self.setWindowTitle('Cable')
-        self.setGeometry(300, 300, 400, 600)  # Increased height to accommodate new buttons
+        self.setGeometry(300, 300, 400, 700)  # Adjusted height to accommodate new layout
 
         self.load_nodes()
         self.load_devices()

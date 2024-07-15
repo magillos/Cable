@@ -1,5 +1,5 @@
 # Cable
-PyQT application to dynamically modify Pipewire and Wireplumber settings at runtime.
+PyQT GUI application to dynamically modify Pipewire and Wireplumber settings at runtime.
 
 I wanted to make my workflow bit easier so I asked Claude 3.5 Sonnet to write it for me, and it did. You shouldn't need to restart Pipewire or Wireplumber at any point. These buttons are there for convenience. If you click any of these buttons, you'll need to restart the app because the IDs of devices and nodes will change. 
 

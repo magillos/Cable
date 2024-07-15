@@ -2,6 +2,8 @@ import sys
 import subprocess
 import json
 import re
+import fcntl
+import os
 from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLineEdit, QPushButton, QLabel, QSpacerItem, QSizePolicy, QMessageBox, QGroupBox
 from PyQt5.QtGui import QFont
 from PyQt5.QtCore import Qt
@@ -12,7 +14,7 @@ class PipeWireSettingsApp(QWidget):
         self.initUI()
         self.profile_index_map = {}
         self.load_current_settings()
-
+        
     def create_section_group(self, title, layout):
         group = QGroupBox()
         group.setLayout(layout)
@@ -395,8 +397,35 @@ class PipeWireSettingsApp(QWidget):
             print(f"Error: Unable to retrieve current settings")
             print(f"Command failed with error: {e}")
 
+def main():
+    # Create a file lock
+    lock_file = '/tmp/pipewire_settings_app.lock'
+    
+    try:
+        # Try to acquire the lock
+        lock_handle = open(lock_file, 'w')
+        fcntl.lockf(lock_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        
+        # If we got here, no other instance is running
+        app = QApplication(sys.argv)
+        ex = PipeWireSettingsApp()
+        ex.show()
+        
+        # Run the application
+        exit_code = app.exec_()
+        
+        # Release the lock
+        fcntl.lockf(lock_handle, fcntl.LOCK_UN)
+        lock_handle.close()
+        os.unlink(lock_file)
+        
+        sys.exit(exit_code)
+        
+    except IOError:
+        # Another instance is already running
+        print("Another instance of PipeWireSettingsApp is already running.")
+        sys.exit(1)
+
 if __name__ == '__main__':
-    app = QApplication(sys.argv)
-    ex = PipeWireSettingsApp()
-    ex.show()
-    sys.exit(app.exec_())
+    main()
+

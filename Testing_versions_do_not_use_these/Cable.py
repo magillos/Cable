@@ -4,7 +4,7 @@ import json
 import re
 import fcntl
 import os
-from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLineEdit, QPushButton, QLabel, QSpacerItem, QSizePolicy, QMessageBox, QGroupBox, QCheckBox
+from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLineEdit, QPushButton, QLabel, QSpacerItem, QSizePolicy, QMessageBox, QGroupBox
 from PyQt5.QtGui import QFont
 from PyQt5.QtCore import Qt
 
@@ -104,7 +104,6 @@ class PipeWireSettingsApp(QWidget):
 
         main_layout.addWidget(self.create_section_group("Sample Rate", sample_rate_layout))
 
-     
         # Latency Section
         latency_layout = QVBoxLayout()
         node_select_layout = QHBoxLayout()
@@ -116,12 +115,10 @@ class PipeWireSettingsApp(QWidget):
         latency_layout.addLayout(node_select_layout)
 
         latency_input_layout = QHBoxLayout()
-        latency_label = QLabel("Latency Offset (default in samples):")
+        latency_label = QLabel("Latency Offset (samples):")
         self.latency_input = QLineEdit()
-        self.nanoseconds_checkbox = QCheckBox("nanoseconds")
         latency_input_layout.addWidget(latency_label)
         latency_input_layout.addWidget(self.latency_input)
-        latency_input_layout.addWidget(self.nanoseconds_checkbox)
         latency_layout.addLayout(latency_input_layout)
 
         self.apply_latency_button = QPushButton("Apply Latency")
@@ -259,27 +256,15 @@ class PipeWireSettingsApp(QWidget):
     def load_latency_offset(self, node_id):
         try:
             output = subprocess.check_output(["pw-cli", "e", node_id, "ProcessLatency"], universal_newlines=True)
-            
-            # First, check for Long (nanoseconds) value
-            ns_match = re.search(r'Long\s+(\d+)', output)
-            if ns_match and int(ns_match.group(1)) > 0:
-                latency_rate = ns_match.group(1)
-                self.nanoseconds_checkbox.setChecked(True)
+            rate_match = re.search(r'Int\s+(\d+)', output)
+            if rate_match:
+                latency_rate = rate_match.group(1)
                 self.latency_input.setText(latency_rate)
             else:
-                # If Long is not present or zero, check for Int (samples) value
-                rate_match = re.search(r'Int\s+(\d+)', output)
-                if rate_match:
-                    latency_rate = rate_match.group(1)
-                    self.nanoseconds_checkbox.setChecked(False)
-                    self.latency_input.setText(latency_rate)
-                else:
-                    self.latency_input.setText("")
-                    self.nanoseconds_checkbox.setChecked(False)
-                    print(f"Error: Unable to parse latency offset for node {node_id}")
+                self.latency_input.setText("")
+                print(f"Error: Unable to parse latency offset for node {node_id}")
         except subprocess.CalledProcessError:
             self.latency_input.setText("")
-            self.nanoseconds_checkbox.setChecked(False)
             print(f"Error: Unable to retrieve latency offset for node {node_id}")
 
     def load_profiles(self):
@@ -321,11 +306,7 @@ class PipeWireSettingsApp(QWidget):
         latency_offset = self.latency_input.text()
 
         try:
-            if self.nanoseconds_checkbox.isChecked():
-                command = f"pw-cli s {node_id} ProcessLatency '{{ ns = {latency_offset} }}'"
-            else:
-                command = f"pw-cli s {node_id} ProcessLatency '{{ rate = {latency_offset} }}'"
-            
+            command = f"pw-cli s {node_id} ProcessLatency '{{ rate = {latency_offset} }}'"
             subprocess.run(command, shell=True, check=True)
             print(f"Applied latency offset {latency_offset} to node {selected_node}")
         except subprocess.CalledProcessError as e:

@@ -1,3 +1,4 @@
+#!/usr/bin/env xdg-open
 [Desktop Entry]
 Name=Cable
 Comment=A PyQt5 application to dynamically modify Pipewire and Wireplumber settings

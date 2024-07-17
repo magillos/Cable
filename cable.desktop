@@ -1,6 +1,6 @@
 [Desktop Entry]
 Name=Cable
-Comment=A PyQt5 application for managing cables
+Comment=A PyQt5 application to dynamically modify Pipewire and Wireplumber settings
 Exec=cable
 Icon=cable
 Terminal=false

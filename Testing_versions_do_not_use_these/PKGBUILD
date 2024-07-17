@@ -11,10 +11,8 @@ makedepends=('python-setuptools')
 source=(
   "Cable.py::https://raw.githubusercontent.com/magillos/Cable/master/Cable.py"
   "setup.py::https://raw.githubusercontent.com/magillos/Cable/master/setup.py"
-  "cable.png::https://raw.githubusercontent.com/magillos/Cable/master/cable.png"
-  "cable.desktop::https://raw.githubusercontent.com/magillos/Cable/master/cable.desktop"
 )
-sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP')  # Update with actual checksums if needed
+sha256sums=('SKIP' 'SKIP')  # Update with actual checksums if needed
 
 build() {
   cd "$srcdir"
@@ -24,12 +22,6 @@ build() {
 package() {
   cd "$srcdir"
   python setup.py install --root="$pkgdir/" --optimize=1
-
-  # Install the icon
-  install -Dm644 "$srcdir/cable.png" "$pkgdir/usr/share/pixmaps/cable.png"
-
-  # Install the desktop entry
-  install -Dm644 "$srcdir/cable.desktop" "$pkgdir/usr/share/applications/cable.desktop"
 }
 
 # vim:set ts=2 sw=2 et:

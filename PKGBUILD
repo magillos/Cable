@@ -5,7 +5,7 @@ pkgrel=1
 pkgdesc="A PyQt5 application to dynamically modify Pipewire and Wireplumber settings"
 arch=('any')
 url="https://github.com/magillos/Cable"
-license=('MIT')  # Adjust based on the actual license if different
+license=('GPL-3.0')  
 depends=('python' 'python-pyqt5')
 makedepends=('python-setuptools')
 source=(
@@ -14,7 +14,7 @@ source=(
   "cable.png::https://raw.githubusercontent.com/magillos/Cable/master/cable.png"
   "cable.desktop::https://raw.githubusercontent.com/magillos/Cable/master/cable.desktop"
 )
-sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP')  # Update with actual checksums if needed
+sha256sums=('00f22cab8102a987075dcc7cd81121bebe0bb909e7055a07d91fddd5b5805db5' 'b4f478c5fd01a10370eed139db789f2edb20a38f89d30d75e741acaf1ccd1e36' '32225b468bf6a72b0a9b1680b97c8e452d2358edbf30de3a479dc9b5bb796d2f' '937750ed9c06f862d41f23c35b5732e8b2a6ecfa000f694e7d119a78da56e71d')  
 
 build() {
   cd "$srcdir"
@@ -32,4 +32,4 @@ package() {
   install -Dm644 "$srcdir/cable.desktop" "$pkgdir/usr/share/applications/cable.desktop"
 }
 
-# vim:set ts=2 sw=2 et:
+

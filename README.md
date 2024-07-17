@@ -9,7 +9,7 @@ If you wonder what Latency option does, look [here](https://pipewire.pages.freed
 
 
 To start just run:
-`python Cable.py`
+`python Cable.py` or install with PKGBUILD
 
 ![](https://github.com/magillos/Cable/blob/main/Cable.png)
 

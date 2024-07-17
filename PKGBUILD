@@ -2,7 +2,7 @@
 pkgname=cable
 pkgver=0.1.0
 pkgrel=1
-pkgdesc="A PyQt5 application for managing cables"
+pkgdesc="A PyQt5 application to dynamically modify Pipewire and Wireplumber settings"
 arch=('any')
 url="https://github.com/magillos/Cable"
 license=('MIT')  # Adjust based on the actual license if different

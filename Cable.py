@@ -6,7 +6,7 @@ import fcntl
 import os
 from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLineEdit, QPushButton, QLabel, QSpacerItem, QSizePolicy, QMessageBox, QGroupBox, QCheckBox
 from PyQt5.QtGui import QFont
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 
 class PipeWireSettingsApp(QWidget):
     def __init__(self):
@@ -162,7 +162,6 @@ class PipeWireSettingsApp(QWidget):
                 font-weight: bold;
             }
         """)
-
     def confirm_restart_wireplumber(self):
         reply = QMessageBox.question(self, 'Confirm Restart', 
                                      "Are you sure you want to restart Wireplumber?",
@@ -181,6 +180,7 @@ class PipeWireSettingsApp(QWidget):
         try:
             subprocess.run(["systemctl", "restart", "--user", "wireplumber"], check=True)
             QMessageBox.information(self, "Success", "Wireplumber restarted successfully")
+            self.reload_app_settings()
         except subprocess.CalledProcessError as e:
             QMessageBox.critical(self, "Error", f"Error restarting Wireplumber: {e}")
 
@@ -188,8 +188,30 @@ class PipeWireSettingsApp(QWidget):
         try:
             subprocess.run(["systemctl", "restart", "--user", "pipewire"], check=True)
             QMessageBox.information(self, "Success", "Pipewire restarted successfully")
+            self.reload_app_settings()
         except subprocess.CalledProcessError as e:
             QMessageBox.critical(self, "Error", f"Error restarting Pipewire: {e}")
+
+    def reload_app_settings(self):
+        # Schedule the reload after a short delay to allow services to fully restart
+        QTimer.singleShot(1000, self.perform_reload)
+
+    def perform_reload(self):
+        # Reload all settings and update UI
+        self.load_current_settings()
+        self.load_devices()
+        self.load_nodes()
+        
+        # Reset device and node selections
+        self.device_combo.setCurrentIndex(0)
+        self.node_combo.setCurrentIndex(0)
+        
+        # Clear profile and latency input
+        self.profile_combo.clear()
+        self.latency_input.clear()
+        
+       # QMessageBox.information(self, "Reload Complete", "Application settings have been reloaded.")
+
 
     def load_devices(self):
         self.device_combo.clear()

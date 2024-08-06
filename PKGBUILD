@@ -11,10 +11,10 @@ makedepends=('python-setuptools')
 source=(
   "Cable.py::https://raw.githubusercontent.com/magillos/Cable/master/Cable.py"
   "setup.py::https://raw.githubusercontent.com/magillos/Cable/master/setup.py"
-  "cable.png::https://raw.githubusercontent.com/magillos/Cable/master/cable.png"
+  "cable.png::https://raw.githubusercontent.com/magillos/Cable/master/Cable.png"
   "cable.desktop::https://raw.githubusercontent.com/magillos/Cable/master/cable.desktop"
 )
-sha256sums=('4e0d70425e3ca91415d66b4cf3c6c41a0953ad659b3e70934d54d1e428f3e1e4' 'b3777ee1751f364a6a28b93cf03227adcc7ede786748ab6a8d7a07c724d91faf' '1f8802ee2f4af7e77b6a5d6051eb685aa5456420ee4271ab56f4144182f1215e' '6b40587929ed9739782dbdaccaa48d14dbae2ed427022acf1875a287e5b1b57e')  
+sha256sums=('4e0d70425e3ca91415d66b4cf3c6c41a0953ad659b3e70934d54d1e428f3e1e4' 'b3777ee1751f364a6a28b93cf03227adcc7ede786748ab6a8d7a07c724d91faf' '32225b468bf6a72b0a9b1680b97c8e452d2358edbf30de3a479dc9b5bb796d2f' '6b40587929ed9739782dbdaccaa48d14dbae2ed427022acf1875a287e5b1b57e')  
 
 build() {
   cd "$srcdir"

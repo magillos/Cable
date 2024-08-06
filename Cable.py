@@ -19,17 +19,14 @@ class PipeWireSettingsApp(QWidget):
         group = QGroupBox()
         group.setLayout(layout)
         
-        # Create a new font for the title
         title_font = QFont()
         title_font.setBold(True)
         title_font.setPointSize(title_font.pointSize() + 1)
         
-        # Create a label for the title with the new font
         title_label = QLabel(title)
         title_label.setFont(title_font)
         title_label.setAlignment(Qt.AlignCenter)
         
-        # Add the title label to the top of the layout
         layout.insertWidget(0, title_label)
         
         return group
@@ -60,6 +57,7 @@ class PipeWireSettingsApp(QWidget):
 
         main_layout.addWidget(self.create_section_group("Audio Profile", profile_layout))
 
+        
         # Quantum Section
         quantum_layout = QVBoxLayout()
         quantum_select_layout = QHBoxLayout()
@@ -80,7 +78,17 @@ class PipeWireSettingsApp(QWidget):
         self.reset_quantum_button.clicked.connect(self.reset_quantum_settings)
         quantum_layout.addWidget(self.reset_quantum_button)
 
+        # New Latency Display Section (now inside the Quantum section)
+        latency_display_layout = QHBoxLayout()
+        self.latency_display_label = QLabel("Latency:")
+        self.latency_display_value = QLabel("0.00 ms")
+        latency_display_layout.addStretch()
+        latency_display_layout.addWidget(self.latency_display_label)
+        latency_display_layout.addWidget(self.latency_display_value)
+        quantum_layout.addLayout(latency_display_layout)
+
         main_layout.addWidget(self.create_section_group("Quantum", quantum_layout))
+        
 
         # Sample Rate Section
         sample_rate_layout = QVBoxLayout()
@@ -104,7 +112,6 @@ class PipeWireSettingsApp(QWidget):
 
         main_layout.addWidget(self.create_section_group("Sample Rate", sample_rate_layout))
 
-     
         # Latency Section
         latency_layout = QVBoxLayout()
         node_select_layout = QHBoxLayout()
@@ -130,6 +137,8 @@ class PipeWireSettingsApp(QWidget):
 
         main_layout.addWidget(self.create_section_group("Latency", latency_layout))
 
+        
+
         # Restart Buttons Section
         restart_layout = QVBoxLayout()
         restart_buttons_layout = QHBoxLayout()
@@ -148,12 +157,23 @@ class PipeWireSettingsApp(QWidget):
 
         self.setLayout(main_layout)
         self.setWindowTitle('Cable')
-        self.setGeometry(300, 300, 400, 700)  # Adjusted height to accommodate new layout
+        self.setGeometry(300, 300, 400, 750)  # Adjusted height to accommodate new layout
 
         self.load_nodes()
         self.load_devices()
         self.device_combo.currentIndexChanged.connect(self.on_device_changed)
         self.node_combo.currentIndexChanged.connect(self.on_node_changed)
+        self.quantum_combo.currentIndexChanged.connect(self.update_latency_display)
+        self.sample_rate_combo.currentIndexChanged.connect(self.update_latency_display)
+
+    def update_latency_display(self):
+        try:
+            quantum = int(self.quantum_combo.currentText())
+            sample_rate = int(self.sample_rate_combo.currentText())
+            latency_ms = quantum / sample_rate * 1000
+            self.latency_display_value.setText(f"{latency_ms:.2f} ms")
+        except ValueError:
+            self.latency_display_value.setText("N/A")
 
     def set_button_style(self, button):
         button.setStyleSheet("""
@@ -410,33 +430,69 @@ class PipeWireSettingsApp(QWidget):
 
     def load_current_settings(self):
         try:
-            output = subprocess.check_output(["pw-metadata", "-n", "settings"], universal_newlines=True)
-            rate_match = re.search(r"update: id:0 key:'clock.force.rate' value:'(\d+)'", output)
-            quantum_match = re.search(r"update: id:0 key:'clock.force.quantum' value:'(\d+)'", output)
+            # Get forced sample rate
+            forced_rate = self.run_command("pw-metadata -n settings | grep clock.force-rate | awk -F\"'\" '{print $4}'")
+            
+            if forced_rate == "0" or not forced_rate:
+                # If forced rate is 0 or not set, get the default rate
+                sample_rate = self.run_command("pw-metadata -n settings | grep clock.rate | awk -F\"'\" '{print $4}'")
+            else:
+                sample_rate = forced_rate
 
-            if rate_match:
-                current_rate = rate_match.group(1)
-                index = self.sample_rate_combo.findText(current_rate)
+            # Get forced quantum
+            forced_quantum = self.run_command("pw-metadata -n settings | grep clock.force-quantum | awk -F\"'\" '{print $4}'")
+            
+            if forced_quantum == "0" or not forced_quantum:
+                # If forced quantum is 0 or not set, get the default quantum
+                quantum = self.run_command("pw-metadata -n settings | grep clock.quantum | awk -F\"'\" '{print $4}'")
+            else:
+                quantum = forced_quantum
+
+            # Update sample rate combo box
+            if sample_rate:
+                index = self.sample_rate_combo.findText(sample_rate)
                 if index >= 0:
                     self.sample_rate_combo.setCurrentIndex(index)
                 else:
-                    print(f"Current sample rate {current_rate} not found in combo box options. Adding it.")
-                    self.sample_rate_combo.addItem(current_rate)
-                    self.sample_rate_combo.setCurrentText(current_rate)
+                    print(f"Current sample rate {sample_rate} not found in combo box options. Adding it.")
+                    self.sample_rate_combo.addItem(sample_rate)
+                    self.sample_rate_combo.setCurrentText(sample_rate)
 
-            if quantum_match:
-                current_quantum = quantum_match.group(1)
-                index = self.quantum_combo.findText(current_quantum)
+            # Update quantum combo box
+            if quantum:
+                index = self.quantum_combo.findText(quantum)
                 if index >= 0:
                     self.quantum_combo.setCurrentIndex(index)
                 else:
-                    print(f"Current quantum {current_quantum} not found in combo box options. Adding it.")
-                    self.quantum_combo.addItem(current_quantum)
-                    self.quantum_combo.setCurrentText(current_quantum)
+                    print(f"Current quantum {quantum} not found in combo box options. Adding it.")
+                    self.quantum_combo.addItem(quantum)
+                    self.quantum_combo.setCurrentText(quantum)
+
+            self.update_latency_display()
 
         except subprocess.CalledProcessError as e:
             print(f"Error: Unable to retrieve current settings")
             print(f"Command failed with error: {e}")
+
+    def run_command(self, command):
+        try:
+            result = subprocess.check_output(command, shell=True, universal_newlines=True).strip()
+            return result
+        except subprocess.CalledProcessError:
+            print(f"Error running command: {command}")
+            return None
+
+    def update_latency_display(self):
+        try:
+            quantum = int(self.quantum_combo.currentText())
+            sample_rate = int(self.sample_rate_combo.currentText())
+            if sample_rate == 0:
+                self.latency_display_value.setText("N/A")
+            else:
+                latency_ms = quantum / sample_rate * 1000
+                self.latency_display_value.setText(f"{latency_ms:.2f} ms")
+        except ValueError:
+            self.latency_display_value.setText("N/A")
 
 def main():
     # Create a file lock
@@ -469,4 +525,5 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 

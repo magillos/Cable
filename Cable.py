@@ -4,8 +4,8 @@ import json
 import re
 import fcntl
 import os
-from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLineEdit, QPushButton, QLabel, QSpacerItem, QSizePolicy, QMessageBox, QGroupBox, QCheckBox
-from PyQt5.QtGui import QFont
+from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLineEdit, QPushButton, QLabel, QSpacerItem, QSizePolicy, QMessageBox, QGroupBox, QCheckBox, QSystemTrayIcon, QMenu, QAction
+from PyQt5.QtGui import QFont, QIcon
 from PyQt5.QtCore import Qt, QTimer
 
 class PipeWireSettingsApp(QWidget):
@@ -14,7 +14,9 @@ class PipeWireSettingsApp(QWidget):
         self.initUI()
         self.profile_index_map = {}
         self.load_current_settings()
-        
+        self.tray_icon = None
+        self.tray_enabled = False
+
     def create_section_group(self, title, layout):
         group = QGroupBox()
         group.setLayout(layout)
@@ -165,6 +167,88 @@ class PipeWireSettingsApp(QWidget):
         self.node_combo.currentIndexChanged.connect(self.on_node_changed)
         self.quantum_combo.currentIndexChanged.connect(self.update_latency_display)
         self.sample_rate_combo.currentIndexChanged.connect(self.update_latency_display)
+        
+        # System Tray Toggle Section
+        tray_toggle_layout = QHBoxLayout()
+        self.tray_toggle_checkbox = QCheckBox("Enable System Tray Icon")
+        self.tray_toggle_checkbox.setChecked(False)
+        self.tray_toggle_checkbox.stateChanged.connect(self.toggle_tray_icon)
+        tray_toggle_layout.addWidget(self.tray_toggle_checkbox)
+        main_layout.addLayout(tray_toggle_layout)
+
+        self.setLayout(main_layout)
+        self.setWindowTitle('Cable')
+        self.setGeometry(300, 300, 400, 800)  # Adjusted height to accommodate new layout
+
+        self.load_nodes()
+        self.load_devices()
+        self.device_combo.currentIndexChanged.connect(self.on_device_changed)
+        self.node_combo.currentIndexChanged.connect(self.on_node_changed)
+        self.quantum_combo.currentIndexChanged.connect(self.update_latency_display)
+        self.sample_rate_combo.currentIndexChanged.connect(self.update_latency_display)
+
+    def toggle_tray_icon(self, state):
+        if state == Qt.Checked:
+            self.tray_enabled = True
+            self.setup_tray_icon()
+        else:
+            self.tray_enabled = False
+            if self.tray_icon:
+                self.tray_icon.hide()
+                self.tray_icon = None
+
+    def setup_tray_icon(self):
+        if not self.tray_icon:
+            self.tray_icon = QSystemTrayIcon(self)
+            self.tray_icon.setIcon(QIcon.fromTheme("cable"))  # You can change this to a custom icon
+
+            # Create the menu
+            tray_menu = QMenu()
+            show_action = QAction("Show", self)
+            quit_action = QAction("Quit", self)
+            tray_menu.addAction(show_action)
+            tray_menu.addAction(quit_action)
+
+            # Connect the actions
+            show_action.triggered.connect(self.show)
+            quit_action.triggered.connect(self.quit_app)
+
+            # Set the menu for the tray icon
+            self.tray_icon.setContextMenu(tray_menu)
+
+            # Connect left-click to show the app
+            self.tray_icon.activated.connect(self.tray_icon_activated)
+
+        # Show the tray icon
+        self.tray_icon.show()
+
+    def tray_icon_activated(self, reason):
+      if reason == QSystemTrayIcon.Trigger:  # Left click
+        if self.isMinimized() or not self.isVisible():
+            self.showNormal()  # Restore window if minimized
+            self.activateWindow()  # Bring window to the front
+        else:
+            self.hide()  # Minimize to tray
+
+
+
+    def closeEvent(self, event):
+        if self.tray_enabled and self.tray_icon:
+            event.ignore()
+            self.hide()
+            self.tray_icon.showMessage(
+                "Cable",
+                "Application was minimized to the system tray",
+                QSystemTrayIcon.Information,
+                2000
+            )
+        else:
+            event.accept()
+
+    def quit_app(self):
+        if self.tray_icon:
+            self.tray_icon.hide()
+        QApplication.quit()
 
     def update_latency_display(self):
         try:

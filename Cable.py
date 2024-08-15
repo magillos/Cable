@@ -65,6 +65,7 @@ class PipeWireSettingsApp(QWidget):
         quantum_select_layout = QHBoxLayout()
         quantum_label = QLabel("Quantum/Buffer:")
         self.quantum_combo = QComboBox()
+        self.quantum_combo.setEditable(True)
         quantum_values = [16, 32, 48, 64, 96, 128, 144, 192, 240, 256, 512, 1024, 2048]
         for value in quantum_values:
             self.quantum_combo.addItem(str(value))
@@ -75,6 +76,7 @@ class PipeWireSettingsApp(QWidget):
         self.apply_quantum_button = QPushButton("Apply Quantum")
         self.apply_quantum_button.clicked.connect(self.apply_quantum_settings)
         quantum_layout.addWidget(self.apply_quantum_button)
+        self.quantum_combo.lineEdit().returnPressed.connect(self.apply_quantum_settings)
 
         self.reset_quantum_button = QPushButton("Reset Quantum")
         self.reset_quantum_button.clicked.connect(self.reset_quantum_settings)
@@ -97,6 +99,7 @@ class PipeWireSettingsApp(QWidget):
         sample_rate_select_layout = QHBoxLayout()
         sample_rate_label = QLabel("Sample Rate:")
         self.sample_rate_combo = QComboBox()
+        self.sample_rate_combo.setEditable(True)
         sample_rate_values = [44100, 48000, 88200, 96000, 176400, 192000]
         for value in sample_rate_values:
             self.sample_rate_combo.addItem(str(value))
@@ -107,6 +110,7 @@ class PipeWireSettingsApp(QWidget):
         self.apply_sample_rate_button = QPushButton("Apply Sample Rate")
         self.apply_sample_rate_button.clicked.connect(self.apply_sample_rate_settings)
         sample_rate_layout.addWidget(self.apply_sample_rate_button)
+        self.sample_rate_combo.lineEdit().returnPressed.connect(self.apply_sample_rate_settings)
 
         self.reset_sample_rate_button = QPushButton("Reset Sample Rate")
         self.reset_sample_rate_button.clicked.connect(self.reset_sample_rate_settings)
@@ -136,6 +140,7 @@ class PipeWireSettingsApp(QWidget):
         self.apply_latency_button = QPushButton("Apply Latency")
         self.apply_latency_button.clicked.connect(self.apply_latency_settings)
         latency_layout.addWidget(self.apply_latency_button)
+        self.latency_input.returnPressed.connect(self.apply_latency_settings)
 
         main_layout.addWidget(self.create_section_group("Latency", latency_layout))
 
@@ -159,7 +164,8 @@ class PipeWireSettingsApp(QWidget):
 
         self.setLayout(main_layout)
         self.setWindowTitle('Cable')
-        self.setGeometry(300, 300, 400, 750)  # Adjusted height to accommodate new layout
+        self.setFixedSize(500, 850)
+        self.setGeometry(300, 300, 400, 800)  # Adjusted height to accommodate new layout
 
         self.load_nodes()
         self.load_devices()

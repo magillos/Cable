@@ -20,38 +20,46 @@ class PipeWireSettingsApp(QWidget):
     def create_section_group(self, title, layout):
         group = QGroupBox()
         group.setLayout(layout)
-        
+
         title_font = QFont()
         title_font.setBold(True)
         title_font.setPointSize(title_font.pointSize() + 1)
-        
+
         title_label = QLabel(title)
         title_label.setFont(title_font)
         title_label.setAlignment(Qt.AlignCenter)
-        
+
         layout.insertWidget(0, title_label)
-        
+
         return group
 
     def initUI(self):
         main_layout = QVBoxLayout()
-        main_layout.addItem(QSpacerItem(20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding))
 
         # Audio Profile Section
         profile_layout = QVBoxLayout()
+
+        # Device layout
         device_layout = QHBoxLayout()
         device_label = QLabel("Audio Device:")
         self.device_combo = QComboBox()
+        self.device_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         device_layout.addWidget(device_label)
         device_layout.addWidget(self.device_combo)
         profile_layout.addLayout(device_layout)
 
+        # Profile layout
         profile_select_layout = QHBoxLayout()
         profile_label = QLabel("Device Profile:")
         self.profile_combo = QComboBox()
+        self.profile_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         profile_select_layout.addWidget(profile_label)
         profile_select_layout.addWidget(self.profile_combo)
         profile_layout.addLayout(profile_select_layout)
+
+        # Ensure labels have the same width
+        device_label.setFixedWidth(device_label.sizeHint().width())
+        profile_label.setFixedWidth(device_label.width())
 
         self.apply_profile_button = QPushButton("Apply Profile")
         self.apply_profile_button.clicked.connect(self.apply_profile_settings)
@@ -59,7 +67,6 @@ class PipeWireSettingsApp(QWidget):
 
         main_layout.addWidget(self.create_section_group("Audio Profile", profile_layout))
 
-        
         # Quantum Section
         quantum_layout = QVBoxLayout()
         quantum_select_layout = QHBoxLayout()
@@ -82,7 +89,6 @@ class PipeWireSettingsApp(QWidget):
         self.reset_quantum_button.clicked.connect(self.reset_quantum_settings)
         quantum_layout.addWidget(self.reset_quantum_button)
 
-        # New Latency Display Section (now inside the Quantum section)
         latency_display_layout = QHBoxLayout()
         self.latency_display_label = QLabel("Latency:")
         self.latency_display_value = QLabel("0.00 ms")
@@ -92,7 +98,6 @@ class PipeWireSettingsApp(QWidget):
         quantum_layout.addLayout(latency_display_layout)
 
         main_layout.addWidget(self.create_section_group("Quantum", quantum_layout))
-        
 
         # Sample Rate Section
         sample_rate_layout = QVBoxLayout()
@@ -144,8 +149,6 @@ class PipeWireSettingsApp(QWidget):
 
         main_layout.addWidget(self.create_section_group("Latency", latency_layout))
 
-        
-
         # Restart Buttons Section
         restart_layout = QVBoxLayout()
         restart_buttons_layout = QHBoxLayout()
@@ -162,18 +165,6 @@ class PipeWireSettingsApp(QWidget):
         restart_layout.addLayout(restart_buttons_layout)
         main_layout.addWidget(self.create_section_group("Restart Services", restart_layout))
 
-        self.setLayout(main_layout)
-        self.setWindowTitle('Cable')
-        self.setFixedSize(500, 850)
-        self.setGeometry(300, 300, 400, 800)  # Adjusted height to accommodate new layout
-
-        self.load_nodes()
-        self.load_devices()
-        self.device_combo.currentIndexChanged.connect(self.on_device_changed)
-        self.node_combo.currentIndexChanged.connect(self.on_node_changed)
-        self.quantum_combo.currentIndexChanged.connect(self.update_latency_display)
-        self.sample_rate_combo.currentIndexChanged.connect(self.update_latency_display)
-        
         # System Tray Toggle Section
         tray_toggle_layout = QHBoxLayout()
         self.tray_toggle_checkbox = QCheckBox("Enable System Tray Icon")
@@ -184,7 +175,8 @@ class PipeWireSettingsApp(QWidget):
 
         self.setLayout(main_layout)
         self.setWindowTitle('Cable')
-        self.setGeometry(300, 300, 400, 800)  # Adjusted height to accommodate new layout
+        self.setMinimumSize(454, 771)  # Set minimum window size
+        self.resize(454, 771)  # Set initial size to the minimum
 
         self.load_nodes()
         self.load_devices()

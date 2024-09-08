@@ -198,7 +198,7 @@ class PipeWireSettingsApp(QWidget):
     def setup_tray_icon(self):
         if not self.tray_icon:
             self.tray_icon = QSystemTrayIcon(self)
-            self.tray_icon.setIcon(QIcon.fromTheme("cable"))  # You can change this to a custom icon
+            self.tray_icon.setIcon(QIcon.fromTheme("cable_cream"))  # You can change this to a custom icon
 
             # Create the menu
             tray_menu = QMenu()

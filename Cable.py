@@ -4,9 +4,12 @@ import json
 import re
 import fcntl
 import os
-from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLineEdit, QPushButton, QLabel, QSpacerItem, QSizePolicy, QMessageBox, QGroupBox, QCheckBox, QSystemTrayIcon, QMenu, QAction
+from PyQt5.QtCore import Qt, QTimer, QFile
 from PyQt5.QtGui import QFont, QIcon
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
+                             QComboBox, QLineEdit, QPushButton, QLabel,
+                             QSpacerItem, QSizePolicy, QMessageBox, QGroupBox,
+                             QCheckBox, QSystemTrayIcon, QMenu, QAction)
 
 class PipeWireSettingsApp(QWidget):
     def __init__(self):
@@ -198,7 +201,21 @@ class PipeWireSettingsApp(QWidget):
     def setup_tray_icon(self):
         if not self.tray_icon:
             self.tray_icon = QSystemTrayIcon(self)
-            self.tray_icon.setIcon(QIcon.fromTheme("jack-plug"))  # You can change this to a custom icon
+
+            # List of possible icon locations
+            icon_locations = [
+                "/usr/share/icons/jack-plug.svg",  # System-wide installation
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), "jack-plug.svg"),  # Same directory as the script
+                os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "jack-plug.svg")  # Directory of the executed file
+            ]
+
+            icon_path = next((path for path in icon_locations if os.path.exists(path)), None)
+
+            if icon_path:
+                self.tray_icon.setIcon(QIcon(icon_path))
+            else:
+                print("Warning: Icon file not found. Using fallback icon.")
+                self.tray_icon.setIcon(QIcon.fromTheme("application-x-executable"))
 
             # Create the menu
             tray_menu = QMenu()

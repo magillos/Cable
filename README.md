@@ -13,3 +13,5 @@ To start just run:
 
 ![](https://github.com/magillos/Cable/blob/main/Cable.png)
 
+
+Icon comes from [here](https://game-icons.net/1x1/delapouite/jack-plug.html) and is licenced under [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/).

@@ -3,7 +3,7 @@
 Name=Cable
 Comment=A PyQt5 application to dynamically modify Pipewire and Wireplumber settings
 Exec=cable
-Icon=cable_cream
+Icon=jack-plug
 Terminal=false
 Type=Application
 Categories=Utility;

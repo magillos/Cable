@@ -7,11 +7,23 @@ import os
 import dbus
 import configparser
 from PyQt5.QtCore import Qt, QTimer, QFile, QMargins
-from PyQt5.QtGui import QFont, QIcon
+from PyQt5.QtGui import QFont, QIcon, QGuiApplication
 from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                              QComboBox, QLineEdit, QPushButton, QLabel,
                              QSpacerItem, QSizePolicy, QMessageBox, QGroupBox,
                              QCheckBox, QSystemTrayIcon, QMenu, QAction, QActionGroup)
+
+
+class CableApp(QApplication):
+    def __init__(self, argv):
+        super().__init__(argv)
+
+        # Set the desktop filename for Wayland
+        # This needs to match your .desktop file name exactly
+        QGuiApplication.setDesktopFileName("local.cable.Cable")
+
+        # Set the application name to match the .desktop file
+        self.setApplicationName("Cable")
 
 class PipeWireSettingsApp(QWidget):
     def __init__(self):
@@ -26,6 +38,7 @@ class PipeWireSettingsApp(QWidget):
         self.initUI()  # Initialize UI first
         self.load_settings()  # Load settings after UI and attributes are initialized
         self.load_current_settings()
+
 
     def get_metadata_value(self, key):
         """Get pipewire metadata values without shell pipelines"""
@@ -291,7 +304,7 @@ class PipeWireSettingsApp(QWidget):
 
             # List of possible icon locations
             icon_locations = [
-                "/usr/share/icons/jack-plug.svg",  # System-wide installation
+                "/usr/share/icons/hicolor/scalable/apps/jack-plug.svg",  # System-wide installation
                 os.path.join(os.path.dirname(os.path.abspath(__file__)), "jack-plug.svg"),  # Same directory as the script
                 os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "jack-plug.svg")  # Directory of the executed file
             ]
@@ -975,7 +988,7 @@ class PipeWireSettingsApp(QWidget):
             self.latency_display_value.setText("N/A")
 
 def main():
-    app = QApplication(sys.argv)
+    app = CableApp(sys.argv)  # Use CableApp instead of QApplication
     ex = PipeWireSettingsApp()
     ex.show()
 
@@ -983,7 +996,6 @@ def main():
     exit_code = app.exec_()
 
     sys.exit(exit_code)
-
 
 
 if __name__ == '__main__':

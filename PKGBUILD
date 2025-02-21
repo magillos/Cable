@@ -1,7 +1,7 @@
 ### Maintainer: Your Name <your.email@example.com>
 
 pkgname=cable
-pkgver=0.4
+pkgver=0.4.1
 pkgrel=1
 pkgdesc="A PyQt5 application to dynamically modify Pipewire and Wireplumber settings"
 arch=('any')
@@ -13,14 +13,14 @@ source=(
   "Cable.py::https://raw.githubusercontent.com/magillos/Cable/master/Cable.py"
   "setup.py::https://raw.githubusercontent.com/magillos/Cable/master/setup.py"
   "jack-plug.svg::https://raw.githubusercontent.com/magillos/Cable/master/jack-plug.svg"
-  "cable.desktop::https://raw.githubusercontent.com/magillos/Cable/master/cable.desktop"
+  "local.cable.Cable.desktop::https://raw.githubusercontent.com/magillos/Cable/master/local.cable.Cable.desktop"
   "connection-manager.py::https://raw.githubusercontent.com/magillos/Cable/master/connection-manager.py"
 )
 
-sha256sums=('257e894b0df29802a62942f19eb208acf3e3ea819b8b74d29e17e943791aece8'
-            '512a8bfd2d8e2618e3af73e45336854e5a50e23a2caae3c1caaeac3af55e5ab7'
+sha256sums=('0c4f754547bab62c183b80cad122d488343d2fb4cd429cabe10309c3600e9179'
+            '7b8e0d226264db7075c076e169491d606077609f288915a3de1d44d7d3754b28'
             '5c3fa8b496c1a4a1918a2bfa2420cfa3ceedc93307d566a55c8f0835f3b33442'
-            'a2a9f1eda97881a621f1ae24bc5c5ca7f7e79055f3673055f5cc922fe220609f'
+            '8cff61b117863f5dee1f918cd28c15245c696fdb5a289c0b8b3afe8a3d11c22f'
             'e78db83621d2b38e167da34be7be2cf855e4ace2f470c4a9ccf6fb71673a95cb')
 
 
@@ -34,10 +34,10 @@ package() {
   python setup.py install --root="$pkgdir/" --optimize=1
 
   # Install the icon
-  install -Dm644 "$srcdir/jack-plug.svg" "$pkgdir/usr/share/icons/jack-plug.svg"
+  install -Dm644 "$srcdir/jack-plug.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/jack-plug.svg"
 
   # Install the desktop entry
-  install -Dm644 "$srcdir/cable.desktop" "$pkgdir/usr/share/applications/cable.desktop"
+  install -Dm644 "$srcdir/local.cable.Cable.desktop" "$pkgdir/usr/share/applications/local.cable.Cable.desktop"
 
   # Create the /usr/share/cable directory if it doesn't exist
   install -d "$pkgdir/usr/share/cable"

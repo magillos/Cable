@@ -4288,10 +4288,14 @@ class JackConnectionManager(QMainWindow):
         # Store original style
         original_style = button.styleSheet()
         
+        # Skip if already in pressed state
+        if "inset" in original_style:
+            return
+            
         # Apply pressed style
         pressed_style = f"""
-            QPushButton {{ 
-                background-color: {self.highlight_color.name()}; 
+            QPushButton {{
+                background-color: {self.highlight_color.name()};
                 color: {self.text_color.name()};
                 border: 2px inset {self.highlight_color.darker(120).name()};
             }}

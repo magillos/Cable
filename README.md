@@ -8,8 +8,7 @@ If you wonder what Latency Offset option does, look [here](https://pipewire.page
 
 
 
-To run, download Cable.py, connection-manager.py and jack-plug.svg and put them all in the same directory and start with:
-`python Cable.py`. You will need python jack client, see [here](https://pypi.org/project/JACK-Client/0.5.1/), python PyQT6 and jack_delay (or jack-example-tools) installed.
+To run, clone repository and start with `python Cable.py`. You will need python jack client, see [here](https://pypi.org/project/JACK-Client/0.5.1/), python PyQT6 and jack_delay (or jack-example-tools) installed.
 
 Various packages are also available in [releases](https://github.com/magillos/Cable/releases).
 

@@ -1,24 +1,20 @@
 # Maintainer:Magillos <kerown at gmail com>
 
 pkgname=cable
-pkgver=0.9.5
+pkgver=0.9.6
 pkgrel=1
 pkgdesc="A PyQt6 application to dynamically modify Pipewire and Wireplumber settings"
 arch=('any')
 url="https://github.com/magillos/Cable"
 license=('GPL-3.0')
-depends=('python' 'python-pyqt6' 'python-jack-client' 'jack_delay' 'python-requests')
+depends=('python' 'python-pyqt6' 'python-jack-client')
 makedepends=('python-setuptools')
 if [ -n "${USE_LOCAL}" ]; then
   source=("${USE_LOCAL_PATH:-./Cable-$pkgver.tar.gz}")
   sha256sums=('SKIP')
 else
   source=("cable-$pkgver.tar.gz::https://github.com/magillos/Cable/archive/refs/tags/$pkgver.tar.gz")
-  sha256sums=('366251f29aba44667c6c739531c1b0656e70d7d794d5ed439bc13fd1aa024bae')
 fi
-
-
-
 
 build() {
   cd "$srcdir/Cable-$pkgver"
@@ -38,6 +34,15 @@ package() {
   # Create the /usr/share/cable directory if it doesn't exist
   install -d "$pkgdir/usr/share/cable"
 
-  # Install connection-manager.py to /usr/share/cable
+  # Install connection-manager.py and Cable.py to /usr/share/cable
   install -D "connection-manager.py" "$pkgdir/usr/share/cable/connection-manager.py"
+  install -D "Cable.py" "$pkgdir/usr/share/cable/Cable.py"
+
+  # Install the entire cables directory
+  cp -r cables "$pkgdir/usr/share/cable/"
+  cp -r cable_core "$pkgdir/usr/share/cable/"
+
+  # Ensure files have the correct permissions
+  find "$pkgdir/usr/share/cable" -type f -exec chmod 644 {} \;
+  find "$pkgdir/usr/share/cable" -type d -exec chmod 755 {} \;
 }

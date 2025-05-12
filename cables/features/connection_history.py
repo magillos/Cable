@@ -15,7 +15,7 @@ class ConnectionHistory:
         self.history = []
         self.current_index = -1
     
-    def add_action(self, action, output_name, input_name):
+    def add_action(self, action, output_name, input_name, is_midi):
         """
         Add a connection action to the history.
         
@@ -23,10 +23,11 @@ class ConnectionHistory:
             action: The action type ('connect' or 'disconnect')
             output_name: The name of the output port
             input_name: The name of the input port
+            is_midi: Boolean indicating if the ports are MIDI
         """
         # Truncate history if we're not at the end
         self.history = self.history[:self.current_index + 1]
-        self.history.append((action, output_name, input_name))
+        self.history.append((action, output_name, input_name, is_midi))
         self.current_index += 1
     
     def can_undo(self):
@@ -52,15 +53,15 @@ class ConnectionHistory:
         Undo the last action.
         
         Returns:
-            tuple: A tuple containing the inverse action, output port name, and input port name,
+            tuple: A tuple containing the inverse action, output port name, input port name, and is_midi flag,
                   or None if there are no actions to undo
         """
         if self.can_undo():
-            action, output_name, input_name = self.history[self.current_index]
+            action, output_name, input_name, is_midi = self.history[self.current_index]
             self.current_index -= 1
             # Return the inverse action
             inverse_action = 'connect' if action == 'disconnect' else 'disconnect'
-            return (inverse_action, output_name, input_name)
+            return (inverse_action, output_name, input_name, is_midi)
         return None
     
     def redo(self):
@@ -68,10 +69,10 @@ class ConnectionHistory:
         Redo the next action.
         
         Returns:
-            tuple: A tuple containing the action, output port name, and input port name,
+            tuple: A tuple containing the action, output port name, input port name, and is_midi flag,
                   or None if there are no actions to redo
         """
         if self.can_redo():
             self.current_index += 1
-            return self.history[self.current_index]
+            return self.history[self.current_index] # Returns (action, output_name, input_name, is_midi)
         return None

@@ -2,12 +2,24 @@
 TabUIManager - Manages the setup of UI tabs
 """
 
-from PyQt6.QtWidgets import (QVBoxLayout, QHBoxLayout, QLabel, QSpacerItem, 
-                            QSizePolicy, QWidget, QTextEdit, QComboBox, QPushButton)
+from PyQt6.QtWidgets import (QVBoxLayout, QHBoxLayout, QLabel, QSpacerItem,
+                             QSizePolicy, QWidget, QTextEdit, QComboBox, QPushButton,
+                             QToolButton, QMenu) # Added QToolButton, QMenu
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
+import threading # Added for graph tab
 
 from cables.ui.port_tree_widget import DragPortTreeWidget, DropPortTreeWidget
+
+# Imports for Graph Tab
+import graph
+import graph.jack_handler
+import graph.main_window
+# import graph.gui_view # If needed directly
+
+GraphJackHandler = graph.jack_handler.GraphJackHandler # Updated to GraphJackHandler
+GraphMainWindow = graph.main_window.MainWindow
+# GraphGuiView = graph.gui_view.JackGraphView # If JackGraphView is obtained from MainWindow instance, this isn't needed here
 
 from cable_core import app_config
 
@@ -42,9 +54,9 @@ class TabUIManager:
         input_label.setStyleSheet(f"color: {manager.text_color.name()};")
         output_label.setStyleSheet(f"color: {manager.text_color.name()};")
         
-        # Create tree widgets with appropriate roles
-        input_tree = DropPortTreeWidget(parent=tab_widget)  # Role 'input' set in its __init__
-        output_tree = DragPortTreeWidget(parent=tab_widget)  # Role 'output' set in its __init__
+        # Create tree widgets with appropriate roles, passing the highlight manager
+        input_tree = DropPortTreeWidget(highlight_manager=manager.highlight_manager, parent=tab_widget)
+        output_tree = DragPortTreeWidget(highlight_manager=manager.highlight_manager, parent=tab_widget)
         
         # Create connection visualization
         from PyQt6.QtWidgets import QGraphicsScene
@@ -73,15 +85,33 @@ class TabUIManager:
         
         # Create buttons
         connect_button = QPushButton('Connect')
-        connect_button.setToolTip("Connect selected ports (C)")
+        connect_button.setToolTip("Connect selected items <span style='color:grey'>C</span>")
         disconnect_button = QPushButton('Disconnect')
-        disconnect_button.setToolTip("Disconnect selected ports (D or Delete)")
-        presets_button = QPushButton("Presets")
+        disconnect_button.setToolTip("Disconnect selected items <span style='color:grey'>D/Del</span>")
+        
+        presets_button = QToolButton() # Changed to QToolButton
+        presets_button.setText("Presets")
+        presets_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        # Create a menu for this button, PresetHandler will populate it
+        preset_menu_for_button = QMenu(presets_button)
+        presets_button.setMenu(preset_menu_for_button)
+
         refresh_button = QPushButton('Refresh')
         
         # Apply styles to buttons
-        for button in [connect_button, disconnect_button, presets_button, refresh_button]:
-            button.setStyleSheet(manager.button_stylesheet())
+        # Note: QToolButton might need slightly different styling or might inherit well
+        # Only apply custom styling to buttons that should NOT match the Graph tab
+        for button in [presets_button, refresh_button]:
+            button.setStyleSheet(manager.button_stylesheet()) # Assuming this style works for QToolButton too
+        
+        # Connect, Disconnect buttons should match Graph tab styling
+        # Apply a specific stylesheet to disable hover effect
+        no_hover_style = """
+            QPushButton { background-color: palette(button); color: palette(buttonText); }
+            QPushButton:hover { background-color: palette(button); color: palette(buttonText); }
+        """
+        connect_button.setStyleSheet(no_hover_style)
+        disconnect_button.setStyleSheet(no_hover_style)
         
         # Add buttons to layout
         button_layout.addWidget(connect_button)
@@ -114,28 +144,19 @@ class TabUIManager:
             manager.refresh_button = refresh_button
             manager.presets_button = presets_button
             
-            # Connect signals
-            input_tree.itemClicked.connect(manager.on_input_clicked)
-            output_tree.itemClicked.connect(manager.on_output_clicked)
+            # Connect signals (itemClicked signals are now connected in JackConnectionManager.__init__)
             connect_button.clicked.connect(manager.make_connection_selected)
             disconnect_button.clicked.connect(manager.break_connection_selected)
             refresh_button.clicked.connect(manager.refresh_ports)
+            # Connect the menu's aboutToShow signal
+            if hasattr(manager, 'preset_handler') and manager.preset_handler:
+                preset_menu_for_button.aboutToShow.connect(manager.preset_handler._show_preset_menu)
+            else:
+                presets_button.setEnabled(False)
             
-            # Connect filter signals if filter edits exist
-            if hasattr(manager, 'input_filter_edit'):
-                try:
-                    manager.input_filter_edit.textChanged.disconnect()
-                except TypeError:
-                    pass  # No connection existed
-                manager.input_filter_edit.textChanged.connect(manager._handle_filter_change)
-            
-            if hasattr(manager, 'output_filter_edit'):
-                try:
-                    manager.output_filter_edit.textChanged.disconnect()
-                except TypeError:
-                    pass  # No connection existed
-                manager.output_filter_edit.textChanged.connect(manager._handle_filter_change)
-                
+            # Filter signals are now connected in PortManager.set_trees() after trees are created.
+            # No need to connect them here anymore.
+
         elif port_type == 'midi':
             manager.midi_input_tree = input_tree
             manager.midi_output_tree = output_tree
@@ -146,16 +167,19 @@ class TabUIManager:
             manager.midi_refresh_button = refresh_button
             manager.midi_presets_button = presets_button
             
-            # Connect signals
-            input_tree.itemClicked.connect(manager.on_midi_input_clicked)
-            output_tree.itemClicked.connect(manager.on_midi_output_clicked)
+            # Connect signals (itemClicked signals are now connected in JackConnectionManager.__init__)
             connect_button.clicked.connect(manager.make_midi_connection_selected)
             disconnect_button.clicked.connect(manager.break_midi_connection_selected)
             refresh_button.clicked.connect(manager.refresh_ports)
+            # Connect the menu's aboutToShow signal for MIDI tab
+            if hasattr(manager, 'preset_handler') and manager.preset_handler:
+                preset_menu_for_button.aboutToShow.connect(manager.preset_handler._show_preset_menu)
+            else:
+                presets_button.setEnabled(False)
         
-        # Apply initial font size to the created trees
-        manager._apply_port_list_font_size()
-    
+        # Initial font size is now applied by UIStateManager after it's initialized
+        # manager._apply_port_list_font_size() # Removed call
+
     def setup_pwtop_tab(self, manager, tab_widget):
         """
         Set up the pw-top statistics tab.
@@ -297,3 +321,94 @@ class TabUIManager:
         manager.latency_tester._populate_latency_combos()
         manager.latency_input_combo.currentIndexChanged.connect(manager.latency_tester._on_latency_input_selected)
         manager.latency_output_combo.currentIndexChanged.connect(manager.latency_tester._on_latency_output_selected)
+
+    def setup_graph_tab(self, manager, tab_widget):
+        """
+        Set up the Graph tab.
+
+        Args:
+            manager: The JackConnectionManager instance
+            tab_widget: The widget to set up as the graph tab
+        """
+        layout = QVBoxLayout(tab_widget)
+        tab_widget.setLayout(layout) # Ensure layout is set for the tab_widget
+
+        # The Graph tab will now use the main jack.Client from JackConnectionManager (manager.client)
+        # No separate GraphJackHandler instance is created here anymore.
+
+        # Instantiate MainWindow for the graph, passing the main jack.Client,
+        # the JackConnectionManager (for signals), and connection_history.
+        # The preset_handler_ref is still needed for preset functionality within the graph.
+        manager.graph_main_window = GraphMainWindow(
+            jack_client=manager.client, # Pass the main jack.Client instance
+            connection_manager=manager, # Pass the JackConnectionManager for signals
+            preset_handler_ref=manager.preset_handler,
+            connection_history_ref=manager.connection_history
+            # The graph's MainWindow will internally create its GraphJackHandler
+            # and JackGraphScene, passing the jack_client and connection_manager down.
+        )
+        
+        # Store a reference to the graph tab's preset button on the connection manager
+        # so PresetHandler can find it.
+        if hasattr(manager.graph_main_window, 'preset_button'):
+            manager.graph_tab_presets_button = manager.graph_main_window.preset_button
+        else:
+            manager.graph_tab_presets_button = None
+
+
+        # Get the central widget (JackGraphView) from the graph's MainWindow
+        graph_view_widget = manager.graph_main_window.centralWidget()
+
+        if graph_view_widget:
+            # Make sure the view can accept keyboard input - critical for shortcuts
+            from PyQt6.QtCore import Qt
+            graph_view_widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            
+            # Set tab order to ensure the view gets focus when tab is clicked
+            tab_widget.setTabOrder(tab_widget, graph_view_widget)
+            
+            # Add the widget to the layout
+            layout.addWidget(graph_view_widget)
+            
+            # Add zoom actions directly to the view widget - this is crucial for shortcuts
+            if hasattr(manager.graph_main_window, 'zoom_in_action') and manager.graph_main_window.zoom_in_action:
+                graph_view_widget.addAction(manager.graph_main_window.zoom_in_action)
+            if hasattr(manager.graph_main_window, 'zoom_out_action') and manager.graph_main_window.zoom_out_action:
+                graph_view_widget.addAction(manager.graph_main_window.zoom_out_action)
+        else:
+            # Fallback if central widget is None
+            error_label = QLabel("Could not load Graph View.")
+            error_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            layout.addWidget(error_label)
+            
+        # Add zoom actions to the tab_widget as well for shortcuts to work when tab is active
+        if hasattr(manager.graph_main_window, 'zoom_in_action') and manager.graph_main_window.zoom_in_action:
+            tab_widget.addAction(manager.graph_main_window.zoom_in_action)
+        if hasattr(manager.graph_main_window, 'zoom_out_action') and manager.graph_main_window.zoom_out_action:
+            tab_widget.addAction(manager.graph_main_window.zoom_out_action)
+
+        # The graph's Jack client (the main client) is managed by JackConnectionManager,
+        # so no separate thread or start call is needed here for a graph-specific handler.
+            
+        # Add an explicit refresh call after a short delay to populate the graph initially.
+        # This is still useful as the JACK client might take a moment to be fully ready
+        # or for initial events to propagate.
+        if hasattr(manager, 'graph_main_window') and manager.graph_main_window and \
+           hasattr(manager.graph_main_window, 'scene') and manager.graph_main_window.scene:
+            
+            # Define a slot for the refresh
+            def delayed_refresh():
+                print("TabUIManager: Explicit delayed full_graph_refresh for graph tab.")
+                if manager.graph_main_window and manager.graph_main_window.scene: # Re-check existence
+                    manager.graph_main_window.scene.full_graph_refresh()
+
+            from PyQt6.QtCore import QTimer # Ensure QTimer is imported if not already at top
+            QTimer.singleShot(250, delayed_refresh) # Increased delay to 250ms
+            
+        # Styling: For now, assume main app styling is sufficient.
+        # If graph-specific styles are needed, they could be applied here:
+        # e.g., graph_view_widget.setStyleSheet(...)
+        # or manager.graph_main_window.setStyleSheet(...)
+        # The original graph.py applies stylesheet to the QApplication.
+        # We might need to apply it to graph_view_widget or its parent tab.
+        # For simplicity, this is omitted for now.

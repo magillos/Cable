@@ -1,10 +1,9 @@
 # Cable
 PyQT GUI application to dynamically modify Pipewire and Wireplumber settings at runtime.
-Now, with side by side connections manager (uses Python Jack Client so will not list Pipewire items), pw-top and latency test tabs.
+It features side-by-side and graph style connections manager (uses Python Jack Client so will not list Pipewire items), pw-top and latency test tabs.
 
 
 If you wonder what Latency Offset option does, look [here](https://pipewire.pages.freedesktop.org/wireplumber/daemon/configuration/alsa.html#alsa-extra-latency-properties). 
-
 
 
 
@@ -15,7 +14,7 @@ Various packages are also available in [releases](https://github.com/magillos/Ca
 For AppImage you may want to place cable.desktop in ~/.local/share/applications/ directory, for better icon integration.
 For auto-start to work with AppImage, enable Autostart in tray menu and edit Exec entry in ~/.config/autostart/cable-autostart.desktop to point to your AppImage executable (e.g. Exec=/location/on/disk/./Cable-0.9.4.AppImage --minimized).
 
-You need Pipewire in version 1.0 at least, for connections manager to work.
+You need Pipewire in version 1.0 or newer, for connections manager to work.
 
 On Arch Linux, install using PKGBUILD or Arch package. App is also available on AUR.
 
@@ -23,6 +22,7 @@ On Arch Linux, install using PKGBUILD or Arch package. App is also available on 
 
 ![](https://github.com/magillos/Cable/blob/main/Cable.png)
 ![](https://github.com/magillos/Cable/blob/main/Cables.png)
+![](https://github.com/magillos/Cable/blob/main/graph.png)
 ![](https://github.com/magillos/Cable/blob/main/pw-top.png)
 ![](https://github.com/magillos/Cable/blob/main/latency.png)
 

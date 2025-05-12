@@ -5,6 +5,7 @@ from packaging import version
 from PyQt6.QtWidgets import QMessageBox, QApplication # Added QApplication for potential parent reference if needed
 from cables.utils.helpers import show_timed_messagebox # Import the helper function
 # Removed relative import: from ..Cable import APP_VERSION
+from cable_core.app_config import APP_VERSION # Import from new location
 
 class UpdateManager:
     def __init__(self, app, app_version): # Add app_version parameter

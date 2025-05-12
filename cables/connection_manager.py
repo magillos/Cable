@@ -11,8 +11,8 @@ import random
 import re
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QTabWidget, QVBoxLayout,
                             QHBoxLayout, QCheckBox, QPushButton, QLineEdit, QSizePolicy,
-                            QSpacerItem, QMessageBox, QGraphicsPathItem, QTreeWidget) # Removed QSize
-from PyQt6.QtCore import Qt, QMimeData, QPointF, QRectF, QTimer, QSize, QRect, QProcess, pyqtSignal, QPoint
+                            QSpacerItem, QMessageBox, QGraphicsPathItem, QTreeWidget, QToolBar) # Removed QSize, Added QToolBar
+from PyQt6.QtCore import Qt, QMimeData, QPointF, QRectF, QTimer, QSize, QRect, QProcess, pyqtSignal, QPoint, pyqtSlot
 from PyQt6.QtGui import QGuiApplication, QColor, QPalette, QFont, QKeySequence, QAction, QTextCursor, QPainterPath, QPen, QBrush
 
 # Import our modules
@@ -21,6 +21,12 @@ from cables.config.preset_manager import PresetManager
 from cables.features.connection_history import ConnectionHistory
 from cables.features.preset_handler import PresetHandler
 from cables.ui.tab_ui_manager import TabUIManager
+from cables.jack_connection_handler import JackConnectionHandler # Added import
+from cables.highlight_manager import HighlightManager # Added import
+from cables.ui_state_manager import UIStateManager # Added import
+from cables.action_manager import ActionManager # Added import
+from cables.port_manager import PortManager # Added import
+from cables.interaction_manager import InteractionManager # Added import
 from cable_core import app_config
 
 class JackConnectionManager(QMainWindow):
@@ -31,14 +37,29 @@ class JackConnectionManager(QMainWindow):
     disconnecting JACK/PipeWire ports, as well as managing presets.
     """
     
-    # PyQt signals for port registration events
+    # PyQt signals for JACK events, designed for detailed graph updates
+    port_added = pyqtSignal(str, str, int, str, bool)  # port_name, client_name, flags, type, is_input
+    port_removed = pyqtSignal(str, str)  # port_name, client_name
+    client_added = pyqtSignal(str)  # client_name
+    client_removed = pyqtSignal(str)  # client_name
+    connection_made = pyqtSignal(str, str)  # out_port_name, in_port_name
+    connection_broken = pyqtSignal(str, str)  # out_port_name, in_port_name
+    jack_shutdown_signal = pyqtSignal()  # For JACK server shutdown
+    graph_updated = pyqtSignal()  # For general graph updates / fallback
+    untangle_mode_changed = pyqtSignal(int)  # Signal for mode change
+    
+    # Old signals (kept for now if other parts of the app use them, but graph should use new ones)
     port_registered = pyqtSignal(str, bool)  # port name, is_input
     port_unregistered = pyqtSignal(str, bool)  # port name, is_input
-    untangle_mode_changed = pyqtSignal(int)  # Signal for mode change
+    client_registered = pyqtSignal(str, bool) # client_name, is_registered
+    ports_connected = pyqtSignal(str, str, bool) # out_port_name, in_port_name, is_connected
     
     def __init__(self):
         """Initialize the JackConnectionManager."""
         super().__init__()
+
+        self._graph_is_fullscreen = False
+        self._widgets_original_visibility = {} # For storing visibility of main UI chrome
         
         # Initialize configuration and preset managers
         self.config_manager = ConfigManager()
@@ -56,30 +77,33 @@ class JackConnectionManager(QMainWindow):
         
         # Initialize JACK client
         self.client = jack.Client('ConnectionManager')
-        
+        self.jack_handler = JackConnectionHandler(self.client, self) # Instantiate handler
+
         # Initialize connection history
         self.connection_history = ConnectionHistory()
         
-        # Initialize untangle mode
-        self.untangle_mode = self.config_manager.get_int('untangle_mode', 0)
-        
+        # Untangle mode state is now managed by UIStateManager
+        # self.untangle_mode = self.config_manager.get_int('untangle_mode', 0)
+
         # Detect Flatpak environment
         self.flatpak_env = os.path.exists('/.flatpak-info')
         
         # Set up colors
         self.dark_mode = self.is_dark_mode()
         self.setup_colors()
+
+        # HighlightManager will be instantiated in _setup_ui after trees are created
         
-        # Initialize auto-refresh state
-        self.callbacks_enabled = self.config_manager.get_bool('auto_refresh_enabled', True)
-        self.is_focused = self.isActiveWindow()
-        
-        # Load and store initial port list font size
-        try:
-            self.port_list_font_size = int(self.config_manager.get_str('port_list_font_size', '10'))
-        except ValueError:
-            self.port_list_font_size = 10  # Default if config value is invalid
-        
+        # Auto-refresh state (callbacks_enabled, is_focused) managed by UIStateManager
+        # self.callbacks_enabled = self.config_manager.get_bool('auto_refresh_enabled', True)
+        # self.is_focused = self.isActiveWindow()
+
+        # Port list font size managed by UIStateManager
+        # try:
+        #     self.port_list_font_size = int(self.config_manager.get_str('port_list_font_size', '10'))
+        # except ValueError:
+        #     self.port_list_font_size = 10  # Default if config value is invalid
+
         # Create filter edit widgets
         self.output_filter_edit = QLineEdit()
         self.output_filter_edit.setPlaceholderText("Filter outputs...")
@@ -90,19 +114,106 @@ class JackConnectionManager(QMainWindow):
         
         # Set up JACK port registration callbacks
         self.client.set_port_registration_callback(self._handle_port_registration)
+        self.client.set_client_registration_callback(self._handle_client_registration) # ADDED
+        self.client.set_port_connect_callback(self._handle_port_connect_callback) # ADDED
+        self.client.set_shutdown_callback(self._handle_shutdown_callback) # ADDED
+        # self.client.set_graph_order_callback(self._handle_graph_order_callback) # TODO: Add if needed for JackGraphScene
         
         # Connect signals to refresh methods
         self.port_registered.connect(self._on_port_registered)
         self.port_unregistered.connect(self._on_port_unregistered)
         
-        # Set up the UI
+        # Instantiate PortManager *before* _setup_ui, passing filters but not trees yet
+        self.port_manager = PortManager(
+            connection_manager=self,
+            jack_client=self.client,
+            input_filter_edit=self.input_filter_edit,
+            output_filter_edit=self.output_filter_edit
+        )
+
+        # Set up the UI (this creates the widgets needed by UIStateManager and the trees)
         self._setup_ui()
-        
-        
-        # Set up shortcuts and actions
-        self._setup_actions()
-        self.setup_shortcuts()
-        
+
+        # Now that trees exist, set them in PortManager and connect signals
+        self.port_manager.set_trees(
+            input_tree=getattr(self, 'input_tree', None),
+            output_tree=getattr(self, 'output_tree', None),
+            midi_input_tree=getattr(self, 'midi_input_tree', None),
+            midi_output_tree=getattr(self, 'midi_output_tree', None)
+        )
+
+        # Instantiate UIStateManager *after* _setup_ui() has created the necessary widgets
+        # and *after* _setup_bottom_layout() has connected signals to its methods.
+        self.ui_state_manager = UIStateManager(
+            parent=self,
+            config_manager=self.config_manager,
+            main_window=self,
+            auto_refresh_checkbox=self.auto_refresh_checkbox, # Exists now
+            collapse_checkbox=self.collapse_all_checkbox, # Exists now
+            untangle_button=self.untangle_button, # Exists now
+            increase_font_button=self.zoom_in_button, # Exists now
+            decrease_font_button=self.zoom_out_button, # Exists now
+            input_tree=self.input_tree, # Exists now
+            output_tree=self.output_tree, # Exists now
+            midi_input_tree=self.midi_input_tree, # Exists now
+            midi_output_tree=self.midi_output_tree, # Exists now
+            connection_view=self.connection_view, # Exists now
+            midi_connection_view=self.midi_connection_view # Exists now
+        )
+
+        # Connect signals from widgets created in _setup_bottom_layout to UIStateManager
+        if hasattr(self, 'auto_refresh_checkbox') and self.auto_refresh_checkbox:
+            self.auto_refresh_checkbox.stateChanged.connect(self.ui_state_manager.toggle_auto_refresh)
+        if hasattr(self, 'collapse_all_checkbox') and self.collapse_all_checkbox:
+            self.collapse_all_checkbox.stateChanged.connect(self.ui_state_manager.toggle_collapse_all)
+        if hasattr(self, 'untangle_button') and self.untangle_button:
+            self.untangle_button.clicked.connect(self.ui_state_manager.toggle_untangle_sort)
+        if hasattr(self, 'zoom_in_button') and self.zoom_in_button:
+            self.zoom_in_button.clicked.connect(self.ui_state_manager.increase_font_size)
+        if hasattr(self, 'zoom_out_button') and self.zoom_out_button:
+            self.zoom_out_button.clicked.connect(self.ui_state_manager.decrease_font_size)
+
+        # Explicitly call switch_tab for the initial index *after* UIStateManager is set up
+        # This ensures the necessary state (like collapse) is applied correctly.
+        if hasattr(self, 'tab_widget'):
+             self.switch_tab(self.tab_widget.currentIndex())
+
+        # Gather UI elements for ActionManager
+        self.ui_elements = {
+            'tab_widget': self.tab_widget,
+            'connect_button': getattr(self, 'connect_button', None),
+            'disconnect_button': getattr(self, 'disconnect_button', None),
+            'midi_connect_button': getattr(self, 'midi_connect_button', None),
+            'midi_disconnect_button': getattr(self, 'midi_disconnect_button', None),
+            'undo_button': getattr(self, 'undo_button', None),
+            'redo_button': getattr(self, 'redo_button', None),
+            'collapse_all_checkbox': getattr(self, 'collapse_all_checkbox', None),
+            'auto_refresh_checkbox': getattr(self, 'auto_refresh_checkbox', None),
+            'output_tree': getattr(self, 'output_tree', None),
+            'input_tree': getattr(self, 'input_tree', None),
+            'midi_output_tree': getattr(self, 'midi_output_tree', None),
+            'midi_input_tree': getattr(self, 'midi_input_tree', None),
+            'graph_main_window': getattr(self, 'graph_main_window', None), # Added for Graph tab actions
+            # Add other UI elements needed by ActionManager handlers if any
+        }
+
+        # Instantiate ActionManager
+        self.action_manager = ActionManager(
+            main_window=self,
+            state_manager=self.ui_state_manager,
+            connection_handler=self.jack_handler,
+            preset_handler=self.preset_handler,
+            ui=self.ui_elements
+        )
+        # Set up actions and shortcuts via the manager
+        self.action_manager.setup_actions_and_shortcuts()
+
+        # Connect Undo/Redo button signals *after* action_manager is created
+        if hasattr(self, 'undo_button') and self.undo_button:
+            self.undo_button.clicked.connect(self.action_manager._handle_undo)
+        if hasattr(self, 'redo_button') and self.redo_button:
+            self.redo_button.clicked.connect(self.action_manager._handle_redo)
+
         # Connect preset button signals after UI is set up
         if hasattr(self, 'presets_button') and self.presets_button:
             self.presets_button.clicked.connect(self.preset_handler._show_preset_menu)
@@ -112,10 +223,45 @@ class JackConnectionManager(QMainWindow):
         # Activate JACK client
         self.client.activate()
         
-        # Set initial state for the global save shortcut based on loaded preset
-        if hasattr(self, 'save_preset_action'):
-            self.save_preset_action.setEnabled(bool(self.preset_handler.current_preset_name))
-    
+        # Set initial state for the global save shortcut (now managed by ActionManager)
+        if hasattr(self.action_manager, 'save_preset_action') and self.action_manager.save_preset_action:
+            self.action_manager.save_preset_action.setEnabled(bool(self.preset_handler.current_preset_name))
+
+        # Instantiate InteractionManager *after* highlight_manager and button update methods exist
+        self.interaction_manager = InteractionManager(
+            highlight_manager=self.highlight_manager,
+            update_connection_buttons_func=self.update_connection_buttons,
+            update_midi_connection_buttons_func=self.update_midi_connection_buttons
+        )
+
+        # Connect tree click signals to InteractionManager using lambdas
+        if hasattr(self, 'input_tree') and self.input_tree:
+            self.input_tree.itemClicked.connect(
+                lambda item, col: self.interaction_manager.handle_port_click(
+                    item, self.input_tree, False # Pass clicked_tree and is_midi
+                )
+            )
+        if hasattr(self, 'output_tree') and self.output_tree:
+            self.output_tree.itemClicked.connect(
+                lambda item, col: self.interaction_manager.handle_port_click(
+                    item, self.output_tree, False # Pass clicked_tree and is_midi
+                )
+            )
+        if hasattr(self, 'midi_input_tree') and self.midi_input_tree:
+            self.midi_input_tree.itemClicked.connect(
+                lambda item, col: self.interaction_manager.handle_port_click(
+                    item, self.midi_input_tree, True # Pass clicked_tree and is_midi
+                )
+            )
+        if hasattr(self, 'midi_output_tree') and self.midi_output_tree:
+            self.midi_output_tree.itemClicked.connect(
+                lambda item, col: self.interaction_manager.handle_port_click(
+                    item, self.midi_output_tree, True # Pass clicked_tree and is_midi
+                )
+            )
+
+        # PortManager instantiation moved earlier
+
     def _setup_ui(self):
         """Set up the main UI components."""
         # Create central widget and layout
@@ -130,21 +276,58 @@ class JackConnectionManager(QMainWindow):
         # Create tab widgets
         self.audio_tab_widget = QWidget()
         self.midi_tab_widget = QWidget()
+        self.graph_tab_widget = QWidget() # Added for Graph tab
         self.pwtop_tab_widget = QWidget()
         self.latency_tab_widget = QWidget()
         
         # Set up tabs using TabUIManager
         self.tab_ui_manager = TabUIManager()
+        # Setup tabs *before* HighlightManager instantiation needs the trees
+        # Instantiate HighlightManager *before* setting up port tabs, passing None for trees initially
+        self.highlight_manager = HighlightManager(
+            input_tree=None,
+            output_tree=None,
+            midi_input_tree=None,
+            midi_output_tree=None,
+            client=self.client,
+            colors={ # Pass color definitions
+                'text': self.text_color,
+                'background': self.background_color,
+                'highlight': self.highlight_color,
+                'auto_highlight': self.auto_highlight_color,
+                'drag_highlight': self.drag_highlight_color
+            }
+        )
+
+        # Setup tabs - this will create the trees and pass the highlight_manager instance
         self.tab_ui_manager.setup_port_tab(self, self.audio_tab_widget, "Audio", 'audio')
         self.tab_ui_manager.setup_port_tab(self, self.midi_tab_widget, "MIDI", 'midi')
+        # setup_graph_tab will be called after port tabs, before pwtop
         self.tab_ui_manager.setup_pwtop_tab(self, self.pwtop_tab_widget)
         self.tab_ui_manager.setup_latency_tab(self, self.latency_tab_widget)
-        
+
+        # Now that trees exist, update the HighlightManager instance with references
+        self.highlight_manager.input_tree = self.input_tree
+        self.highlight_manager.output_tree = self.output_tree
+        self.highlight_manager.midi_input_tree = self.midi_input_tree
+        self.highlight_manager.midi_output_tree = self.midi_output_tree
+
         # Add tabs to tab widget
-        self.tab_widget.addTab(self.audio_tab_widget, "Audio")
-        self.tab_widget.addTab(self.midi_tab_widget, "MIDI")
-        self.tab_widget.addTab(self.pwtop_tab_widget, "pw-top")
-        self.tab_widget.addTab(self.latency_tab_widget, "Latency Test")
+        self.tab_widget.addTab(self.audio_tab_widget, "Audio") # Index 0
+        self.tab_widget.addTab(self.midi_tab_widget, "MIDI")   # Index 1
+        
+        # Setup and insert the Graph tab as the third tab (index 2)
+        self.tab_ui_manager.setup_graph_tab(self, self.graph_tab_widget)
+        self.tab_widget.insertTab(2, self.graph_tab_widget, "Graph") # Index 2
+
+        # Connect the fullscreen toggle signal from the graph view
+        if hasattr(self, 'graph_main_window') and self.graph_main_window and \
+           hasattr(self.graph_main_window, 'view') and self.graph_main_window.view and \
+           hasattr(self.graph_main_window.view, 'fullscreen_request_signal'):
+            self.graph_main_window.view.fullscreen_request_signal.connect(self.toggle_graph_fullscreen)
+        
+        self.tab_widget.addTab(self.pwtop_tab_widget, "pw-top") # Becomes Index 3
+        self.tab_widget.addTab(self.latency_tab_widget, "Latency Test") # Becomes Index 4
         
         # Set the active tab based on the saved value
         if 0 <= self.last_active_tab < self.tab_widget.count():
@@ -156,8 +339,7 @@ class JackConnectionManager(QMainWindow):
         # Connect tab change signal
         self.tab_widget.currentChanged.connect(self.switch_tab)
         
-        # Explicitly call switch_tab for the initial index to ensure setup runs
-        self.switch_tab(self.tab_widget.currentIndex())
+        # Initial switch_tab call moved to __init__ after UIStateManager is ready.
     
     def _setup_bottom_layout(self, main_layout):
         """Set up the bottom layout with controls."""
@@ -165,26 +347,35 @@ class JackConnectionManager(QMainWindow):
         
         # Auto Refresh checkbox
         self.auto_refresh_checkbox = QCheckBox('Auto Refresh')
-        auto_refresh_enabled = self.config_manager.get_bool('auto_refresh_enabled', True)
-        self.auto_refresh_checkbox.setChecked(auto_refresh_enabled)
-        self.auto_refresh_checkbox.setToolTip("Toggle automatic refreshing of ports and connections (Alt+R)")
-        
+        # Auto Refresh checkbox state is loaded/set by UIStateManager
+        # auto_refresh_enabled = self.config_manager.get_bool('auto_refresh_enabled', True)
+        # self.auto_refresh_checkbox.setChecked(auto_refresh_enabled)
+        self.auto_refresh_checkbox.setToolTip("Toggle automatic refreshing of ports and connections <span style='color:grey'>Alt+R</span>")
+        # Signal connected later
+ 
         # Collapse All toggle
         self.collapse_all_checkbox = QCheckBox('Collapse All')
-        collapse_all_enabled = self.config_manager.get_bool('collapse_all_enabled', False)
-        self.collapse_all_checkbox.setChecked(collapse_all_enabled)
-        self.collapse_all_checkbox.setToolTip("Toggle collapse state for all groups (Alt+C)")
-        self.collapse_all_checkbox.stateChanged.connect(self.toggle_collapse_all)
-        
+        # Collapse state is loaded/set by UIStateManager
+        # collapse_all_enabled = self.config_manager.get_bool('collapse_all_enabled', False)
+        # self.collapse_all_checkbox.setChecked(collapse_all_enabled)
+        self.collapse_all_checkbox.setToolTip("Toggle collapse state for all groups <span style='color:grey'>Alt+C</span>")
+        # Signal connected later
+
         # Undo/Redo buttons
         self.undo_button = QPushButton('       Undo       ')
-        self.undo_button.setToolTip("Undo last action (Ctrl+Z)")
+        self.undo_button.setToolTip("Undo last connection <span style='color:grey'>Ctrl+Z</span>")
         self.redo_button = QPushButton('       Redo       ')
-        self.redo_button.setToolTip("Redo last action (Ctrl+Y/Ctrl+Shift+Z)")
+        self.redo_button.setToolTip("Redo last connection <span style='color:grey'>Shift+Ctrl+Z/Ctrl+Y</span>")
         
-        for button in [self.undo_button, self.redo_button]:
-            button.setStyleSheet(self.button_stylesheet())
-            button.setEnabled(False)
+        # Apply a specific stylesheet to disable hover effect for Undo/Redo buttons to match Graph tab
+        no_hover_style = """
+            QPushButton { background-color: palette(button); color: palette(buttonText); }
+            QPushButton:hover { background-color: palette(button); color: palette(buttonText); }
+        """
+        self.undo_button.setStyleSheet(no_hover_style)
+        self.redo_button.setStyleSheet(no_hover_style)
+        self.undo_button.setEnabled(False)
+        self.redo_button.setEnabled(False)
         
         # Apply style to filter edits
         filter_style = f"""
@@ -206,19 +397,26 @@ class JackConnectionManager(QMainWindow):
         
         bottom_layout.addStretch(1)  # Push central controls away from left filter
         
+        # Apply a specific stylesheet to disable hover effect
+        no_hover_style = """
+            QPushButton { background-color: palette(button); color: palette(buttonText); }
+            QPushButton:hover { background-color: palette(button); color: palette(buttonText); }
+        """
+        
         # Refresh button
         self.bottom_refresh_button = QPushButton('     Refresh     ')
-        self.bottom_refresh_button.setToolTip("Refresh port list (R)")
-        self.bottom_refresh_button.setStyleSheet(self.button_stylesheet())
+        self.bottom_refresh_button.setToolTip("Refresh port list <span style='color:grey'>R</span>")
+        self.bottom_refresh_button.setStyleSheet(no_hover_style)
         self.bottom_refresh_button.clicked.connect(self.refresh_ports)
         
         # Untangle button
         self.untangle_button = QPushButton()  # Text set by _update_untangle_button_text
-        self.untangle_button.setStyleSheet(self.button_stylesheet())
-        self.untangle_button.setToolTip("Untangle cables: Default -> A -> B (Alt+U)")
-        self.untangle_button.clicked.connect(self.toggle_untangle_sort)
-        self._update_untangle_button_text()  # Set initial text based on loaded mode
-        
+        self.untangle_button.setStyleSheet(no_hover_style)
+        # Tooltip and text are set by UIStateManager._update_untangle_button_text()
+        # self.untangle_button.setToolTip("Untangle cables: Default -> A -> B (Alt+U)")
+        # Signal connected later
+        # self._update_untangle_button_text() is called by UIStateManager init
+
         # Add widgets to bottom layout
         bottom_layout.addWidget(self.collapse_all_checkbox)
         bottom_layout.addWidget(self.auto_refresh_checkbox)
@@ -230,18 +428,18 @@ class JackConnectionManager(QMainWindow):
         
         # Add Zoom Buttons
         self.zoom_in_button = QPushButton('+')
-        self.zoom_in_button.setToolTip("Increase port list font size (Ctrl++)")
-        self.zoom_in_button.setStyleSheet(self.button_stylesheet())
+        self.zoom_in_button.setToolTip("Increase port list font size <span style='color:grey'>Ctrl++</span>")
+        self.zoom_in_button.setStyleSheet(no_hover_style)
         zoom_button_size = QSize(25, 25)  # Define smaller, square size
         self.zoom_in_button.setFixedSize(zoom_button_size)
-        self.zoom_in_button.clicked.connect(self.increase_font_size)
-        
+        # Signal connected later
+
         self.zoom_out_button = QPushButton('-')
-        self.zoom_out_button.setToolTip("Decrease port list font size (Ctrl+-)")
-        self.zoom_out_button.setStyleSheet(self.button_stylesheet())
+        self.zoom_out_button.setToolTip("Decrease port list font size <span style='color:grey'>Ctrl+-</span>")
+        self.zoom_out_button.setStyleSheet(no_hover_style)
         self.zoom_out_button.setFixedSize(zoom_button_size)
-        self.zoom_out_button.clicked.connect(self.decrease_font_size)
-        
+        # Signal connected later
+
         bottom_layout.addWidget(self.zoom_out_button)
         bottom_layout.addWidget(self.zoom_in_button)
         
@@ -253,23 +451,22 @@ class JackConnectionManager(QMainWindow):
         
         main_layout.addLayout(bottom_layout)
         
-        # Connect signals
-        self.auto_refresh_checkbox.stateChanged.connect(self.toggle_auto_refresh)
-        self.undo_button.clicked.connect(self.undo_action)
-        self.redo_button.clicked.connect(self.redo_action)
-        
-        # Initialize callback state from config
-        self.callbacks_enabled = auto_refresh_enabled
-        
+        # Signal connections to UIStateManager moved to __init__ after instantiation
+
+        # Signal connections for Undo/Redo moved to __init__ after action_manager creation
+
+        # Callback state is managed internally by UIStateManager
+        # self.callbacks_enabled = auto_refresh_enabled
+
         # Initialize visibility based on current tab
         current_tab = self.tab_widget.currentIndex() if hasattr(self, 'tab_widget') else 0
         self.show_bottom_controls(current_tab < 2)
         
-        # Start visualization timers if auto-refresh is enabled in config
-        if auto_refresh_enabled:
-            self.connection_view.start_refresh_timer(self.refresh_visualizations)
-            self.midi_connection_view.start_refresh_timer(self.refresh_visualizations)
-    
+        # Start visualization timers handled by UIStateManager init/load
+        # if auto_refresh_enabled:
+        #     self.connection_view.start_refresh_timer(self.refresh_visualizations)
+        #     self.midi_connection_view.start_refresh_timer(self.refresh_visualizations)
+
     def is_dark_mode(self):
         """
         Determine if the application is in dark mode.
@@ -352,30 +549,61 @@ class JackConnectionManager(QMainWindow):
             index: The index of the tab to switch to
         """
         # Stop pw-top monitor if switching away from it
-        if index != 2 and hasattr(self, 'pwtop_monitor') and self.pwtop_monitor is not None:
+        # Adjusted index for pw-top due to new Graph tab
+        if index != 3 and hasattr(self, 'pwtop_monitor') and self.pwtop_monitor is not None:
             self.pwtop_monitor.stop()
+
+        # Stop graph_jack_handler if switching away from Graph tab (index 2)
+        # The handler is started in setup_graph_tab. Here we manage stopping/restarting if needed.
+        # For now, we assume it's started once and stopped on close.
+        # If we need to stop/start it on tab visibility, this is where it would go.
+        # if index != 2 and hasattr(self, 'graph_jack_handler') and self.graph_jack_handler and self.graph_jack_handler.is_active():
+        #     print("Switching away from Graph tab, stopping its JackHandler (if implemented)")
+        #     # self.graph_jack_handler.stop() # Potentially stop
         
         # Configure based on the new tab index
-        if index < 2:  # Audio or MIDI tabs
+        if index < 2:  # Audio (0) or MIDI (1) tabs
             self.port_type = 'audio' if index == 0 else 'midi'
-            self.apply_collapse_state_to_all_trees()
+            # Apply collapse state based on checkbox state for the *current* tab's trees
+            if hasattr(self, 'ui_state_manager'): # Ensure ui_state_manager exists
+                 self.ui_state_manager.apply_collapse_state_to_current_trees()
             self.refresh_visualizations()
             self.show_bottom_controls(True)  # Show controls
-        elif index == 2:  # pw-top tab
+        elif index == 2: # Graph tab
+            self.show_bottom_controls(False) # Hide standard controls for graph tab
+            # Start graph_jack_handler if it's not running (e.g., if we implement stop on tab switch away)
+            # if hasattr(self, 'graph_jack_handler') and self.graph_jack_handler and not self.graph_jack_handler.is_active():
+            #     print("Switching to Graph tab, ensuring its JackHandler is running (if implemented)")
+            #     # graph_jack_thread = threading.Thread(target=self.graph_jack_handler.start, daemon=True)
+            #     # graph_jack_thread.start() # Potentially (re)start
+            # For now, graph_jack_handler is started once in setup_graph_tab.
+            # Refresh the graph view if necessary
+            if hasattr(self, 'graph_main_window') and self.graph_main_window:
+                if hasattr(self.graph_main_window, 'scene') and self.graph_main_window.scene:
+                    # Corrected method call:
+                    self.graph_main_window.scene.full_graph_refresh()
+        elif index == 3:  # pw-top tab (new index)
             # Start pw-top monitor only when switching to this tab
             if hasattr(self, 'pwtop_monitor') and self.pwtop_monitor is not None:
                 self.pwtop_monitor.start()
             self.show_bottom_controls(False)  # Hide controls
-        elif index == 3:  # jack_delay tab
+        elif index == 4:  # Latency Test tab (new index)
             # No specific process to start here, just hide controls
             self.show_bottom_controls(False)  # Hide controls
         
-        # Update the refresh interval based on the new tab and current focus state
-        self._update_refresh_timer_interval()
-        
+        # Update the refresh interval (handled by UIStateManager based on focus/tab change)
+        # We still need to inform UIStateManager about focus changes if they happen during tab switch
+        # but the interval update itself is internal to UIStateManager.
+        # The focus change event (changeEvent) will trigger the update.
+        # self._update_refresh_timer_interval() # Removed
+
         # Save the current tab index to config
         self.last_active_tab = index
         self.config_manager.set_int('last_active_tab', index)
+
+        # Ensure the refresh interval is updated based on the new tab and current focus state
+        if hasattr(self, 'ui_state_manager') and self.ui_state_manager:
+            self.ui_state_manager._update_refresh_timer_interval()
     
     def show_bottom_controls(self, visible):
         """
@@ -405,65 +633,8 @@ class JackConnectionManager(QMainWindow):
         if hasattr(self, 'zoom_out_button'):
             self.zoom_out_button.setVisible(visible)
     
-    def filter_ports(self, tree_widget, filter_text):
-        """
-        Filters the items in the specified tree widget based on the filter text.
-        
-        Args:
-            tree_widget: The tree widget to filter
-            filter_text: The filter text
-        """
-        filter_text_lower = filter_text.lower()
-        terms = filter_text_lower.split()
-        include_terms = [term for term in terms if not term.startswith('-')]
-        exclude_terms = [term[1:] for term in terms if term.startswith('-') and len(term) > 1]  # Remove '-'
-        
-        # Iterate through all top-level items (groups)
-        for i in range(tree_widget.topLevelItemCount()):
-            group_item = tree_widget.topLevelItem(i)
-            group_visible = False  # Assume group is hidden unless a child matches
-            
-            # Iterate through children (ports) of the group
-            for j in range(group_item.childCount()):
-                port_item = group_item.child(j)
-                port_name = port_item.data(0, Qt.ItemDataRole.UserRole)  # Get full port name
-                if not port_name:  # Skip if port name is invalid
-                    port_item.setHidden(True)
-                    continue
-                
-                port_name_lower = port_name.lower()
-                
-                # 1. Check exclusion terms
-                excluded = False
-                for term in exclude_terms:
-                    if term in port_name_lower:
-                        excluded = True
-                        break
-                if excluded:
-                    port_item.setHidden(True)
-                    continue  # Skip to next port if excluded
-                
-                # 2. Check inclusion terms (all must match)
-                included = True
-                if include_terms:  # Only check if there are inclusion terms
-                    for term in include_terms:
-                        if term not in port_name_lower:
-                            included = False
-                            break
-                
-                if included:
-                    port_item.setHidden(False)
-                    group_visible = True  # Make group visible if this port is visible
-                else:
-                    port_item.setHidden(True)
-            
-            # Set the visibility of the group item
-            group_item.setHidden(not group_visible)
-        
-        # After filtering, we need to refresh the connection visualization
-        # because hidden items might affect line drawing positions.
-        self.refresh_visualizations()
-    
+    # filter_ports moved to PortManager
+
     def refresh_visualizations(self):
         """Refresh only the connection visualizations without refreshing ports."""
         if self.port_type == 'audio':
@@ -483,14 +654,14 @@ class JackConnectionManager(QMainWindow):
             input_tree = self.input_tree
             output_tree = self.output_tree
             update_visuals = self.update_connections
-            clear_highlights = self.clear_highlights
+            # clear_highlights = self.clear_highlights # Replaced by highlight_manager call
             update_buttons = self.update_connection_buttons
             is_midi = False
         elif port_type_to_refresh == 'midi':
             input_tree = self.midi_input_tree
             output_tree = self.midi_output_tree
             update_visuals = self.update_midi_connections
-            clear_highlights = self.clear_midi_highlights
+            # clear_highlights = self.clear_midi_highlights # Replaced by highlight_manager call
             update_buttons = self.update_midi_connection_buttons
             is_midi = True
         else:
@@ -511,65 +682,48 @@ class JackConnectionManager(QMainWindow):
         input_tree.clear()
         output_tree.clear()
         
-        # 4. Get new port lists for this type
-        input_ports, output_ports = self._get_ports(is_midi=is_midi)
-        
+        # 4. Get new port lists for this type using PortManager
+        input_ports, output_ports = self.port_manager._get_ports(is_midi=is_midi)
+
         # 5. Repopulate trees for this type (without previous_group_order)
         input_tree.populate_tree(input_ports)
         output_tree.populate_tree(output_ports)
         
-        # 6. Re-apply filter for this type
-        self.filter_ports(input_tree, current_input_filter)
-        self.filter_ports(output_tree, current_output_filter)
-        
+        # 6. Re-apply filter for this type using PortManager
+        self.port_manager.filter_ports(input_tree, current_input_filter)
+        self.port_manager.filter_ports(output_tree, current_output_filter)
+
         # 7. Restore selection for this type
         self._restore_selection(input_tree, selected_input_info)
         self._restore_selection(output_tree, selected_output_info)
         
         # 8. Update visuals and button states for this type
         update_visuals()
-        clear_highlights()  # Clear old highlights before applying new ones
+        # Clear highlights using the manager
+        if is_midi:
+            self.highlight_manager.clear_midi_highlights()
+        else:
+            self.highlight_manager.clear_highlights()
         update_buttons()
-        
-        # 9. Re-apply highlights based on the *restored* selection for this type
+
+        # 9. Re-apply highlights based on the *restored* selection using HighlightManager
         restored_input_item = input_tree.currentItem()
         restored_output_item = output_tree.currentItem()
-        
-        # Highlight selected item itself (port or group)
+
         if restored_input_item:
-            if restored_input_item.childCount() == 0:  # Port
-                port_name = restored_input_item.data(0, Qt.ItemDataRole.UserRole)
-                if port_name:  # Check if port_name is valid
-                    self._highlight_tree_item(input_tree, port_name)  # Highlight selected port
-        
+            self.highlight_manager.apply_highlights_for_selection(restored_input_item, input_tree, is_midi)
+
         if restored_output_item:
-            if restored_output_item.childCount() == 0:  # Port
-                port_name = restored_output_item.data(0, Qt.ItemDataRole.UserRole)
-                if port_name:  # Check if port_name is valid
-                    self._highlight_tree_item(output_tree, port_name)  # Highlight selected port
-        
-        # Highlight connected items/groups
-        if restored_input_item:
-            if restored_input_item.childCount() > 0:  # Group selected
-                self._highlight_connected_output_groups_for_input_group(restored_input_item, is_midi)
-            else:  # Port selected
-                port_name = restored_input_item.data(0, Qt.ItemDataRole.UserRole)
-                if port_name:  # Ensure port_name is valid
-                    self._highlight_connected_outputs_for_input(port_name, is_midi)
-        
-        if restored_output_item:
-            if restored_output_item.childCount() > 0:  # Group selected
-                self._highlight_connected_input_groups_for_output_group(restored_output_item, is_midi)
-            else:  # Port selected
-                port_name = restored_output_item.data(0, Qt.ItemDataRole.UserRole)
-                if port_name:  # Ensure port_name is valid
-                    self._highlight_connected_inputs_for_output(port_name, is_midi)
-        
+            # Avoid double-highlighting if the same item is selected in both trees (unlikely but possible)
+            if restored_output_item != restored_input_item:
+                 self.highlight_manager.apply_highlights_for_selection(restored_output_item, output_tree, is_midi)
+
         # 10. Maintain collapse state if needed for this type
         if self.port_type == port_type_to_refresh:
-            if hasattr(self, 'collapse_all_checkbox') and self.collapse_all_checkbox.isChecked():
-                self.apply_collapse_state_to_current_trees()
+            # Apply collapse state based on checkbox state for the *current* tab's trees
+            self.ui_state_manager.apply_collapse_state_to_current_trees()
     
+    # Dedent the following method definition by one level
     def refresh_ports(self, refresh_all=False, from_shortcut=False):
         """
         Refreshes the port lists displayed in the trees.
@@ -642,71 +796,9 @@ class JackConnectionManager(QMainWindow):
         if item_to_select and not item_to_select.isHidden():
             tree_widget.setCurrentItem(item_to_select)
     
-    def _get_ports(self, is_midi):
-        """
-        Get the input and output ports.
-        
-        Args:
-            is_midi: Whether to get MIDI ports
-            
-        Returns:
-            tuple: A tuple containing the input and output ports
-        """
-        input_ports = []
-        output_ports = []
-        try:
-            # Get input port objects
-            input_port_objects = self.client.get_ports(is_input=True, is_midi=is_midi)
-            
-            # Get output port objects
-            output_port_objects = self.client.get_ports(is_output=True, is_midi=is_midi)
-            
-            # Explicitly filter for the Audio tab (is_midi=False)
-            # Ensure only ports reported as non-MIDI by the port object itself are included.
-            if not is_midi:
-                input_port_objects = [p for p in input_port_objects if p is not None and not p.is_midi]
-                output_port_objects = [p for p in output_port_objects if p is not None and not p.is_midi]
-            else:
-                # For MIDI tab, just ensure ports are not None
-                input_port_objects = [p for p in input_port_objects if p is not None]
-                output_port_objects = [p for p in output_port_objects if p is not None]
-            
-            # Extract names from the filtered objects
-            input_ports = [p.name for p in input_port_objects]
-            output_ports = [p.name for p in output_port_objects]
-            
-            # Sort the names
-            input_ports = self._sort_ports(input_ports)
-            output_ports = self._sort_ports(output_ports)
-        except jack.JackError as e:
-            print(f"Error getting ports: {e}")
-            # Return current lists even if incomplete
-            pass
-        
-        return input_ports, output_ports
-    
-    def _sort_ports(self, port_names):
-        """
-        Sort port names in a natural order.
-        
-        Args:
-            port_names: The port names to sort
-            
-        Returns:
-            list: The sorted port names
-        """
-        def get_sort_key(port_name):
-            parts = re.split(r'(\d+)', port_name)
-            key = []
-            for part in parts:
-                if part.isdigit():
-                    key.append(int(part))
-                else:
-                    key.append(part.lower())
-            return key
-        
-        return sorted(port_names, key=get_sort_key)
-    
+    # _get_ports moved to PortManager
+    # _sort_ports moved to PortManager
+
     def start_startup_refresh(self):
         """Start the rapid refresh sequence on startup."""
         self.startup_refresh_count = 0
@@ -738,160 +830,74 @@ class JackConnectionManager(QMainWindow):
         if self.startup_refresh_count >= 3:
             self.startup_refresh_timer.stop()
             
-            # Apply collapse state after startup refresh is complete
-            if hasattr(self, 'collapse_all_checkbox') and self.collapse_all_checkbox.isChecked():
-                self.apply_collapse_state_to_all_trees()
-    
-    def toggle_auto_refresh(self, state):
-        """
-        Handle auto refresh toggle state change.
-        
-        Args:
-            state: The new state of the checkbox
-        """
-        is_checked = int(state) == 2  # Qt.CheckState.Checked equals 2
-        self.callbacks_enabled = is_checked
-        
-        # Start/stop and adjust visualization timers based on state and focus
-        if is_checked:
-            # Ensure timers are started (start_refresh_timer handles multiple calls safely)
-            self.connection_view.start_refresh_timer(self.refresh_visualizations, interval=1)
-            self.midi_connection_view.start_refresh_timer(self.refresh_visualizations, interval=1)
-            # Set the correct interval based on current focus
-            self._update_refresh_timer_interval()
-        else:
-            self.connection_view.stop_refresh_timer()
-            self.midi_connection_view.stop_refresh_timer()
-        
-        # Save state to config
-        self.config_manager.set_bool('auto_refresh_enabled', is_checked)
-    
-    def _update_refresh_timer_interval(self):
-        """Adjusts the visualization refresh timer interval based on focus and active tab."""
-        if self.callbacks_enabled:
-            if not self.is_focused:
-                interval = app_config.REFRESH_RATE_UNFOCUSED_MS  # Not focused
-            else:
-                # Window is focused, check the active tab
-                current_index = self.tab_widget.currentIndex()
-                if current_index == 0 or current_index == 1:  # Audio or MIDI tab
-                    interval = app_config.REFRESH_RATE_FOCUSED_MS
-                elif current_index == 2 or current_index == 3:  # pw-top or Latency Test tab
-                    interval = app_config.REFRESH_RATE_SPECIAL_TABS_MS
-                else:
-                    # Fallback for any other potential tabs
-                    interval = app_config.REFRESH_RATE_UNFOCUSED_MS
-            
-            try:
-                # Check if timers exist and are active before setting interval
-                if hasattr(self.connection_view, 'refresh_timer') and self.connection_view.refresh_timer.isActive():
-                    self.connection_view.refresh_timer.setInterval(interval)
-                if hasattr(self.midi_connection_view, 'refresh_timer') and self.midi_connection_view.refresh_timer.isActive():
-                    self.midi_connection_view.refresh_timer.setInterval(interval)
-            except AttributeError as e:
-                print(f"Warning: Could not access refresh_timer: {e}")
-    
+            # Apply collapse state after startup refresh is complete using UIStateManager
+            self.ui_state_manager.apply_collapse_state_to_all_trees(
+                collapse=self.ui_state_manager.collapse_checkbox.isChecked()
+            )
+
+    # --- UI State Methods Moved to UIStateManager ---
+    # (Commented out methods below are placeholders and their bodies were removed)
+
+    # def toggle_auto_refresh(self, state):
+    #     """Handled by UIStateManager.toggle_auto_refresh"""
+    #     pass
+
+    # def _update_refresh_timer_interval(self):
+    #     """Handled by UIStateManager._update_refresh_timer_interval"""
+    #     pass
+
     def changeEvent(self, event):
         """
         Handle window state changes, specifically activation.
-        
+
         Args:
             event: The change event
         """
         super().changeEvent(event)  # Call base implementation first
         if event.type() == event.Type.ActivationChange:
-            self.is_focused = self.isActiveWindow()
-            self._update_refresh_timer_interval()
-    
-    def toggle_collapse_all(self, state):
-        """
-        Handle collapse all toggle state change.
-        
-        Args:
-            state: The new state of the checkbox
-        """
-        is_checked = int(state) == 2  # Qt.CheckState.Checked equals 2
-        
-        # Apply to all trees
-        self.apply_collapse_state_to_all_trees()
-        
-        # Save state to config
-        self.config_manager.set_bool('collapse_all_enabled', is_checked)
-    
-    def apply_collapse_state_to_all_trees(self):
-        """Apply the current collapse state to all port trees."""
-        if hasattr(self, 'collapse_all_checkbox') and self.collapse_all_checkbox.isChecked():
-            # Collapse all trees regardless of current tab
-            if hasattr(self, 'input_tree'):
-                self.input_tree.collapseAllGroups()
-            if hasattr(self, 'output_tree'):
-                self.output_tree.collapseAllGroups()
-            if hasattr(self, 'midi_input_tree'):
-                self.midi_input_tree.collapseAllGroups()
-            if hasattr(self, 'midi_output_tree'):
-                self.midi_output_tree.collapseAllGroups()
-        else:
-            # Expand all trees
-            if hasattr(self, 'input_tree'):
-                self.input_tree.expandAllGroups()
-            if hasattr(self, 'output_tree'):
-                self.output_tree.expandAllGroups()
-            if hasattr(self, 'midi_input_tree'):
-                self.midi_input_tree.expandAllGroups()
-            if hasattr(self, 'midi_output_tree'):
-                self.midi_output_tree.expandAllGroups()
-        
-        # Update visualizations
-        self.refresh_visualizations()
-    
-    def apply_collapse_state_to_current_trees(self):
-        """Apply the collapse state to the currently visible trees only."""
-        if self.port_type == 'audio':
-            if hasattr(self, 'input_tree') and self.collapse_all_checkbox.isChecked():
-                self.input_tree.collapseAllGroups()
-            elif hasattr(self, 'input_tree'):
-                self.input_tree.expandAllGroups()
-            
-            if hasattr(self, 'output_tree') and self.collapse_all_checkbox.isChecked():
-                self.output_tree.collapseAllGroups()
-            elif hasattr(self, 'output_tree'):
-                self.output_tree.expandAllGroups()
-        elif self.port_type == 'midi':
-            if hasattr(self, 'midi_input_tree') and self.collapse_all_checkbox.isChecked():
-                self.midi_input_tree.collapseAllGroups()
-            elif hasattr(self, 'midi_input_tree'):
-                self.midi_input_tree.expandAllGroups()
-            
-            if hasattr(self, 'midi_output_tree') and self.collapse_all_checkbox.isChecked():
-                self.midi_output_tree.collapseAllGroups()
-            elif hasattr(self, 'midi_output_tree'):
-                self.midi_output_tree.expandAllGroups()
-    
-    def _update_untangle_button_text(self):
-        """Updates the text of the untangle button based on the current mode."""
-        modes = {
-            0: "Untangle: Off",
-            1: "Untangle: >>",
-            2: "Untangle: <<"
-        }
-        if self.untangle_button:  # Check if button exists before setting text
-            self.untangle_button.setText(modes.get(self.untangle_mode, "Untangle: Unknown"))
-    
-    def toggle_untangle_sort(self):
-        """Cycles the untangle sort mode and refreshes the port lists."""
-        self.untangle_mode = (self.untangle_mode + 1) % 3  # Cycle 0 -> 1 -> 2 -> 0
-        self.config_manager.set_int('untangle_mode', self.untangle_mode)
-        self._update_untangle_button_text()
-        print(f"Untangle sort mode set to: {self.untangle_mode}")
-        self.untangle_mode_changed.emit(self.untangle_mode)  # Emit signal
-        self.refresh_ports(refresh_all=True)  # Refresh both lists
-    
-    def _handle_untangle_shortcut(self):
-        """Handles the Alt+U shortcut for cycling untangle sort."""
-        # Animate the untangle button press
-        self._animate_button_press(self.untangle_button)
-        self.toggle_untangle_sort()  # Directly call the cycle method
-    
+            # Inform UIStateManager about focus change
+            if hasattr(self, 'ui_state_manager'): # Check if manager exists yet
+                 self.ui_state_manager.handle_focus_change(self.isActiveWindow())
+            # Timer interval update is handled within UIStateManager
+
+    # def toggle_collapse_all(self, state):
+    #     """Handled by UIStateManager.toggle_collapse_all"""
+    #     pass
+
+    # def apply_collapse_state_to_all_trees(self):
+    #     """Handled by UIStateManager.apply_collapse_state_to_all_trees"""
+    #     pass
+
+    # def apply_collapse_state_to_current_trees(self):
+    #     """Handled by UIStateManager.apply_collapse_state_to_current_trees"""
+    #     pass
+
+    # def _update_untangle_button_text(self):
+    #     """Handled by UIStateManager._update_untangle_button_text"""
+    #     pass
+
+    # def toggle_untangle_sort(self):
+    #     """Handled by UIStateManager.toggle_untangle_sort"""
+    #     pass
+
+    # def _handle_untangle_shortcut(self):
+    #     """Handled by UIStateManager._handle_untangle_shortcut"""
+    #     pass
+
+    # def increase_font_size(self):
+    #     """Handled by UIStateManager.increase_font_size"""
+    #     pass
+
+    # def decrease_font_size(self):
+    #     """Handled by UIStateManager.decrease_font_size"""
+    #     pass
+
+    # def _apply_port_list_font_size(self):
+    #     """Handled by UIStateManager._apply_port_list_font_size"""
+    #     pass
+
+    # --- End of Moved UI State Methods ---
+
     def _animate_button_press(self, button):
         """
         Animates a button press by briefly changing its style and then restoring it.
@@ -922,23 +928,8 @@ class JackConnectionManager(QMainWindow):
         # Restore original style after a short delay
         QTimer.singleShot(150, lambda: button.setStyleSheet(original_style))
     
-    def _handle_filter_change(self):
-        """Handles text changes in the shared filter boxes."""
-        current_index = self.tab_widget.currentIndex()
-        input_text = self.input_filter_edit.text()
-        output_text = self.output_filter_edit.text()
-        
-        if current_index == 0:  # Audio tab
-            if hasattr(self, 'input_tree'):
-                self.filter_ports(self.input_tree, input_text)
-            if hasattr(self, 'output_tree'):
-                self.filter_ports(self.output_tree, output_text)
-        elif current_index == 1:  # MIDI tab
-            if hasattr(self, 'midi_input_tree'):
-                self.filter_ports(self.midi_input_tree, input_text)
-            if hasattr(self, 'midi_output_tree'):
-                self.filter_ports(self.midi_output_tree, output_text)
-    
+    # _handle_filter_change moved to PortManager
+
     def _handle_port_registration(self, port, register: bool):
         """
         JACK callback for port registration events. This runs in JACK's thread.
@@ -953,35 +944,158 @@ class JackConnectionManager(QMainWindow):
                 return
             
             # Check if the port object has the required attributes before accessing them
-            port_name = None
-            is_input = False
-            
-            # Use hasattr checks first to avoid triggering AttributeErrors
-            if hasattr(port, 'name'):
-                try:
-                    port_name = port.name
-                    # Only proceed if we got a valid port name
-                    if not isinstance(port_name, str) or not port_name:
-                        return
-                except Exception:
+            port_name_str = None
+            client_name_str = "UnknownClient"
+            port_flags_val = 0
+            port_type_str = "UnknownType"
+            is_input_val = False
+
+            if not hasattr(port, 'name') or not hasattr(port, '_client') or \
+               (hasattr(port, '_client') and not hasattr(port._client, 'name')) or \
+               not hasattr(port, 'is_input'): # Temporarily removed flags and type checks from this initial guard
+                print(f"Port registration callback: Port object missing critical attributes (name, _client, _client.name, or is_input). Port: {port}")
+                self.graph_updated.emit() # Fallback to general refresh
+                return
+
+            try:
+                port_name_str = port.name
+                if not isinstance(port_name_str, str) or not port_name_str:
+                    print(f"Port registration callback: Invalid port name. Port: {port}")
+                    self.graph_updated.emit()
                     return
-            
-            if hasattr(port, 'is_input'):
-                try:
-                    is_input = port.is_input
-                except Exception:
-                    # Default to False if we can't determine input status
-                    is_input = False
-            
-            # Only emit signals if we successfully obtained port information
-            if port_name:
-                if register:
-                    self.port_registered.emit(port_name, is_input)
+
+                # Derive client_name_str from port.name
+                if ':' in port.name:
+                    client_name_str = port.name.split(':', 1)[0]
                 else:
-                    self.port_unregistered.emit(port_name, is_input)
+                    # This case should ideally not happen for client ports with a specific port part
+                    # but handle defensively. If port.name is just "client_name", use that.
+                    client_name_str = port.name
+                
+                # Attempt to get flags and type, with fallbacks
+                try:
+                    port_flags_val = port.flags # This is expected to fail
+                except AttributeError:
+                    port_flags_val = 0 # Fallback value
+
+                try:
+                    port_type_str = port.type # This is expected to fail
+                except AttributeError:
+                    if port.is_midi:
+                        port_type_str = "midi"
+                    elif port.is_audio:
+                        port_type_str = "audio"
+                    else:
+                        port_type_str = "unknown" # Fallback type string
+                
+                is_input_val = port.is_input
+
+            except Exception as ex_attrs:
+                print(f"Port registration callback: Error accessing critical port attributes for '{getattr(port, 'name', 'N/A')}': {ex_attrs}")
+                self.graph_updated.emit() # Fallback
+                return
+
+            if register:
+                self.port_added.emit(port_name_str, client_name_str, port_flags_val, port_type_str, is_input_val)
+                # Emit old signal for compatibility if needed by other parts
+                self.port_registered.emit(port_name_str, is_input_val)
+            else:
+                self.port_removed.emit(port_name_str, client_name_str)
+                # Emit old signal for compatibility
+                self.port_unregistered.emit(port_name_str, is_input_val)
+            
+            self.graph_updated.emit() # Emit graph_updated for port changes as a general notification
         except Exception as e:
             # Log any errors since this runs in a callback
             print(f"Port registration callback error: {type(e).__name__}: {e}")
+            self.graph_updated.emit() # Fallback
+
+    def _handle_client_registration(self, client_name: str, register: bool):
+        """
+        JACK callback for client registration events. This runs in JACK's thread.
+        Emits client_added or client_removed signals.
+        """
+        try:
+            if not isinstance(client_name, str) or not client_name:
+                print(f"Client registration callback: Invalid client_name '{client_name}'.")
+                self.graph_updated.emit() # Fallback
+                return
+
+            print(f"Client {'added' if register else 'removed'}: {client_name}")
+            if register:
+                self.client_added.emit(client_name)
+            else:
+                self.client_removed.emit(client_name)
+            
+            # Emit old signal for compatibility
+            self.client_registered.emit(client_name, register)
+            self.graph_updated.emit() # Emit graph_updated for client changes as a general notification
+        except Exception as e:
+            print(f"Client registration callback error: {type(e).__name__}: {e}")
+            self.graph_updated.emit() # Fallback
+
+    def _handle_port_connect_callback(self, port_a: jack.Port, port_b: jack.Port, are_connected: bool):
+        """
+        JACK callback for port connection events. Runs in JACK's thread.
+        Emits connection_made or connection_broken signals.
+        The arguments port_a and port_b are jack.Port objects.
+        """
+        try:
+            if not port_a or not hasattr(port_a, 'name') or \
+               not port_b or not hasattr(port_b, 'name') or \
+               not hasattr(port_a, 'is_output') or not hasattr(port_b, 'is_input'):
+                print(f"Port connect callback: Invalid port objects or missing attributes. Port A: {port_a}, Port B: {port_b}")
+                self.graph_updated.emit() # Fallback
+                return
+
+            port_a_name = port_a.name
+            port_b_name = port_b.name
+
+            out_port_name, in_port_name = "", ""
+            if port_a.is_output and port_b.is_input:
+                out_port_name, in_port_name = port_a_name, port_b_name
+            elif port_b.is_output and port_a.is_input: # JACK might call with (input, output)
+                out_port_name, in_port_name = port_b_name, port_a_name
+            else:
+                # This case should ideally not happen if JACK provides one output and one input.
+                print(f"Port connect callback: Ambiguous port types for {port_a_name} (is_output={port_a.is_output}) and {port_b_name} (is_input={port_b.is_input}). Refreshing graph.")
+                self.graph_updated.emit()
+                return
+
+            if are_connected:
+                print(f"Connection made: {out_port_name} -> {in_port_name}")
+                self.connection_made.emit(out_port_name, in_port_name)
+            else:
+                print(f"Connection broken: {out_port_name} -> {in_port_name}")
+                self.connection_broken.emit(out_port_name, in_port_name)
+            
+            # Emit old signal for compatibility
+            self.ports_connected.emit(out_port_name, in_port_name, are_connected)
+            self.graph_updated.emit() # Also signal general graph update
+
+        except jack.JackError as e:
+            print(f"JACK error in port_connect_callback: {e}")
+            self.graph_updated.emit() # Fallback
+        except AttributeError as e:
+            print(f"AttributeError in port_connect_callback. Port A: '{getattr(port_a, 'name', 'N/A')}', Port B: '{getattr(port_b, 'name', 'N/A')}'. Error: {e}")
+            self.graph_updated.emit() # Fallback
+        except Exception as e:
+            print(f"Unexpected error in port_connect_callback: {type(e).__name__}: {e}. Ports: A='{getattr(port_a, 'name', 'N/A')}', B='{getattr(port_b, 'name', 'N/A')}'")
+            self.graph_updated.emit() # Fallback
+
+    def _handle_shutdown_callback(self, status, reason):
+        """
+        JACK callback for server shutdown. Runs in JACK's thread.
+        Emits jack_shutdown_signal and graph_updated.
+        """
+        try:
+            print(f"JACK server shutdown: status={status}, reason='{reason}'")
+            # Potentially set an internal flag to prevent further JACK operations
+            # self.client = None # Or some other way to indicate client is gone
+            self.jack_shutdown_signal.emit()
+            self.graph_updated.emit() # Signal that graph needs to react
+        except Exception as e:
+            print(f"Error in shutdown_callback: {type(e).__name__}: {e}")
     
     def _on_port_registered(self, port_name: str, is_input: bool):
         """
@@ -991,9 +1105,10 @@ class JackConnectionManager(QMainWindow):
             port_name: The name of the port that was registered
             is_input: Whether the port is an input port
         """
-        if not self.callbacks_enabled:
+        # Check callbacks via UIStateManager
+        if not self.ui_state_manager.are_callbacks_enabled():
             return
-        
+
         # Check if this is a jack_delay port registration, and if so, attempt auto-connection via LatencyTester
         if (hasattr(self, 'latency_tester') and self.latency_tester is not None and
             (port_name == "jack_delay:in" or port_name == "jack_delay:out")):
@@ -1012,546 +1127,123 @@ class JackConnectionManager(QMainWindow):
             port_name: The name of the port that was unregistered
             is_input: Whether the port is an input port
         """
-        if not self.callbacks_enabled:
+        # Check callbacks via UIStateManager
+        if not self.ui_state_manager.are_callbacks_enabled():
             return
-        
+
         self.refresh_ports(refresh_all=True)
     
-    def _highlight_connected_outputs_for_input(self, input_name, is_midi):
-        """
-        Highlight output ports connected to the given input port.
-        
-        Args:
-            input_name: The name of the input port
-            is_midi: Whether the port is a MIDI port
-        """
-        try:
-            # Get only relevant output ports
-            output_ports = self.client.get_ports(is_output=True, is_midi=is_midi)
-            for output_port in output_ports:
-                try:
-                    connections = self.client.get_all_connections(output_port)
-                    if input_name in [conn.name for conn in connections]:
-                        if is_midi:
-                            self.highlight_midi_output(output_port.name, auto_highlight=True)
-                        else:
-                            self.highlight_output(output_port.name, auto_highlight=True)
-                except jack.JackError:
-                    continue
-        except jack.JackError as e:
-            print(f"Error highlighting connected outputs: {e}")
-    
-    def _highlight_connected_inputs_for_output(self, output_name, is_midi):
-        """
-        Highlight input ports connected to the given output port.
-        
-        Args:
-            output_name: The name of the output port
-            is_midi: Whether the port is a MIDI port
-        """
-        try:
-            # Get only relevant input ports
-            input_ports = self.client.get_ports(is_input=True, is_midi=is_midi)
-            for input_port in input_ports:
-                try:
-                    connections = self.client.get_all_connections(input_port)
-                    if output_name in [c.name for c in connections]:
-                        if is_midi:
-                            self.highlight_midi_input(input_port.name, auto_highlight=True)
-                        else:
-                            self.highlight_input(input_port.name, auto_highlight=True)
-                except jack.JackError:
-                    continue
-        except jack.JackError as e:
-            print(f"Error highlighting connected inputs: {e}")
-    
-    def _highlight_connected_output_groups_for_input_group(self, input_group_item, is_midi):
-        """
-        Finds and highlights output groups connected to the selected input group.
-        
-        Args:
-            input_group_item: The input group item
-            is_midi: Whether the port is a MIDI port
-        """
-        input_ports = self._get_ports_in_group(input_group_item)
-        if not input_ports:
-            return
-        
-        output_tree = self.midi_output_tree if is_midi else self.output_tree
-        highlight_func = self._highlight_group_item  # Use the new group highlight function
-        
-        try:
-            # Iterate through all output ports to find connections to any port in the input group
-            output_port_objects = self.client.get_ports(is_output=True, is_midi=is_midi)
-            connected_output_groups = set()  # Store names of groups to highlight
-            
-            for output_port in output_port_objects:
-                try:
-                    # Check if output port exists before querying
-                    if not any(p.name == output_port.name for p in self.client.get_ports(is_output=True, is_midi=is_midi)):
-                        continue
-                    connections = self.client.get_all_connections(output_port)
-                    # Check if this output port connects to *any* port in the selected input group
-                    if any(conn.name in input_ports for conn in connections):
-                        # Find the group this output port belongs to
-                        output_item = output_tree.port_items.get(output_port.name)
-                        if output_item and output_item.parent():
-                            connected_output_groups.add(output_item.parent().text(0))
-                except jack.JackError:
-                    continue  # Ignore errors for individual ports
-            
-            # Highlight the identified groups
-            for group_name in connected_output_groups:
-                highlight_func(output_tree, group_name)
-        
-        except jack.JackError as e:
-            print(f"Error highlighting connected output groups: {e}")
-    
-    def _highlight_connected_input_groups_for_output_group(self, output_group_item, is_midi):
-        """
-        Finds and highlights input groups connected to the selected output group.
-        
-        Args:
-            output_group_item: The output group item
-            is_midi: Whether the port is a MIDI port
-        """
-        output_ports = self._get_ports_in_group(output_group_item)
-        if not output_ports:
-            return
-        
-        input_tree = self.midi_input_tree if is_midi else self.input_tree
-        highlight_func = self._highlight_group_item  # Use the new group highlight function
-        
-        try:
-            connected_input_groups = set()  # Store names of groups to highlight
-            
-            # Iterate through all ports in the selected output group
-            for output_name in output_ports:
-                try:
-                    # Check if output port exists before querying
-                    if not any(p.name == output_name for p in self.client.get_ports(is_output=True, is_midi=is_midi)):
-                        continue
-                    # Get all connections *from* this specific output port
-                    connections = self.client.get_all_connections(output_name)
-                    for input_port in connections:
-                        # Find the group this connected input port belongs to
-                        input_item = input_tree.port_items.get(input_port.name)
-                        if input_item and input_item.parent():
-                            connected_input_groups.add(input_item.parent().text(0))
-                except jack.JackError:
-                    continue  # Ignore errors for individual ports
-            
-            # Highlight the identified groups
-            for group_name in connected_input_groups:
-                highlight_func(input_tree, group_name)
-        
-        except jack.JackError as e:
-            print(f"Error highlighting connected input groups: {e}")
-    
-    def _get_ports_in_group(self, item):
-        """
-        Get all ports in a group or just the single port if it's a port item.
-        
-        Args:
-            item: The tree item
-            
-        Returns:
-            list: The ports in the group
-        """
-        if not item:
-            return []
-        if item.childCount() == 0:  # It's a port item
-            port_name = item.data(0, Qt.ItemDataRole.UserRole)
-            return [port_name] if port_name else []
-        else:  # It's a group item
-            ports = []
-            for i in range(item.childCount()):
-                child = item.child(i)
-                port_name = child.data(0, Qt.ItemDataRole.UserRole)
-                if port_name:
-                    ports.append(port_name)
-            return ports
-    
-    def highlight_input(self, input_name, auto_highlight=False):
-        """
-        Highlight an input port.
-        
-        Args:
-            input_name: The name of the input port
-            auto_highlight: Whether to use the auto highlight color
-        """
-        self._highlight_tree_item(self.input_tree, input_name, auto_highlight)
-    
-    def highlight_output(self, output_name, auto_highlight=False):
-        """
-        Highlight an output port.
-        
-        Args:
-            output_name: The name of the output port
-            auto_highlight: Whether to use the auto highlight color
-        """
-        self._highlight_tree_item(self.output_tree, output_name, auto_highlight)
-    
-    def highlight_midi_input(self, input_name, auto_highlight=False):
-        """
-        Highlight a MIDI input port.
-        
-        Args:
-            input_name: The name of the MIDI input port
-            auto_highlight: Whether to use the auto highlight color
-        """
-        self._highlight_tree_item(self.midi_input_tree, input_name, auto_highlight)
-    
-    def highlight_midi_output(self, output_name, auto_highlight=False):
-        """
-        Highlight a MIDI output port.
-        
-        Args:
-            output_name: The name of the MIDI output port
-            auto_highlight: Whether to use the auto highlight color
-        """
-        self._highlight_tree_item(self.midi_output_tree, output_name, auto_highlight)
-    
-    def _highlight_tree_item(self, tree_widget, port_name, auto_highlight=False):
-        """
-        Highlight a specific port item in a tree widget.
-        
-        Args:
-            tree_widget: The tree widget
-            port_name: The name of the port
-            auto_highlight: Whether to use the auto highlight color
-        """
-        port_item = tree_widget.port_items.get(port_name)
-        if port_item:
-            port_item.setForeground(0, QBrush(
-                self.highlight_color if not auto_highlight else self.auto_highlight_color))
-    
-    def _highlight_group_item(self, tree_widget, group_name):
-        """
-        Highlight a specific group item in a tree widget.
-        
-        Args:
-            tree_widget: The tree widget
-            group_name: The name of the group
-        """
-        group_item = tree_widget.port_groups.get(group_name)
-        if group_item:
-            # Use the auto_highlight_color for connected groups
-            group_item.setForeground(0, QBrush(self.auto_highlight_color))
-    
-    def clear_highlights(self):
-        """Clear highlights from audio port trees."""
-        self._clear_tree_highlights(self.input_tree)
-        self._clear_tree_highlights(self.output_tree)
-    
-    def clear_midi_highlights(self):
-        """Clear highlights from MIDI port trees."""
-        self._clear_tree_highlights(self.midi_input_tree)
-        self._clear_tree_highlights(self.midi_output_tree)
-    
-    def _clear_tree_highlights(self, tree_widget):
-        """
-        Clear highlights from all group and port items in a tree widget.
-        
-        Args:
-            tree_widget: The tree widget
-        """
-        if not hasattr(tree_widget, 'topLevelItemCount'):
-            return  # Safety check
-        
-        for i in range(tree_widget.topLevelItemCount()):
-            group_item = tree_widget.topLevelItem(i)
-            # Reset group item highlight
-            group_item.setForeground(0, QBrush(self.text_color))
-            # Reset child item highlights
-            for j in range(group_item.childCount()):
-                child_item = group_item.child(j)
-                child_item.setForeground(0, QBrush(self.text_color))
-    
-    def highlight_drop_target_item(self, tree_widget, item):
-        """
-        Highlight an item when being dragged over.
-        
-        Args:
-            tree_widget: The tree widget
-            item: The item to highlight
-        """
-        item.setBackground(0, QBrush(self.drag_highlight_color))
-    
-    def clear_drop_target_highlight(self, tree_widget):
-        """
-        Clear drop target highlighting.
-        
-        Args:
-            tree_widget: The tree widget
-        """
-        if isinstance(tree_widget, QTreeWidget):
-            for i in range(tree_widget.topLevelItemCount()):
-                group_item = tree_widget.topLevelItem(i)
-                group_item.setBackground(0, QBrush(self.background_color))
-                for j in range(group_item.childCount()):
-                    child_item = group_item.child(j)
-                    child_item.setBackground(0, QBrush(self.background_color))
-    
-    def on_input_clicked(self, item, column):
-        """
-        Handle input port click.
-        
-        Args:
-            item: The clicked item
-            column: The clicked column
-        """
-        self._on_port_clicked(item, self.input_tree, self.output_tree, False)
-    
-    def on_midi_input_clicked(self, item, column):
-        """
-        Handle MIDI input port click.
-        
-        Args:
-            item: The clicked item
-            column: The clicked column
-        """
-        self._on_port_clicked(item, self.midi_input_tree, self.midi_output_tree, True)
-    
-    def on_output_clicked(self, item, column):
-        """
-        Handle output port click.
-        
-        Args:
-            item: The clicked item
-            column: The clicked column
-        """
-        self._on_port_clicked(item, self.output_tree, self.input_tree, False)
-    
-    def on_midi_output_clicked(self, item, column):
-        """
-        Handle MIDI output port click.
-        
-        Args:
-            item: The clicked item
-            column: The clicked column
-        """
-        self._on_port_clicked(item, self.midi_output_tree, self.midi_input_tree, True)
-    
-    def _on_port_clicked(self, item, clicked_tree, other_tree, is_midi):
-        """
-        Handle selection in tree widgets for ports and groups, respecting Ctrl modifier.
-        
-        Args:
-            item: The clicked item
-            clicked_tree: The tree that was clicked
-            other_tree: The other tree
-            is_midi: Whether the port is a MIDI port
-        """
-        # Check if Ctrl key is pressed during the click that triggered this handler
-        ctrl_pressed = QGuiApplication.keyboardModifiers() & Qt.KeyboardModifier.ControlModifier
-        
-        if not ctrl_pressed:
-            # --- Standard Click Behavior (No Ctrl) ---
-            # 1. Clear previous highlights
-            if is_midi:
-                self.clear_midi_highlights()
-            else:
-                self.clear_highlights()
-            
-            # Highlight the clicked item itself
-            port_name_or_group = item.data(0, Qt.ItemDataRole.UserRole) or item.text(0)
-            if is_midi:
-                if clicked_tree == self.midi_input_tree:
-                    self.highlight_midi_input(port_name_or_group)
-                else:
-                    self.highlight_midi_output(port_name_or_group)
-            else:
-                if clicked_tree == self.input_tree:
-                    self.highlight_input(port_name_or_group)
-                else:
-                    self.highlight_output(port_name_or_group)
-        
-        # --- Behavior for Both Ctrl+Click and Standard Click ---
-        # 3. Handle highlighting of connected items based on the *currently clicked* item
-        is_group_item = item.childCount() > 0
-        
-        if is_group_item:
-            # Group item clicked - highlight connected groups and update buttons
-            if is_midi:
-                if clicked_tree == self.midi_input_tree:
-                    self._highlight_connected_output_groups_for_input_group(item, is_midi)
-                else:  # Clicked on midi_output_tree
-                    self._highlight_connected_input_groups_for_output_group(item, is_midi)
-                self.update_midi_connection_buttons()
-            else:  # Audio
-                if clicked_tree == self.input_tree:
-                    self._highlight_connected_output_groups_for_input_group(item, is_midi)
-                else:  # Clicked on output_tree
-                    self._highlight_connected_input_groups_for_output_group(item, is_midi)
-                self.update_connection_buttons()
-        else:
-            # Port item clicked - perform highlighting and update buttons
-            port_name = item.data(0, Qt.ItemDataRole.UserRole)
-            if not port_name:
-                return  # Should not happen, but safety check
-            
-            if is_midi:
-                if clicked_tree == self.midi_input_tree:
-                    self.highlight_midi_input(port_name)
-                    self._highlight_connected_outputs_for_input(port_name, is_midi)
-                    self.update_midi_connection_buttons()
-                else:  # Clicked on midi_output_tree
-                    self.highlight_midi_output(port_name)
-                    self._highlight_connected_inputs_for_output(port_name, is_midi)
-                    self.update_midi_connection_buttons()
-            else:  # Audio
-                if clicked_tree == self.input_tree:
-                    self.highlight_input(port_name)
-                    self._highlight_connected_outputs_for_input(port_name, is_midi)
-                    self.update_connection_buttons()
-                else:  # Clicked on output_tree
-                    self.highlight_output(port_name)
-                    self._highlight_connected_inputs_for_output(port_name, is_midi)
-                    self.update_connection_buttons()
-    
+    # --- Highlighting methods removed, now handled by HighlightManager ---
+
+    # _highlight_connected_outputs_for_input -> highlight_manager._highlight_connected_outputs_for_input
+    # _highlight_connected_inputs_for_output -> highlight_manager._highlight_connected_inputs_for_output
+    # _highlight_connected_output_groups_for_input_group -> highlight_manager._highlight_connected_output_groups_for_input_group
+    # _highlight_connected_input_groups_for_output_group -> highlight_manager._highlight_connected_input_groups_for_output_group
+    # highlight_input -> highlight_manager.highlight_input
+    # highlight_output -> highlight_manager.highlight_output
+    # highlight_midi_input -> highlight_manager.highlight_midi_input
+    # highlight_midi_output -> highlight_manager.highlight_midi_output
+    # _highlight_tree_item -> highlight_manager._highlight_tree_item_by_name (internal)
+    # _highlight_group_item -> highlight_manager._highlight_group_item (internal)
+    # clear_highlights -> highlight_manager.clear_highlights
+    # clear_midi_highlights -> highlight_manager.clear_midi_highlights
+    # _clear_tree_highlights -> highlight_manager._clear_tree_highlights (internal)
+    # highlight_drop_target_item -> highlight_manager.highlight_drop_target_item
+    # clear_drop_target_highlight -> highlight_manager.clear_drop_target_highlight
+    # _get_ports_in_group -> highlight_manager._get_ports_in_group (internal)
+
+    # --- Port Click Handling Moved to InteractionManager ---
+    # on_input_clicked, on_midi_input_clicked, on_output_clicked,
+    # on_midi_output_clicked, _on_port_clicked methods removed.
+    # Signals are now connected directly to interaction_manager.handle_port_click
+    # in __init__.
+
+    # --- Methods now delegated to JackConnectionHandler ---
+
     def make_connection(self, output_name, input_name):
-        """
-        Make a connection between an output port and an input port.
-        
-        Args:
-            output_name: The name of the output port
-            input_name: The name of the input port
-        """
-        self._port_operation('connect', output_name, input_name, is_midi=False)
-    
+        """Make an audio connection (delegated)."""
+        self.jack_handler.make_connection(output_name, input_name)
+
     def make_midi_connection(self, output_name, input_name):
-        """
-        Make a MIDI connection between an output port and an input port.
-        
-        Args:
-            output_name: The name of the output port
-            input_name: The name of the input port
-        """
-        self._port_operation('connect', output_name, input_name, is_midi=True)
-    
+        """Make a MIDI connection (delegated)."""
+        self.jack_handler.make_midi_connection(output_name, input_name)
+
     def break_connection(self, output_name, input_name):
-        """
-        Break a connection between an output port and an input port.
-        
-        Args:
-            output_name: The name of the output port
-            input_name: The name of the input port
-        """
-        self._port_operation('disconnect', output_name, input_name, is_midi=False)
-    
+        """Break an audio connection (delegated)."""
+        self.jack_handler.break_connection(output_name, input_name)
+
     def break_midi_connection(self, output_name, input_name):
-        """
-        Break a MIDI connection between an output port and an input port.
+        """Break a MIDI connection (delegated)."""
+        self.jack_handler.break_midi_connection(output_name, input_name)
+
+    # _port_operation is now internal to JackConnectionHandler
+
+            # --- Methods using the handler ---
         
-        Args:
-            output_name: The name of the output port
-            input_name: The name of the input port
-        """
-        self._port_operation('disconnect', output_name, input_name, is_midi=True)
-    
-    def _port_operation(self, operation_type, output_name, input_name, is_midi):
-        """
-        Perform a port operation (connect or disconnect).
-        
-        Args:
-            operation_type: The operation type ('connect' or 'disconnect')
-            output_name: The name of the output port
-            input_name: The name of the input port
-            is_midi: Whether the ports are MIDI ports
-        """
-        try:
-            if operation_type == 'connect':
-                # Check if connection already exists before attempting to connect
-                try:
-                    connections = self.client.get_all_connections(output_name)
-                    if any(conn.name == input_name for conn in connections):
-                        print(f"Connection {output_name} -> {input_name} already exists, skipping")
-                        return
-                except jack.JackError:
-                    # If we can't check connections, try the connect anyway
-                    pass
-                
-                self.client.connect(output_name, input_name)
-                self.connection_history.add_action('connect', output_name, input_name)
-            else:
-                self.client.disconnect(output_name, input_name)
-                self.connection_history.add_action('disconnect', output_name, input_name)
-            
-            self.update_undo_redo_buttons()
-            self.update_connections()
-            self.refresh_ports()
-            self.update_connection_buttons()
-            self.update_midi_connection_buttons()
-        
-        except jack.JackError as e:
-            print(f"{operation_type.capitalize()} error: {e}")
-            # Don't crash on connection errors, just log them
-    
     def make_connection_selected(self):
-        """Connects selected items."""
+        """Connects selected items using the handler."""
         selected_input_items = self.input_tree.selectedItems()
         selected_output_items = self.output_tree.selectedItems()
-        
+
         # Get all ports from selected items (handles both ports and groups)
         selected_inputs = self._get_ports_from_selected_items(self.input_tree)
         selected_outputs = self._get_ports_from_selected_items(self.output_tree)
-        
+
         if not selected_inputs or not selected_outputs:
             print("Make Connection: Select at least one input and one output item (port or group).")
             return
-        
+
         print(f"Making connections (button): Outputs={selected_outputs}, Inputs={selected_inputs}")
-        # Use make_multiple_connections which handles the cross-product internally
-        self.make_multiple_connections(selected_outputs, selected_inputs)
-    
+        # Use handler's make_multiple_connections
+        self.jack_handler.make_multiple_connections(selected_outputs, selected_inputs)
+
     def make_midi_connection_selected(self):
-        """Connects selected MIDI items."""
+        """Connects selected MIDI items using the handler."""
         selected_input_items = self.midi_input_tree.selectedItems()
         selected_output_items = self.midi_output_tree.selectedItems()
-        
+
         # Get all ports from selected items (handles both ports and groups)
         selected_inputs = self._get_ports_from_selected_items(self.midi_input_tree)
         selected_outputs = self._get_ports_from_selected_items(self.midi_output_tree)
-        
+
         if not selected_inputs or not selected_outputs:
             print("Make MIDI Connection: Select at least one input and one output item (port or group).")
             return
-        
+
         print(f"Making MIDI connections (button): Outputs={selected_outputs}, Inputs={selected_inputs}")
-        # Use make_multiple_connections which handles the cross-product internally
-        self.make_multiple_connections(selected_outputs, selected_inputs)
-    
+        # Use handler's make_multiple_connections
+        self.jack_handler.make_multiple_connections(selected_outputs, selected_inputs)
+
     def break_connection_selected(self):
-        """Disconnects all selected output ports from all selected input ports."""
+        """Disconnects selected audio items using the handler."""
         selected_inputs = self._get_ports_from_selected_items(self.input_tree)
         selected_outputs = self._get_ports_from_selected_items(self.output_tree)
-        
+
         if not selected_inputs or not selected_outputs:
             print("Break Connection: Select at least one input and one output port.")
             return
-        
+
         print(f"Breaking connections for: Outputs={selected_outputs}, Inputs={selected_inputs}")
         for out_port in selected_outputs:
             for in_port in selected_inputs:
-                # We only need to attempt disconnection, Jack handles non-existent ones gracefully
-                self.break_connection(out_port, in_port)  # Use existing single disconnection method
-    
+                # Use handler's break_connection
+                self.jack_handler.break_connection(out_port, in_port)
+
     def break_midi_connection_selected(self):
-        """Disconnects all selected MIDI output ports from all selected MIDI input ports."""
+        """Disconnects selected MIDI items using the handler."""
         selected_inputs = self._get_ports_from_selected_items(self.midi_input_tree)
         selected_outputs = self._get_ports_from_selected_items(self.midi_output_tree)
-        
+
         if not selected_inputs or not selected_outputs:
             print("Break MIDI Connection: Select at least one input and one output MIDI port.")
             return
-        
+
         print(f"Breaking MIDI connections for: Outputs={selected_outputs}, Inputs={selected_inputs}")
         for out_port in selected_outputs:
             for in_port in selected_inputs:
-                # We only need to attempt disconnection, Jack handles non-existent ones gracefully
-                self.break_midi_connection(out_port, in_port)  # Use existing single MIDI disconnection method
-    
+                # Use handler's break_midi_connection
+                self.jack_handler.break_midi_connection(out_port, in_port)
+
     def _get_ports_from_selected_items(self, tree_widget):
         """
         Returns a list of unique port names from selected items (ports and groups) in a tree.
@@ -1579,134 +1271,13 @@ class JackConnectionManager(QMainWindow):
                     if port_name:
                         port_names.add(port_name)
         return list(port_names)  # Return as a list
-    
+
     def make_multiple_connections(self, outputs, inputs):
-        """
-        Connects multiple output ports to multiple input ports.
-        
-        Args:
-            outputs: The output ports
-            inputs: The input ports
-        """
-        if not outputs or not inputs:
-            print("Warning: make_multiple_connections called with empty outputs or inputs.")
-            return
-        
-        # Ensure inputs are lists for consistent handling
-        output_list = outputs if isinstance(outputs, list) else [outputs]
-        input_list = inputs if isinstance(inputs, list) else [inputs]
-        
-        if not output_list or not input_list:
-            print(f"Warning: make_multiple_connections called with empty lists after ensuring list type: outputs={output_list}, inputs={input_list}")
-            return
-        
-        # Determine if MIDI or Audio based on the current tab
-        is_midi = self.tab_widget.currentIndex() == 1  # Assuming MIDI is tab index 1
-        # Use _port_operation directly as it handles history and updates
-        operation_type = 'connect'
-        
-        num_outputs = len(output_list)
-        num_inputs = len(input_list)
-        made_connection_attempt = False
-        
-        print(f"make_multiple_connections: {num_outputs} outputs, {num_inputs} inputs. MIDI: {is_midi}")
-        
-        if num_outputs > 1 and num_inputs == 1:
-            # Group/List to Port: Connect all outputs to the single input
-            single_input = input_list[0]
-            print(f"  Scenario: Group/List ({num_outputs}) -> Port ({single_input})")
-            for output_name in output_list:
-                try:
-                    self._port_operation(operation_type, output_name, single_input, is_midi)
-                    made_connection_attempt = True
-                except jack.JackError as e:
-                    print(f"  Failed to connect {output_name} -> {single_input}: {e}")
-        
-        elif num_outputs == 1 and num_inputs > 1:
-            # Port to Group/List: Connect the single output to all inputs
-            single_output = output_list[0]
-            print(f"  Scenario: Port ({single_output}) -> Group/List ({num_inputs})")
-            for input_name in input_list:
-                try:
-                    self._port_operation(operation_type, single_output, input_name, is_midi)
-                    made_connection_attempt = True
-                except jack.JackError as e:
-                    print(f"  Failed to connect {single_output} -> {input_name}: {e}")
-        
-        elif num_outputs > 1 and num_inputs > 1:
-            # Group/List to Group/List: Use suffix matching then sequential matching
-            print(f"  Scenario: Group/List ({num_outputs}) -> Group/List ({num_inputs}) - Applying suffix/sequential matching")
-            
-            # Define common suffixes for matching
-            common_suffixes = [
-                '_FL', '_FR', '_SL', '_SR', '_FC', '_LFE', '_RL', '_RR',
-                '_L', '_R', '_1', '_2', '_3', '_4', '_5', '_6', '_7', '_8',
-                'left', 'right', 'Left', 'Right'
-            ]
-            
-            # Create copies to modify while iterating
-            unmatched_outputs = list(output_list)
-            unmatched_inputs = list(input_list)
-            connections_made_in_group = []  # Track connections made in this block
-            
-            # First pass: match by exact suffixes
-            for suffix in common_suffixes:
-                outputs_with_suffix = [p for p in unmatched_outputs if p.endswith(suffix)]
-                inputs_with_suffix = [p for p in unmatched_inputs if p.endswith(suffix)]
-                
-                # Pair up matching ports based on suffix
-                pairs_to_connect = min(len(outputs_with_suffix), len(inputs_with_suffix))
-                for i in range(pairs_to_connect):
-                    out_p = outputs_with_suffix[i]
-                    in_p = inputs_with_suffix[i]
-                    try:
-                        print(f"    Suffix Match ({suffix}): {out_p} -> {in_p}")
-                        # Use _port_operation directly to handle history correctly for each pair
-                        self._port_operation(operation_type, out_p, in_p, is_midi)
-                        connections_made_in_group.append((out_p, in_p))
-                        unmatched_outputs.remove(out_p)
-                        unmatched_inputs.remove(in_p)
-                        made_connection_attempt = True  # Set the outer flag
-                    except Exception as e:
-                        print(f"      Connection failed: {e}")
-            
-            # Second pass: try to match remaining ports sequentially
-            while unmatched_outputs and unmatched_inputs:
-                out_p = unmatched_outputs[0]
-                in_p = unmatched_inputs[0]
-                try:
-                    print(f"    Sequential Match: {out_p} -> {in_p}")
-                    # Use _port_operation directly
-                    self._port_operation(operation_type, out_p, in_p, is_midi)
-                    connections_made_in_group.append((out_p, in_p))
-                    made_connection_attempt = True  # Set the outer flag
-                except Exception as e:
-                    print(f"      Connection failed: {e}")
-                # Remove the matched ports regardless of success to avoid infinite loops on error
-                unmatched_outputs.pop(0)
-                unmatched_inputs.pop(0)
-            
-            print(f"  Group-to-group connection finished. Attempted {len(connections_made_in_group)} connections.")
-        
-        elif num_outputs == 1 and num_inputs == 1:
-            # Single Port to Single Port
-            single_output = output_list[0]
-            single_input = input_list[0]
-            print(f"  Scenario: Port ({single_output}) -> Port ({single_input})")
-            try:
-                self._port_operation(operation_type, single_output, single_input, is_midi)
-                made_connection_attempt = True
-            except jack.JackError as e:
-                print(f"  Failed to connect {single_output} -> {single_input}: {e}")
-        else:
-            # Should not happen if lists are not empty at the start
-            print(f"Warning: Unexpected case in make_multiple_connections: {num_outputs} outputs, {num_inputs} inputs")
-        
-        if made_connection_attempt:
-            print("Multiple connection process finished.")
-    
+        """Connects multiple ports (delegated)."""
+        self.jack_handler.make_multiple_connections(outputs, inputs)
+
     def update_connection_buttons(self):
-        """Update the state of the audio connection buttons."""
+        """Update the state of the audio connection buttons using the handler."""
         self._update_port_connection_buttons(self.input_tree, self.output_tree,
                                            self.connect_button, self.disconnect_button)
     
@@ -1741,9 +1312,9 @@ class JackConnectionManager(QMainWindow):
                 for in_p in selected_input_ports:
                     possible_connections.add((out_p, in_p))
             
-            # 2. Determine existing connections between the selected ports
-            existing_connections = self._get_existing_connections_between(selected_output_ports, selected_input_ports)
-            
+            # 2. Determine existing connections using the handler
+            existing_connections = self.jack_handler._get_existing_connections_between(selected_output_ports, selected_input_ports)
+
             # 3. Enable Connect if there are possible connections that don't already exist.
             if len(possible_connections) > 0 and possible_connections != existing_connections:
                 can_connect = True
@@ -1754,380 +1325,37 @@ class JackConnectionManager(QMainWindow):
         
         connect_button.setEnabled(can_connect)
         disconnect_button.setEnabled(can_disconnect)
-    
-    def _get_existing_connections_between(self, output_ports, input_ports):
-        """
-        Returns a set of existing (output, input) connection tuples between the given port lists.
-        
-        Args:
-            output_ports: The output ports
-            input_ports: The input ports
-            
-        Returns:
-            set: The existing connections
-        """
-        existing_connections = set()
-        if not output_ports or not input_ports:
-            return existing_connections
-        try:
-            # Convert input_ports to a set for faster lookups
-            input_ports_set = set(input_ports)
-            for out_port in output_ports:
-                # Check connections for this output port
-                try:
-                    # Determine if MIDI based on current tab context
-                    is_midi = self.tab_widget.currentIndex() == 1
-                    # Ensure port exists before querying
-                    if not any(p.name == out_port for p in self.client.get_ports(is_output=True, is_midi=is_midi)):
-                        continue
-                    
-                    connections = self.client.get_all_connections(out_port)
-                    for conn in connections:
-                        # If the connected input port is in our target input set, add the tuple
-                        if conn.name in input_ports_set:
-                            existing_connections.add((out_port, conn.name))
-                except jack.JackError:
-                    continue  # Ignore error for this specific output port
-            return existing_connections
-        except jack.JackError as e:
-            # Broader error during the process
-            print(f"Error getting existing connections: {e}")
-            return existing_connections  # Return what we have found so far or empty set
-    
+
+    # _get_existing_connections_between is now internal to JackConnectionHandler
+
     def update_undo_redo_buttons(self):
         """Update the state of the undo and redo buttons."""
-        self.undo_button.setEnabled(self.connection_history.can_undo())
-        self.redo_button.setEnabled(self.connection_history.can_redo())
-    
-    def undo_action(self):
-        """Undo the last connection action."""
-        # Animate the undo button press
-        self._animate_button_press(self.undo_button)
-        
-        action = self.connection_history.undo()
-        if action:
-            action_type, output_name, input_name = action
-            is_midi = 'midi' in output_name or 'midi' in input_name  # heuristic to determine midi or audio
-            try:
-                if action_type == 'connect':
-                    self.client.connect(output_name, input_name)
-                else:
-                    self.client.disconnect(output_name, input_name)
-                self.update_undo_redo_buttons()
-                self.update_connections()
-                self.refresh_ports()
-                self.update_connection_buttons()
-                self.update_midi_connection_buttons()
-            
-            except jack.JackError as e:
-                print(f"Undo error: {e}")
-    
-    def redo_action(self):
-        """Redo the last undone connection action."""
-        # Animate the redo button press
-        self._animate_button_press(self.redo_button)
-        
-        action = self.connection_history.redo()
-        if action:
-            action_type, output_name, input_name = action
-            is_midi = 'midi' in output_name or 'midi' in input_name  # heuristic to determine midi or audio
-            try:
-                if action_type == 'connect':
-                    self.client.connect(output_name, input_name)
-                else:
-                    self.client.disconnect(output_name, input_name)
-                self.update_undo_redo_buttons()
-                self.update_connections()
-                self.refresh_ports()
-                self.update_connection_buttons()
-                self.update_midi_connection_buttons()
-            except jack.JackError as e:
-                print(f"Redo error: {e}")
-    
+        # Check if buttons exist before enabling/disabling
+        if hasattr(self, 'undo_button') and self.undo_button:
+            self.undo_button.setEnabled(self.connection_history.can_undo())
+        if hasattr(self, 'redo_button') and self.redo_button:
+            self.redo_button.setEnabled(self.connection_history.can_redo())
+
+    # --- Action/Shortcut Setup and Handlers Moved to ActionManager ---
+    # def _setup_actions(self): ...
+    # def setup_shortcuts(self): ...
+    # def _handle_connect_shortcut(self): ...
+    # def _handle_disconnect_shortcut(self): ...
+    # def undo_action(self): ... (Now handled by ActionManager._handle_undo)
+    # def redo_action(self): ... (Now handled by ActionManager._handle_redo)
+    # def _handle_collapse_all_shortcut(self): ... (Handled via checkbox toggle -> UIStateManager)
+    # def _handle_auto_refresh_shortcut(self): ... (Handled via checkbox toggle -> UIStateManager)
+    # def _get_focused_tree_widget(self): ... (Moved to ActionManager)
+    # def _handle_move_group_up(self): ... (Moved to ActionManager)
+    # def _handle_move_group_down(self): ... (Moved to ActionManager)
+    # def _switch_focus_between_trees(self, forwards=True): ... (Moved to ActionManager)
+    # def _get_connected_ports(self, port_names, is_input_to_output=True, is_midi=False): ... (Moved to ActionManager)
+    # --- End of Moved Methods ---
+
     def disconnect_node(self, node_name):
-        """
-        Disconnect all connections from/to a specific port.
-        
-        Args:
-            node_name: The name of the port to disconnect
-        """
-        is_midi = 'midi' in node_name  # heuristic to determine midi or audio
-        
-        if node_name in [port.name for port in self.client.get_ports(is_input=True)]:
-            # Node is an input port, disconnect all outputs connected to it
-            for output_port in self.client.get_ports(is_output=True):
-                if node_name in [conn.name for conn in self.client.get_all_connections(output_port)]:
-                    if not is_midi:
-                        self.break_connection(output_port.name, node_name)
-                    else:
-                        self.break_midi_connection(output_port.name, node_name)
-        elif node_name in [port.name for port in self.client.get_ports(is_output=True)]:
-            # Node is an output port, disconnect all inputs it's connected to
-            for input_port in self.client.get_all_connections(node_name):
-                if not is_midi:
-                    self.break_connection(node_name, input_port.name)
-                else:
-                    self.break_midi_connection(node_name, input_port.name)
-    
-    def _setup_actions(self):
-        """Define all QAction objects for shortcuts and context menus."""
-        # Connect Shortcut (c)
-        self.connect_action = QAction("Connect Shortcut", self)
-        self.connect_action.setShortcut(QKeySequence(Qt.Key.Key_C))
-        self.connect_action.triggered.connect(self._handle_connect_shortcut)
-        
-        # Disconnect Shortcut (d/Delete)
-        self.disconnect_action = QAction("Disconnect Shortcut", self)
-        self.disconnect_action.setShortcuts([QKeySequence(Qt.Key.Key_D), QKeySequence(Qt.Key.Key_Delete)])
-        self.disconnect_action.triggered.connect(self._handle_disconnect_shortcut)
-        
-        # Undo Shortcut (Ctrl+Z)
-        self.undo_shortcut_action = QAction("Undo Shortcut", self)
-        self.undo_shortcut_action.setShortcut(QKeySequence.StandardKey.Undo)  # Standard Ctrl+Z
-        self.undo_shortcut_action.triggered.connect(self.undo_action)
-        
-        # Redo Shortcut (Ctrl+Y / Ctrl+Shift+Z)
-        self.redo_shortcut_action = QAction("Redo Shortcut", self)
-        self.redo_shortcut_action.setShortcuts([QKeySequence.StandardKey.Redo, QKeySequence("Ctrl+Y")])
-        self.redo_shortcut_action.triggered.connect(self.redo_action)
-        
-        # Refresh Shortcut (r)
-        self.refresh_shortcut_action = QAction("Refresh Shortcut", self)
-        self.refresh_shortcut_action.setShortcut(QKeySequence(Qt.Key.Key_R))
-        self.refresh_shortcut_action.triggered.connect(lambda: self.refresh_ports(from_shortcut=True))
-        
-        # Collapse All Shortcut (Alt+C)
-        self.collapse_all_shortcut_action = QAction("Collapse All Shortcut", self)
-        self.collapse_all_shortcut_action.setShortcut(QKeySequence("Alt+C"))
-        self.collapse_all_shortcut_action.triggered.connect(self._handle_collapse_all_shortcut)
-        
-        # Auto Refresh Shortcut (Alt+R)
-        self.auto_refresh_shortcut_action = QAction("Auto Refresh Shortcut", self)
-        self.auto_refresh_shortcut_action.setShortcut(QKeySequence("Alt+R"))
-        self.auto_refresh_shortcut_action.triggered.connect(self._handle_auto_refresh_shortcut)
-        
-        # Untangle Shortcut (Alt+U)
-        self.untangle_shortcut_action = QAction("Untangle Shortcut", self)
-        self.untangle_shortcut_action.setShortcut(QKeySequence("Alt+U"))
-        self.untangle_shortcut_action.triggered.connect(self._handle_untangle_shortcut)
-        
-        # Font Size Increase Shortcut (Ctrl++/Ctrl+=)
-        self.increase_font_action = QAction("Increase Font Size", self)
-        self.increase_font_action.setShortcuts([
-            QKeySequence.StandardKey.ZoomIn,  # Standard Ctrl++
-            QKeySequence("Ctrl++"),
-            QKeySequence("Ctrl+=")
-        ])
-        self.increase_font_action.triggered.connect(self.increase_font_size)
-        
-        # Font Size Decrease Shortcut (Ctrl+-)
-        self.decrease_font_action = QAction("Decrease Font Size", self)
-        self.decrease_font_action.setShortcut(QKeySequence.StandardKey.ZoomOut)  # Standard Ctrl+-
-        self.decrease_font_action.triggered.connect(self.decrease_font_size)
-        
-        # Tab key for switching focus between trees
-        self.tab_switch_action = QAction("Switch Focus Forwards", self)
-        self.tab_switch_action.setShortcut(QKeySequence(Qt.Key.Key_Tab))
-        self.tab_switch_action.triggered.connect(lambda: self._switch_focus_between_trees(forwards=True))
-        
-        # Shift+Tab for switching focus in reverse
-        self.tab_switch_back_action = QAction("Switch Focus Backwards", self)
-        self.tab_switch_back_action.setShortcut(QKeySequence(Qt.Key.Key_Backtab))  # Backtab is Shift+Tab
-        self.tab_switch_back_action.triggered.connect(lambda: self._switch_focus_between_trees(forwards=False))
-        
-        # --- Preset Shortcuts (Global) ---
-        # Save Preset Shortcut (Ctrl+S)
-        self.save_preset_action = QAction("Save Preset Shortcut", self)
-        self.save_preset_action.setShortcut(QKeySequence("Ctrl+S"))
-        self.save_preset_action.triggered.connect(self.preset_handler._save_current_loaded_preset)
-        self.save_preset_action.setEnabled(False)  # Initially disabled
-        
-        # Default Preset Shortcut (Ctrl+Shift+R)
-        self.default_preset_action = QAction("Default Preset Shortcut", self)
-        self.default_preset_action.setShortcut(QKeySequence("Ctrl+Shift+R"))
-        self.default_preset_action.triggered.connect(self.preset_handler._handle_default_preset_action)
-        
-        # --- PortTreeWidget Actions (Move Up/Down) ---
-        self.move_group_up_action = QAction("Move Up", self)
-        self.move_group_up_action.setShortcut(QKeySequence("Alt+Up"))
-        self.move_group_up_action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)  # Context needed
-        self.move_group_up_action.triggered.connect(self._handle_move_group_up)
-        
-        self.move_group_down_action = QAction("Move Down", self)
-        self.move_group_down_action.setShortcut(QKeySequence("Alt+Down"))
-        self.move_group_down_action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)  # Context needed
-        self.move_group_down_action.triggered.connect(self._handle_move_group_down)
-    
-    def setup_shortcuts(self):
-        """Add the pre-defined QAction objects (with shortcuts) to the main window."""
-        # Actions are defined in _setup_actions
-        self.addAction(self.connect_action)
-        self.addAction(self.disconnect_action)
-        self.addAction(self.undo_shortcut_action)
-        self.addAction(self.redo_shortcut_action)
-        self.addAction(self.refresh_shortcut_action)
-        self.addAction(self.collapse_all_shortcut_action)
-        self.addAction(self.auto_refresh_shortcut_action)
-        self.addAction(self.untangle_shortcut_action)
-        self.addAction(self.increase_font_action)
-        self.addAction(self.decrease_font_action)
-        self.addAction(self.tab_switch_action)
-        self.addAction(self.tab_switch_back_action)
-        self.addAction(self.save_preset_action)
-        self.addAction(self.default_preset_action)
-        self.addAction(self.move_group_up_action)
-        self.addAction(self.move_group_down_action)
-    
-    def _handle_connect_shortcut(self):
-        """Calls the appropriate connect method based on the current tab."""
-        current_index = self.tab_widget.currentIndex()
-        if current_index == 0:  # Audio Tab
-            self._animate_button_press(self.connect_button)
-            self.make_connection_selected()
-        elif current_index == 1:  # MIDI Tab
-            self._animate_button_press(self.midi_connect_button)
-            self.make_midi_connection_selected()
-        # Ignore if on other tabs
-    
-    def _handle_disconnect_shortcut(self):
-        """Calls the appropriate disconnect method based on the current tab."""
-        current_index = self.tab_widget.currentIndex()
-        if current_index == 0:  # Audio Tab
-            self._animate_button_press(self.disconnect_button)
-            self.break_connection_selected()
-        elif current_index == 1:  # MIDI Tab
-            self._animate_button_press(self.midi_disconnect_button)
-            self.break_midi_connection_selected()
-        # Ignore if on other tabs
-    
-    def _handle_collapse_all_shortcut(self):
-        """Toggles the 'Collapse All' checkbox."""
-        if hasattr(self, 'collapse_all_checkbox'):
-            self.collapse_all_checkbox.toggle()
-    
-    def _handle_auto_refresh_shortcut(self):
-        """Handles the Alt+R shortcut to toggle the auto-refresh checkbox."""
-        if hasattr(self, 'auto_refresh_checkbox'):
-            self.auto_refresh_checkbox.toggle()
-    
-    def _get_focused_tree_widget(self):
-        """Finds which PortTreeWidget currently has focus."""
-        focused_widget = QApplication.focusWidget()
-        if hasattr(focused_widget, 'port_items'):
-            return focused_widget
-        # Check parents if focus is on a child widget within the tree
-        while focused_widget is not None:
-            if hasattr(focused_widget, 'port_items'):
-                return focused_widget
-            focused_widget = focused_widget.parent()
-        return None
-    
-    def _handle_move_group_up(self):
-        """Handles the global 'Move Up' action trigger."""
-        focused_tree = self._get_focused_tree_widget()
-        if focused_tree:
-            item = focused_tree.currentItem()
-            if item and item.parent() is None:  # Only move top-level items (groups)
-                focused_tree.move_group_up(item)
-    
-    def _handle_move_group_down(self):
-        """Handles the global 'Move Down' action trigger."""
-        focused_tree = self._get_focused_tree_widget()
-        if focused_tree:
-            item = focused_tree.currentItem()
-            if item and item.parent() is None:  # Only move top-level items (groups)
-                focused_tree.move_group_down(item)
-    
-    def _switch_focus_between_trees(self, forwards=True):
-        """Switch focus between output and input trees in the current tab."""
-        current_tab = self.tab_widget.currentIndex()
-        is_midi = current_tab == 1
-        
-        if current_tab == 0:  # Audio tab
-            trees = [self.output_tree, self.input_tree] if forwards else [self.input_tree, self.output_tree]
-        elif current_tab == 1:  # MIDI tab
-            trees = [self.midi_output_tree, self.midi_input_tree] if forwards else [self.midi_input_tree, self.midi_output_tree]
-        else:
-            return  # Do nothing on other tabs
-        
-        # Find which tree currently has focus
-        current_tree = None
-        for tree in trees:
-            if tree.hasFocus():
-                current_tree = tree
-                break
-        
-        # Switch focus to the other tree
-        if current_tree:
-            other_tree = trees[1] if current_tree == trees[0] else trees[0]
-            
-            # Get selected ports from current tree
-            selected_ports = self._get_ports_from_selected_items(current_tree)
-            
-            # Find connected ports in the other tree
-            if selected_ports:
-                # Determine direction based on which tree we're moving from
-                is_input_to_output = current_tree in (self.input_tree, self.midi_input_tree)
-                connected_ports = self._get_connected_ports(selected_ports, is_input_to_output, is_midi)
-                
-                # Clear current selection in destination tree
-                other_tree.clearSelection()
-                
-                # Select connected ports in destination tree
-                for port_name in connected_ports:
-                    port_item = other_tree.port_items.get(port_name)
-                    if port_item:
-                        port_item.setSelected(True)
-            
-            # Set focus to destination tree
-            other_tree.setFocus()
-            
-            # Update button states after selection and focus change
-            if is_midi:
-                self.update_midi_connection_buttons()
-            else:
-                self.update_connection_buttons()
-        else:
-            # If no tree has focus, focus the first one
-            trees[0].setFocus()
-    
-    def _get_connected_ports(self, port_names, is_input_to_output=True, is_midi=False):
-        """
-        Get connected ports for the given port names.
-        
-        Args:
-            port_names: The port names to get connected ports for
-            is_input_to_output: Whether to get output ports connected to input ports
-            is_midi: Whether the ports are MIDI ports
-            
-        Returns:
-            list: The connected ports
-        """
-        connected_ports = set()
-        try:
-            if is_input_to_output:
-                # From input to output - look at all output ports
-                output_ports = self.client.get_ports(is_output=True, is_midi=is_midi)
-                for output_port in output_ports:
-                    try:
-                        connections = self.client.get_all_connections(output_port)
-                        # If this output connects to any of our input ports
-                        if any(conn.name in port_names for conn in connections):
-                            connected_ports.add(output_port.name)
-                    except jack.JackError:
-                        continue
-            else:
-                # From output to input - just get direct connections
-                for port_name in port_names:
-                    try:
-                        connections = self.client.get_all_connections(port_name)
-                        connected_ports.update(conn.name for conn in connections)
-                    except jack.JackError:
-                        continue
-        except jack.JackError as e:
-            print(f"Error getting connected ports: {e}")
-        return list(connected_ports)
-    
+        """Disconnect all connections for a port (delegated)."""
+        self.jack_handler.disconnect_node(node_name)
+
     def increase_font_size(self):
         """Increases the font size for port lists."""
         max_size = 24
@@ -2319,9 +1547,9 @@ class JackConnectionManager(QMainWindow):
         
         for port_name in ports_to_disconnect:
             # Use the existing disconnect_node logic which handles connections
-            # and updates history/UI via break_connection/_port_operation
-            self.disconnect_node(port_name)
-    
+            # Use the handler's disconnect_node method
+            self.jack_handler.disconnect_node(port_name)
+
     def closeEvent(self, event):
         """
         Handle window closing behavior.
@@ -2333,9 +1561,13 @@ class JackConnectionManager(QMainWindow):
         event.accept()
         QApplication.quit()
         
+        # Clean up UIStateManager (stops its timers etc.)
+        if hasattr(self, 'ui_state_manager'):
+            self.ui_state_manager.cleanup()
+
         # Clean up JACK client and deactivate callbacks
         if hasattr(self, 'client'):
-            self.callbacks_enabled = False
+            # self.callbacks_enabled = False # State managed by UIStateManager
             self.client.deactivate()
             self.client.close()
         
@@ -2346,36 +1578,155 @@ class JackConnectionManager(QMainWindow):
         # Stop pw-top monitor before closing
         if hasattr(self, 'pwtop_monitor') and self.pwtop_monitor is not None:
             self.pwtop_monitor.stop()
+
+        # Ensure graph node positions are saved before stopping its handler
+        # REMOVED: Saving on exit is no longer desired. States are saved immediately on change.
+        # if hasattr(self, 'graph_main_window') and self.graph_main_window and \
+        #    hasattr(self.graph_main_window, 'scene') and self.graph_main_window.scene and \
+        #    hasattr(self.graph_main_window, 'view') and self.graph_main_window.view:
+        #     print("JackConnectionManager.closeEvent: Saving graph node states and zoom...")
+        #     current_graph_zoom = self.graph_main_window.view.get_zoom_level()
+        #     print(f"JackConnectionManager.closeEvent: Retrieved graph_zoom_level = {current_graph_zoom}") # DEBUG
+        #     self.graph_main_window.scene.save_node_states(graph_zoom_level=current_graph_zoom)
+        # elif hasattr(self, 'graph_main_window') and self.graph_main_window and \
+        #      hasattr(self.graph_main_window, 'scene') and self.graph_main_window.scene:
+        #     # Fallback if view is not available for some reason, save without zoom
+        #     print("JackConnectionManager.closeEvent: Saving graph node states (view not found, zoom not saved)...")
+        #     self.graph_main_window.scene.save_node_states()
+
+
+        # Stop graph_jack_handler before closing
+        if hasattr(self, 'graph_jack_handler') and self.graph_jack_handler:
+            print("Stopping Graph JackHandler on close...")
+            self.graph_jack_handler.stop()
+            # MainWindow.closeEvent for graph also calls stop, but good to be explicit.
         
         # Stop latency test process before closing
         if hasattr(self, 'latency_tester') and self.latency_tester is not None:
             self.latency_tester.stop_latency_test()
 
     def _get_current_connections(self):
-        """Gets the current state of all JACK audio and MIDI connections."""
-        all_connections = []
-        try:
-            # Get all output ports (both audio and MIDI)
-            output_ports = self.client.get_ports(is_output=True)
-            for output_port in output_ports:
-                try:
-                    # Check if port still exists before getting connections
-                    if not any(p.name == output_port.name for p in self.client.get_ports(is_output=True)):
-                        continue
-                    connected_inputs = self.client.get_all_connections(output_port)
-                    port_type = "midi" if output_port.is_midi else "audio"
-                    for input_port in connected_inputs:
-                        # Ensure the connected port is also of the same type (should always be true)
-                        if input_port.is_midi == output_port.is_midi:
-                             all_connections.append({
-                                 "output": output_port.name,
-                                 "input": input_port.name,
-                                 "type": port_type
-                             })
-                except jack.JackError as conn_err:
-                    # Ignore errors getting connections for a single port (it might have disappeared)
-                    print(f"Warning: Could not get connections for {output_port.name}: {conn_err}")
-                    continue
-        except jack.JackError as e:
-            print(f"Error getting current connections: {e}")
-        return all_connections
+        """Gets current connections (delegated)."""
+        # This method is primarily used by PresetHandler, which will need updating
+        # For now, just delegate the call.
+        return self.jack_handler._get_current_connections()
+
+    def notify_connection_history_changed(self):
+        """
+        Notifies that the connection history has changed, so UI elements
+        like the Graph tab's undo/redo buttons can be updated.
+        """
+        # Update the main undo/redo buttons
+        self.update_undo_redo_buttons()
+
+        # Update the graph tab's undo/redo buttons if the graph_main_window exists
+        if hasattr(self, 'graph_main_window') and self.graph_main_window:
+            if hasattr(self.graph_main_window, '_update_graph_undo_redo_buttons_state'):
+                self.graph_main_window._update_graph_undo_redo_buttons_state()
+
+    @pyqtSlot()
+    def toggle_graph_fullscreen(self):
+        """Toggles native fullscreen mode and hides UI chrome for the graph tab."""
+        if not hasattr(self, 'tab_widget') or not hasattr(self, 'graph_tab_widget'):
+            print("Error: Tab widget or graph_tab_widget not found.")
+            return
+
+        # Ensure this action is only for the graph tab, which should be at index 2
+        # The signal comes from the graph view, implying it has focus, so its tab should be active.
+        if self.tab_widget.widget(2) != self.graph_tab_widget or self.tab_widget.currentWidget() != self.graph_tab_widget:
+            print("Graph fullscreen toggle requested, but graph tab is not active or not found at index 2.")
+            return
+
+        self._graph_is_fullscreen = not self._graph_is_fullscreen
+
+        components_to_manage = []
+        if self.menuBar():
+            components_to_manage.append(self.menuBar())
+        if self.statusBar():
+            components_to_manage.append(self.statusBar())
+        
+        # Add QMainWindow's direct toolbars
+        for toolbar in self.findChildren(QToolBar):
+            if toolbar.parent() == self:
+                components_to_manage.append(toolbar)
+
+        if hasattr(self.tab_widget, 'tabBar'):
+            components_to_manage.append(self.tab_widget.tabBar())
+
+        if self._graph_is_fullscreen:
+            self._widgets_original_visibility.clear() # Clear before populating
+
+            # Store visibility of chrome widgets and hide them
+            for widget in components_to_manage:
+                if widget: # Ensure widget exists
+                    self._widgets_original_visibility[widget] = widget.isVisible()
+                    widget.hide()
+            
+            # Hide the standard bottom controls panel
+            self.show_bottom_controls(False)
+            
+            # Store enabled state of other tabs and disable them
+            for i in range(self.tab_widget.count()):
+                tab_page_widget = self.tab_widget.widget(i)
+                if tab_page_widget != self.graph_tab_widget:
+                    # Ensure we don't overwrite chrome widget states if a tab page somehow is one (highly unlikely)
+                    if tab_page_widget not in self._widgets_original_visibility:
+                         self._widgets_original_visibility[tab_page_widget] = self.tab_widget.isTabEnabled(i)
+                    self.tab_widget.setTabEnabled(i, False)
+            
+            # Hide internal controls within the graph tab itself
+            if hasattr(self, 'graph_main_window') and self.graph_main_window and hasattr(self.graph_main_window, 'toggle_internal_controls'):
+                self.graph_main_window.toggle_internal_controls(False)
+
+            # Enter native fullscreen
+            self.showFullScreen()
+
+        else: # Exiting fullscreen
+            # Exit native fullscreen first
+            self.showNormal() # Or self.showMaximized() if you want to restore maximization
+
+            # Show internal controls within the graph tab itself first
+            if hasattr(self, 'graph_main_window') and self.graph_main_window and hasattr(self.graph_main_window, 'toggle_internal_controls'):
+                self.graph_main_window.toggle_internal_controls(True)
+
+            # Re-evaluate which components were considered chrome widgets for visibility
+            chrome_widgets_managed_on_exit = []
+            if self.menuBar(): chrome_widgets_managed_on_exit.append(self.menuBar())
+            if self.statusBar(): chrome_widgets_managed_on_exit.append(self.statusBar())
+            for toolbar in self.findChildren(QToolBar):
+                if toolbar.parent() == self: # Only direct toolbars of QMainWindow
+                    chrome_widgets_managed_on_exit.append(toolbar)
+            if hasattr(self.tab_widget, 'tabBar') and self.tab_widget.tabBar(): # Check tabBar exists
+                chrome_widgets_managed_on_exit.append(self.tab_widget.tabBar())
+
+            for item_widget, original_state in self._widgets_original_visibility.items():
+                if item_widget in chrome_widgets_managed_on_exit:
+                    # This item was a chrome widget; original_state is its visibility
+                    if item_widget and original_state: # original_state is True (was visible)
+                        item_widget.show()
+                else:
+                    # This item should be a tab page widget (other than the graph tab)
+                    # original_state is its original enabled status
+                    tab_index_to_restore = -1
+                    for i in range(self.tab_widget.count()):
+                        if self.tab_widget.widget(i) == item_widget:
+                            tab_index_to_restore = i
+                            break
+                    
+                    # Ensure it's indeed a tab page we stored and not the graph tab itself
+                    if tab_index_to_restore != -1 and self.tab_widget.widget(tab_index_to_restore) != self.graph_tab_widget:
+                        if original_state: # original_state is True (was enabled)
+                            self.tab_widget.setTabEnabled(tab_index_to_restore, True)
+            
+            self._widgets_original_visibility.clear()
+            
+            # The visibility of bottom controls is handled by switch_tab when on graph tab.
+            # Since we are on the graph tab (index 2), switch_tab ensures show_bottom_controls(False).
+            # So, no explicit call to show_bottom_controls is needed here when exiting.
+
+        # Force the main window and graph tab to re-layout to reflect changes.
+        if self.centralWidget() and self.centralWidget().layout():
+            self.centralWidget().layout().activate()
+        if self.graph_tab_widget and self.graph_tab_widget.layout():
+            self.graph_tab_widget.layout().activate()
+        # self.adjustSize() # May or may not be needed

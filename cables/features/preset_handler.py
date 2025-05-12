@@ -28,8 +28,14 @@ class PresetHandler:
         self._preset_menu_name_edit = None
 
     def _show_preset_menu(self):
-        """Creates and shows the preset management menu."""
-        menu = QMenu(self.manager)  # Parent is the main window
+        """Populates the preset management menu. Assumes menu is sender()."""
+        menu = self.manager.sender() # Get the menu that emitted aboutToShow
+        if not menu or not isinstance(menu, QMenu):
+            print("Error: _show_preset_menu called without a valid QMenu sender.")
+            return
+        
+        menu.clear() # Clear previous items before repopulating
+        
         preset_names = self.manager.preset_manager.get_preset_names()
 
         # --- Save Section ---
@@ -72,12 +78,21 @@ class PresetHandler:
         # --- Load Section ---
         load_menu = menu.addMenu("Load Preset")  # Create menu even if no presets exist
 
-        # Add "Default" option at the top
-        default_action = QAction("Default", load_menu)
-        default_action.setShortcut(QKeySequence("Ctrl+Shift+R"))
-        default_action.triggered.connect(self._handle_default_preset_action)
-        load_menu.addAction(default_action)
+        # --- MODIFICATION START ---
+        # Add the global "Default" action from ActionManager
+        if hasattr(self.manager, 'action_manager') and \
+           hasattr(self.manager.action_manager, 'default_preset_action') and \
+           self.manager.action_manager.default_preset_action:
+            load_menu.addAction(self.manager.action_manager.default_preset_action)
+        else:
+            # Fallback or error logging if the action isn't found
+            error_action = QAction("Default (Action Init Error)", load_menu)
+            error_action.setEnabled(False)
+            load_menu.addAction(error_action)
+            print("Error: Could not find global default_preset_action in PresetHandler.")
+
         load_menu.addSeparator()  # Add separator after "Default"
+        # --- MODIFICATION END ---
 
         if preset_names:
             for name in preset_names:
@@ -130,19 +145,15 @@ class PresetHandler:
             startup_menu.addAction(startup_action)
             startup_group.addAction(startup_action)  # Add to group
 
-        # Show the menu at the presets button position
-        # Determine which button to use based on current tab
-        current_tab_index = self.manager.tab_widget.currentIndex()
-        button_to_use = self.manager.presets_button if current_tab_index == 0 else self.manager.midi_presets_button
-
-        if button_to_use:  # Check if the button exists for the current tab
-            presets_button_pos = button_to_use.mapToGlobal(QPoint(0, button_to_use.height()))
-            menu.exec(presets_button_pos)
-        else:
-            print("Warning: Could not find presets button for the current tab to show menu.")
-
-        # Clean up reference to the line edit after the menu is closed
-        self._preset_menu_name_edit = None
+        # Menu is now shown automatically by the QToolButton.
+        # The positioning logic (button_to_use, menu.exec) is no longer needed here.
+        # self._preset_menu_name_edit is handled because the QLineEdit is a child of the menu,
+        # and the menu is cleared/repopulated on each aboutToShow.
+        # If _save_current_preset_from_menu is not called, _preset_menu_name_edit might point
+        # to a deleted widget if not careful, but it's reassigned at the start of _show_preset_menu
+        # or when the QLineEdit is created.
+        # The QLineEdit is created fresh each time, so self._preset_menu_name_edit is always updated.
+        # No explicit cleanup of self._preset_menu_name_edit is needed here after menu.exec removal.
 
     def _save_current_preset_from_menu(self):
         """Saves the current connections using the name from the menu's line edit."""

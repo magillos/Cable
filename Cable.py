@@ -18,6 +18,7 @@ from cable_core.tray import TrayManager # Added import
 from cable_core.pipewire import PipewireManager # Added import
 from cable_core.process import ProcessManager
 from cable_core.updates import UpdateManager # Added import
+from cable_core.app_config import APP_VERSION # Import APP_VERSION
 from cable_core import app_config
 from PyQt6.QtCore import Qt, QTimer, QFile, QMargins, QProcess, QEvent
 from PyQt6.QtGui import QFont, QIcon, QGuiApplication, QActionGroup, QAction
@@ -27,8 +28,6 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                              QCheckBox, QSystemTrayIcon, QMenu, QDialog, QDialogButtonBox,
                              QScrollArea, QWidgetAction)
 
-# --- Application Version ---
-APP_VERSION = "0.9.6"
 # -------------------------
 
 # --- Constants ---

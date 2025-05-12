@@ -17,17 +17,19 @@ class PortTreeWidget(QTreeWidget):
     """
     
     itemDragged = pyqtSignal(QTreeWidgetItem)
-    
-    def __init__(self, port_role, parent=None):
+
+    def __init__(self, port_role, highlight_manager, parent=None):
         """
         Initialize the PortTreeWidget.
-        
+
         Args:
             port_role: The role of the ports ('input' or 'output')
+            highlight_manager: Instance of HighlightManager.
             parent: The parent widget
         """
         super().__init__(parent)
         self.port_role = port_role  # Store the role ('input' or 'output')
+        self.highlight_manager = highlight_manager # Store highlight manager instance
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self.show_context_menu)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -270,7 +272,10 @@ class PortTreeWidget(QTreeWidget):
 
         # 2. Determine final group order based on untangle mode
         main_window = self.window()
-        untangle_mode = main_window.untangle_mode if main_window else 0 # Get current mode from main window
+        # Get untangle mode from UIStateManager attached to the main window
+        untangle_mode = 0 # Default if not found
+        if main_window and hasattr(main_window, 'ui_state_manager') and main_window.ui_state_manager:
+             untangle_mode = main_window.ui_state_manager.get_untangle_mode()
 
         if untangle_mode > 0:
             # Use the untangle logic with the current mode
@@ -398,19 +403,21 @@ class PortTreeWidget(QTreeWidget):
             
             # Add Move Up/Down Actions
             menu.addSeparator()
-            # Use the global actions from the main window
-            move_up_action = self.window().move_group_up_action
-            move_down_action = self.window().move_group_down_action
-            
-            # Update their enabled state based on the context item
-            current_index = self.indexOfTopLevelItem(item)
-            move_up_action.setEnabled(current_index > 0)
-            move_down_action.setEnabled(current_index < self.topLevelItemCount() - 1)
-            
-            # Add the global actions to the menu
-            menu.addAction(move_up_action)
-            menu.addAction(move_down_action)
-            
+            # Use the global actions from the main window's action_manager
+            action_manager = self.window().action_manager
+            move_up_action = action_manager.move_group_up_action if action_manager else None
+            move_down_action = action_manager.move_group_down_action if action_manager else None
+
+            if move_up_action and move_down_action:
+                # Update their enabled state based on the context item
+                current_index = self.indexOfTopLevelItem(item)
+                move_up_action.setEnabled(current_index > 0)
+                move_down_action.setEnabled(current_index < self.topLevelItemCount() - 1)
+
+                # Add the global actions to the menu
+                menu.addAction(move_up_action)
+                menu.addAction(move_down_action)
+
             menu.exec(self.mapToGlobal(position))
     
     def getSelectedPortNames(self):
@@ -480,14 +487,15 @@ class PortTreeWidget(QTreeWidget):
         if valid_drag and target_item:
             # Valid drag over a potential target item
             if target_item != self.current_drag_highlight_item:
-                self.window().clear_drop_target_highlight(self)
-                self.window().highlight_drop_target_item(self, target_item)
+                # Pass only the target_item to the highlight manager method
+                self.highlight_manager.clear_drop_target_highlight(self)
+                self.highlight_manager.highlight_drop_target_item(target_item)
                 self.current_drag_highlight_item = target_item
             event.acceptProposedAction()
         else:
             # Invalid drag type, wrong role, or not over an item
             if self.current_drag_highlight_item:
-                self.window().clear_drop_target_highlight(self)
+                self.highlight_manager.clear_drop_target_highlight(self)
                 self.current_drag_highlight_item = None
             event.ignore()
 
@@ -499,7 +507,7 @@ class PortTreeWidget(QTreeWidget):
         Args:
             event: The drag leave event
         """
-        self.window().clear_drop_target_highlight(self)
+        self.highlight_manager.clear_drop_target_highlight(self)
         self.current_drag_highlight_item = None
         super().dragLeaveEvent(event)
     
@@ -614,7 +622,8 @@ class PortTreeWidget(QTreeWidget):
         elif len(group_items) == 1 and not port_items:
             item = group_items[0]
             group_name = item.text(0)
-            port_list = self.window()._get_ports_in_group(item)
+            # Get ports from the highlight manager instead of the main window
+            port_list = self.highlight_manager._get_ports_in_group(item)
             if not port_list:
                 return
             mime_data.setData("application/x-port-group", b"true")
@@ -664,7 +673,7 @@ class PortTreeWidget(QTreeWidget):
         expected_source_role = b"input" if self.port_role == 'output' else b"output"
         if not (has_role and (has_list or has_group or mime_data.hasText()) and mime_data.data("application/x-port-role") == expected_source_role):
             event.ignore()
-            self.window().clear_drop_target_highlight(self)
+            self.highlight_manager.clear_drop_target_highlight(self)
             self.current_drag_highlight_item = None
             return
         
@@ -672,14 +681,15 @@ class PortTreeWidget(QTreeWidget):
         target_item = self.itemAt(event.position().toPoint())
         if not target_item:
             event.ignore()  # Dropped outside an item
-            self.window().clear_drop_target_highlight(self)
+            self.highlight_manager.clear_drop_target_highlight(self)
             self.current_drag_highlight_item = None
             return
         
-        target_ports = self.window()._get_ports_in_group(target_item)  # Handles both port and group items
+        # Get target ports using the highlight manager
+        target_ports = self.highlight_manager._get_ports_in_group(target_item)
         if not target_ports:
             event.ignore()  # Target item has no associated ports
-            self.window().clear_drop_target_highlight(self)
+            self.highlight_manager.clear_drop_target_highlight(self)
             self.current_drag_highlight_item = None
             return
         
@@ -691,24 +701,55 @@ class PortTreeWidget(QTreeWidget):
         source_ports = [port for port in mime_data.text().split('\n') if port]
         if not source_ports:
             event.ignore()  # No source ports in mime data
-            self.window().clear_drop_target_highlight(self)
+            self.highlight_manager.clear_drop_target_highlight(self)
             self.current_drag_highlight_item = None
             return
         
-        # 4. Perform connection based on target tree role
-        if self.port_role == 'output':
-            # Target is Output tree, Source is Input
-            print(f"Drop Event (Output Tree): Connecting Outputs(Target)={target_ports}, Inputs(Source)={source_ports}")
-            self.window().make_multiple_connections(target_ports, source_ports)
-        elif self.port_role == 'input':
-            # Target is Input tree, Source is Output
-            print(f"Drop Event (Input Tree): Connecting Outputs(Source)={source_ports}, Inputs(Target)={target_ports}")
-            self.window().make_multiple_connections(source_ports, target_ports)
+        # 4. Perform connection or disconnection based on target tree role and Ctrl key
+        ctrl_pressed = QApplication.keyboardModifiers() == Qt.KeyboardModifier.ControlModifier
+        is_midi = self.window().port_type == 'midi'
+
+        actual_output_ports = []
+        actual_input_ports = []
+
+        if self.port_role == 'output': # Target is Output tree, Source was Input tree
+            actual_output_ports = target_ports
+            actual_input_ports = source_ports
+        elif self.port_role == 'input': # Target is Input tree, Source was Output tree
+            actual_output_ports = source_ports
+            actual_input_ports = target_ports
         else:
-            # Should not happen
             print(f"Error: Unknown port_role '{self.port_role}' in dropEvent")
             event.ignore()
-            self.window().clear_drop_target_highlight(self)
+            self.highlight_manager.clear_drop_target_highlight(self)
+            self.current_drag_highlight_item = None
+            return
+
+        if ctrl_pressed:
+            print(f"Drop Event (Disconnect): Outputs={actual_output_ports}, Inputs={actual_input_ports}, MIDI={is_midi}")
+            for out_p in actual_output_ports:
+                for in_p in actual_input_ports:
+                    if is_midi:
+                        self.window().break_midi_connection(out_p, in_p)
+                    else:
+                        self.window().break_connection(out_p, in_p)
+        else:
+            # Original connection logic
+            if self.port_role == 'output':
+                print(f"Drop Event (Connect Output Tree): Outputs(Target)={target_ports}, Inputs(Source)={source_ports}")
+                self.window().make_multiple_connections(target_ports, source_ports)
+            elif self.port_role == 'input':
+                print(f"Drop Event (Connect Input Tree): Outputs(Source)={source_ports}, Inputs(Target)={target_ports}")
+                self.window().make_multiple_connections(source_ports, target_ports)
+            # The 'else' for unknown port_role is handled above
+
+        # Ensure this 'else' block for unknown port_role is not duplicated if we refactor the above.
+        # The initial check for port_role validity now covers this.
+        # else:
+        #     # Should not happen
+        #     print(f"Error: Unknown port_role '{self.port_role}' in dropEvent")
+            event.ignore()
+            self.highlight_manager.clear_drop_target_highlight(self)
             self.current_drag_highlight_item = None
             return
         
@@ -728,7 +769,7 @@ class PortTreeWidget(QTreeWidget):
         if new_target_item:
             self.setCurrentItem(new_target_item)
         # 5. Finalize
-        self.window().clear_drop_target_highlight(self)
+        self.highlight_manager.clear_drop_target_highlight(self)
         self.current_drag_highlight_item = None
 
 
@@ -736,27 +777,31 @@ class DragPortTreeWidget(PortTreeWidget):
     """
     A PortTreeWidget for output ports (source role: output).
     """
-    
-    def __init__(self, parent=None):
+
+    def __init__(self, highlight_manager, parent=None):
         """
         Initialize the DragPortTreeWidget.
-        
+
         Args:
+            highlight_manager: Instance of HighlightManager.
             parent: The parent widget
         """
-        super().__init__(port_role='output', parent=parent)  # Set role
+        # Pass highlight_manager to the base class constructor
+        super().__init__(port_role='output', highlight_manager=highlight_manager, parent=parent)
 
 
 class DropPortTreeWidget(PortTreeWidget):
     """
     A PortTreeWidget for input ports (source role: input).
     """
-    
-    def __init__(self, parent=None):
+
+    def __init__(self, highlight_manager, parent=None):
         """
         Initialize the DropPortTreeWidget.
-        
+
         Args:
+            highlight_manager: Instance of HighlightManager.
             parent: The parent widget
         """
-        super().__init__(port_role='input', parent=parent)  # Set role
+        # Pass highlight_manager to the base class constructor
+        super().__init__(port_role='input', highlight_manager=highlight_manager, parent=parent)

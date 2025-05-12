@@ -1,0 +1,634 @@
+from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
+                             QLineEdit, QSpacerItem, QSizePolicy, QMessageBox, QToolButton, QMenu)
+from PyQt6.QtCore import pyqtSlot
+from PyQt6.QtGui import QAction, QKeySequence # Added for shortcuts
+
+import jack # For jack.Client type hint
+# from cables.connection_manager import JackConnectionManager # For type hint - REMOVED to break cycle
+from .jack_handler import GraphJackHandler # Updated import
+from .gui_scene import JackGraphScene
+from .gui_view import JackGraphView
+from .port_item import PortItem
+from .connection_item import ConnectionItem
+from .constants import GRAPH_TOOLBAR_UNDO_REDO_OFFSET
+
+class MainWindow(QMainWindow):
+    def __init__(self, jack_client: jack.Client, connection_manager: 'JackConnectionManager', preset_handler_ref, connection_history_ref):
+        super().__init__()
+        self.jack_client = jack_client # Store the shared jack.Client instance
+        self.connection_manager = connection_manager # Store the JackConnectionManager instance
+        self.preset_handler = preset_handler_ref # Store the reference
+        self.connection_history = connection_history_ref # Store the reference
+        # self.jack_handler is removed, GraphJackHandler is now part of JackGraphScene
+
+        self.setWindowTitle("PyQt JACK Graph")
+        self.setGeometry(100, 100, 1000, 700)
+
+        # JackGraphScene now takes jack_client, connection_manager, connection_history, and parent (self)
+        self.scene = JackGraphScene(
+            jack_client=self.jack_client,
+            connection_manager=self.connection_manager,
+            connection_history=self.connection_history,
+            parent=self # Pass self as parent, which JackGraphScene uses as main_window_ref for its GraphJackHandler
+        )
+        self.view = JackGraphView(self.scene)
+
+        # Main widget and layout
+        main_widget = QWidget()
+        main_layout = QVBoxLayout(main_widget)
+        main_layout.setContentsMargins(5, 5, 5, 5) # Small margins
+        main_layout.setSpacing(5)
+
+        # Create buttons
+        self.connect_button = QPushButton("Connect")
+        self.connect_button.setToolTip("Connect selected items <span style='color:grey'>C</span>")
+        self.disconnect_button = QPushButton("Disconnect")
+        self.disconnect_button.setToolTip("Disconnect selected items <span style='color:grey'>D/Del</span>")
+        
+        self.preset_button = QToolButton()
+        self.preset_button.setText("Presets")
+        self.preset_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.graph_preset_menu = QMenu(self.preset_button) # Parent to button for lifetime
+        self.preset_button.setMenu(self.graph_preset_menu)
+        
+        self.undo_button = QPushButton("Undo")
+        self.undo_button.setToolTip("Undo last connection <span style='color:grey'>Ctrl+Z</span>")
+        self.redo_button = QPushButton("Redo")
+        self.redo_button.setToolTip("Redo last connection <span style='color:grey'>Shift+Ctrl+Z/Ctrl+Y</span>")
+        self.zoom_in_button = QPushButton("+")
+        self.zoom_out_button = QPushButton("-")
+        
+        # Style zoom buttons
+        button_size = 30 # Adjust as needed for a square look
+        self.zoom_in_button.setFixedSize(button_size, button_size)
+        self.zoom_in_button.setToolTip("Zoom In <span style='color:grey'>Ctrl++/Ctrl+Scroll</span>")
+        self.zoom_out_button.setFixedSize(button_size, button_size)
+        self.zoom_out_button.setToolTip("Zoom Out <span style='color:grey'>Ctrl+-/Ctrl+Scroll</span>")
+
+        # Create filter boxes
+        # self.filter_box1 = QLineEdit() # Removed "Filter Nodes..." box
+        # self.filter_box1.setPlaceholderText("Filter Nodes...") # Removed "Filter Nodes..." box
+        # self.filter_box2 = QLineEdit() # Removed "Filter Ports..." box
+        # self.filter_box2.setPlaceholderText("Filter Ports...") # Removed "Filter Ports..." box
+
+        # Top toolbar layout (Connect, Disconnect, Preset) - Centered
+        top_toolbar_layout = QHBoxLayout()
+        top_toolbar_layout.addStretch(1)
+        top_toolbar_layout.addWidget(self.connect_button)
+        top_toolbar_layout.addWidget(self.disconnect_button)
+        top_toolbar_layout.addWidget(self.preset_button)
+        top_toolbar_layout.addStretch(1)
+
+        # Bottom toolbar layout (Filters, Undo, Redo, Zoom) - Mimicking Audio tab structure
+        bottom_toolbar_layout = QHBoxLayout()
+        
+        # self.filter_box1.setFixedWidth(150) # Removed "Filter Nodes..." box
+        # bottom_toolbar_layout.addWidget(self.filter_box1) # Removed "Filter Nodes..." box
+        
+        bottom_toolbar_layout.addStretch(1) # This stretch will now be at the beginning of the layout
+        
+        # bottom_toolbar_layout.addStretch(1) # Add another stretch to push undo/redo buttons to the center # Removed to re-center Undo/Redo buttons
+        
+        # Apply offset for Undo/Redo buttons
+        if GRAPH_TOOLBAR_UNDO_REDO_OFFSET > 0:
+            bottom_toolbar_layout.addSpacerItem(QSpacerItem(GRAPH_TOOLBAR_UNDO_REDO_OFFSET, 0, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum))
+        
+        bottom_toolbar_layout.addWidget(self.undo_button)
+        bottom_toolbar_layout.addWidget(self.redo_button)
+
+        if GRAPH_TOOLBAR_UNDO_REDO_OFFSET < 0:
+            bottom_toolbar_layout.addSpacerItem(QSpacerItem(abs(GRAPH_TOOLBAR_UNDO_REDO_OFFSET), 0, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum))
+        
+        bottom_toolbar_layout.addStretch(1)
+        
+        bottom_toolbar_layout.addWidget(self.zoom_out_button) # Zoom out first
+        bottom_toolbar_layout.addWidget(self.zoom_in_button)
+        
+        bottom_toolbar_layout.addSpacerItem(QSpacerItem(10, 10, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum)) # Small spacer
+        
+        # self.filter_box2.setFixedWidth(150) # Removed "Filter Ports..." box
+        # bottom_toolbar_layout.addWidget(self.filter_box2) # Removed "Filter Ports..." box
+        
+        # Add top toolbar and graph view to main layout
+        main_layout.addLayout(top_toolbar_layout)
+        main_layout.addWidget(self.view) # Graph view now before bottom toolbar
+
+        # Add bottom toolbar to main layout
+        main_layout.addLayout(bottom_toolbar_layout) # Bottom toolbar now after graph view
+
+        self.setCentralWidget(main_widget)
+
+        # Handle JACK shutdown - connect to the signal from JackConnectionManager
+        self.connection_manager.jack_shutdown_signal.connect(self.handle_jack_shutdown)
+
+        # Connect button signals
+        self.connect_button.clicked.connect(self.handle_connect_action)
+        self.disconnect_button.clicked.connect(self.handle_disconnect_action)
+        self.undo_button.clicked.connect(self._handle_graph_undo)
+        self.redo_button.clicked.connect(self._handle_graph_redo)
+        self.zoom_in_button.clicked.connect(self._zoom_in_view)
+        self.zoom_out_button.clicked.connect(self._zoom_out_view)
+        
+        if self.preset_handler: # Check if a handler was provided
+            # Connect the menu's aboutToShow signal to the handler's method
+            self.graph_preset_menu.aboutToShow.connect(self.preset_handler._show_preset_menu)
+        else:
+            self.preset_button.setEnabled(False) # Disable if no handler
+
+        # Connect scene selection change to update button states
+        self.scene.selectionChanged.connect(self.update_graph_connection_buttons_state)
+        # Connect scene connection changes to update button states
+        # Also update undo/redo buttons when connections change in the scene
+        self.scene.scene_connections_changed.connect(self.update_graph_connection_buttons_state)
+        self.scene.scene_connections_changed.connect(self._update_graph_undo_redo_buttons_state)
+ 
+        # Connect view's zoom_changed signal to handle saving zoom state
+        self.view.zoom_changed.connect(self.handle_zoom_changed)
+ 
+        # Set initial button states
+        self.update_graph_connection_buttons_state()
+        self._update_graph_undo_redo_buttons_state() # Initial state for undo/redo
+        
+        # self._setup_zoom_actions() # Commented out to let global ActionManager handle zoom shortcuts
+
+        # Apply loaded zoom level
+        if self.scene.initial_zoom_level is not None:
+            print(f"Applying loaded zoom level: {self.scene.initial_zoom_level}")
+            self.view.set_zoom_level(self.scene.initial_zoom_level)
+
+        # Store references to controls that can be hidden in fullscreen
+        self._internal_controls = [
+            self.connect_button, self.disconnect_button, self.preset_button,
+            self.undo_button, self.redo_button,
+            self.zoom_in_button, self.zoom_out_button
+            # Add filter boxes here if they were kept: self.filter_box1, self.filter_box2
+        ]
+        # Also need to hide the layouts containing them if possible, or their container widgets.
+        # Since layouts are added directly, we hide the widgets themselves.
+
+    def toggle_internal_controls(self, visible: bool):
+        """Shows or hides the internal toolbar/control widgets."""
+        print(f"Graph MainWindow: Setting internal controls visibility to {visible}")
+        for control in self._internal_controls:
+            if control: # Check if widget exists
+                control.setVisible(visible)
+        # Force layout update within the graph tab's main widget
+        if self.centralWidget() and self.centralWidget().layout():
+             self.centralWidget().layout().activate()
+
+
+    @pyqtSlot()
+    def _update_graph_undo_redo_buttons_state(self):
+        """Updates the enabled state of Undo and Redo buttons for the graph tab."""
+        if self.connection_history:
+            self.undo_button.setEnabled(self.connection_history.can_undo())
+            self.redo_button.setEnabled(self.connection_history.can_redo())
+        else:
+            self.undo_button.setEnabled(False)
+            self.redo_button.setEnabled(False)
+
+    @pyqtSlot()
+    def _handle_graph_undo(self):
+        if self.connection_history and self.connection_history.can_undo():
+            action = self.connection_history.undo()
+            if action:
+                action_type, output_name, input_name, is_midi_op = action # Unpack is_midi_op
+                print(f"Graph Undo: {action_type} {output_name} -> {input_name} (MIDI: {is_midi_op})")
+
+                # action_type is the INVERSE action.
+                # If action_type is 'disconnect', it means the original action was 'connect', so we need to break the connection.
+                # If action_type is 'connect', it means the original action was 'disconnect', so we need to make the connection.
+                if action_type == 'disconnect':
+                    if is_midi_op:
+                        self.scene.jack_connection_handler.break_midi_connection(output_name, input_name, is_undo_redo=True)
+                    else:
+                        self.scene.jack_connection_handler.break_connection(output_name, input_name, is_undo_redo=True)
+                elif action_type == 'connect':
+                    if is_midi_op:
+                        self.scene.jack_connection_handler.make_midi_connection(output_name, input_name, is_undo_redo=True)
+                    else:
+                        self.scene.jack_connection_handler.make_connection(output_name, input_name, is_undo_redo=True)
+            self._update_graph_undo_redo_buttons_state()
+
+    @pyqtSlot()
+    def _handle_graph_redo(self):
+        if self.connection_history and self.connection_history.can_redo():
+            action = self.connection_history.redo()
+            if action:
+                action_type, output_name, input_name, is_midi_op = action # Unpack is_midi_op
+                print(f"Graph Redo: {action_type} {output_name} -> {input_name} (MIDI: {is_midi_op})")
+                
+                if action_type == 'connect': # Redoing a connect means making a connection
+                    if is_midi_op:
+                        self.scene.jack_connection_handler.make_midi_connection(output_name, input_name, is_undo_redo=True)
+                    else:
+                        self.scene.jack_connection_handler.make_connection(output_name, input_name, is_undo_redo=True)
+                elif action_type == 'disconnect': # Redoing a disconnect means breaking a connection
+                    if is_midi_op:
+                        self.scene.jack_connection_handler.break_midi_connection(output_name, input_name, is_undo_redo=True)
+                    else:
+                        self.scene.jack_connection_handler.break_connection(output_name, input_name, is_undo_redo=True)
+            self._update_graph_undo_redo_buttons_state()
+
+    @pyqtSlot()
+    def _zoom_in_view(self):
+        if self.view:
+            self.view.zoom_in()
+
+    @pyqtSlot()
+    def _zoom_out_view(self):
+        if self.view:
+            self.view.zoom_out()
+
+    @pyqtSlot(float)
+    def handle_zoom_changed(self, zoom_level: float):
+        """Handles the zoom_changed signal from the view and saves the state."""
+        if self.scene:
+            # print(f"GraphMainWindow: Zoom changed to {zoom_level}, saving states.") # DEBUG
+            self.scene.save_node_states(graph_zoom_level=zoom_level)
+            
+    # def _setup_zoom_actions(self):
+    #     self.zoom_in_action = QAction("Zoom In", self)
+    #     # Use multiple shortcuts to ensure compatibility across systems
+    #     self.zoom_in_action.setShortcuts([
+    #         QKeySequence.StandardKey.ZoomIn,  # Standard Qt zoom in
+    #         QKeySequence("Ctrl++"),
+    #         QKeySequence("Ctrl+=")
+    #     ])
+    #     self.zoom_in_action.triggered.connect(self._zoom_in_view)
+    #     self.addAction(self.zoom_in_action)
+
+    #     self.zoom_out_action = QAction("Zoom Out", self)
+    #     # Use StandardKey.ZoomOut to ensure compatibility
+    #     self.zoom_out_action.setShortcuts([
+    #         QKeySequence.StandardKey.ZoomOut,  # Standard Qt zoom out
+    #         QKeySequence("Ctrl+-")
+    #     ])
+    #     self.zoom_out_action.triggered.connect(self._zoom_out_view)
+    #     self.addAction(self.zoom_out_action)
+
+    @pyqtSlot()
+    def update_graph_connection_buttons_state(self):
+        selected_items = self.scene.selectedItems()
+        
+        selected_input_ports = []
+        selected_output_ports = []
+        selected_connection_items = []
+        selected_input_bulk_areas = []
+        selected_output_bulk_areas = []
+
+        for item in selected_items:
+            if isinstance(item, PortItem):
+                if item.is_input:
+                    selected_input_ports.append(item)
+                else:
+                    selected_output_ports.append(item)
+            elif isinstance(item, ConnectionItem):
+                selected_connection_items.append(item)
+            # Check for BulkAreaItem selections
+            elif hasattr(item, 'is_input') and hasattr(item, 'parent_node'):
+                # This is likely a BulkAreaItem
+                if item.is_input:
+                    selected_input_bulk_areas.append(item)
+                else:
+                    selected_output_bulk_areas.append(item)
+
+        # Connect button state
+        can_connect = False
+        potential_connections_to_make = []
+        all_potential_connections_exist = True # Assume true until a non-existing one is found
+
+        # Check for port-to-port connections
+        if len(selected_output_ports) == 1 and len(selected_input_ports) >= 1:
+            single_out = selected_output_ports[0]
+            if single_out in selected_input_ports: # Self-connection attempt with the same item selected as both
+                 pass # can_connect remains false
+            else:
+                for in_port in selected_input_ports:
+                    if single_out == in_port: continue # Should not happen if selection logic is strict
+                    potential_connections_to_make.append((single_out.port_name, in_port.port_name))
+                if not potential_connections_to_make: # e.g. output selected, and the same port (if it were also input capable) selected as input
+                    pass
+                else:
+                    can_connect = True # Basic pattern is valid
+
+        elif len(selected_input_ports) == 1 and len(selected_output_ports) >= 1:
+            single_in = selected_input_ports[0]
+            if single_in in selected_output_ports: # Self-connection attempt
+                pass # can_connect remains false
+            else:
+                for out_port in selected_output_ports:
+                    if single_in == out_port: continue
+                    potential_connections_to_make.append((out_port.port_name, single_in.port_name))
+                if not potential_connections_to_make:
+                    pass
+                else:
+                    can_connect = True # Basic pattern is valid
+        
+        # Check for bulk area connections (IN/OUT bulk areas selected)
+        elif (len(selected_input_bulk_areas) >= 1 and len(selected_output_bulk_areas) >= 1):
+            # Enable connect button when both input and output bulk areas are selected
+            can_connect = True
+            
+        # Always enable the Connect button if there are valid port selections
+        # This ensures the button is active even when the connection check logic fails
+        # The jack_handler.connect() will handle already connected ports gracefully
+
+        self.connect_button.setEnabled(can_connect)
+
+        # Disconnect button state
+        can_disconnect = False
+        if selected_connection_items: # Can always disconnect selected connection items
+            can_disconnect = True
+        elif selected_input_ports and selected_output_ports: # Only check port-based disconnect if no direct connections selected
+            # Check if any selected input port is connected to any selected output port
+            for out_port in selected_output_ports:
+                for in_port in selected_input_ports:
+                    if (out_port.port_name, in_port.port_name) in self.scene.connections:
+                        can_disconnect = True
+                        break
+                if can_disconnect:
+                    break
+        # Check for bulk area disconnections
+        elif len(selected_input_bulk_areas) >= 1 and len(selected_output_bulk_areas) >= 1:
+            # For each pair of input and output bulk areas
+            for input_bulk in selected_input_bulk_areas:
+                for output_bulk in selected_output_bulk_areas:
+                    # Get the parent nodes
+                    input_node = input_bulk.parent_node
+                    output_node = output_bulk.parent_node
+                    
+                    # Skip if same node
+                    if input_node == output_node:
+                        continue
+                    
+                    # Get all input ports from the input node
+                    input_ports = list(input_node.input_ports.values())
+                    # Get all output ports from the output node
+                    output_ports = list(output_node.output_ports.values())
+                    
+                    # Sort ports by their vertical position
+                    input_ports.sort(key=lambda p: p.scenePos().y())
+                    output_ports.sort(key=lambda p: p.scenePos().y())
+                    
+                    # Check for position-based connections (left to left, right to right)
+                    for i in range(min(len(input_ports), len(output_ports))):
+                        output_port = output_ports[i]
+                        input_port = input_ports[i]
+                        if (output_port.port_name, input_port.port_name) in self.scene.connections:
+                            can_disconnect = True
+                            break
+                    if can_disconnect:
+                        break
+                if can_disconnect:
+                    break
+        
+        self.disconnect_button.setEnabled(can_disconnect)
+
+
+    @pyqtSlot()
+    def handle_connect_action(self):
+        selected_items = self.scene.selectedItems()
+        
+        selected_input_ports = []
+        selected_output_ports = []
+        selected_input_bulk_areas = []
+        selected_output_bulk_areas = []
+
+        for item in selected_items:
+            if isinstance(item, PortItem):
+                if item.is_input:
+                    selected_input_ports.append(item)
+                else:
+                    selected_output_ports.append(item)
+            # Check for BulkAreaItem selections
+            elif hasattr(item, 'is_input') and hasattr(item, 'parent_node'):
+                # This is likely a BulkAreaItem
+                if item.is_input:
+                    selected_input_bulk_areas.append(item)
+                else:
+                    selected_output_bulk_areas.append(item)
+        
+        # Button should be disabled if selection is invalid, so no need for QMessageBox here.
+        # if not selected_input_ports and not selected_output_ports:
+        #     QMessageBox.warning(self, "Connection Error", "No ports selected. Please select one output and one or more input ports, or vice-versa.")
+        #     return
+
+        connections_made = 0
+        
+        # Handle port-to-port connections
+        if len(selected_output_ports) == 1 and len(selected_input_ports) >= 1:
+            output_port_item = selected_output_ports[0]
+            for input_port_item in selected_input_ports:
+                # Prevent connecting a port to itself
+                if output_port_item == input_port_item:
+                    print(f"Skipping self-connection for port: {output_port_item.port_name}")
+                    continue
+                print(f"Attempting to connect: {output_port_item.port_name} -> {input_port_item.port_name}")
+                # Use JackConnectionHandler
+                if output_port_item.is_midi: # Assuming PortItem has is_midi
+                    if self.scene.jack_connection_handler.make_midi_connection(output_port_item.port_name, input_port_item.port_name):
+                        connections_made +=1
+                else:
+                    if self.scene.jack_connection_handler.make_connection(output_port_item.port_name, input_port_item.port_name):
+                        connections_made +=1
+        elif len(selected_input_ports) == 1 and len(selected_output_ports) >= 1:
+            input_port_item = selected_input_ports[0]
+            for output_port_item in selected_output_ports:
+                 # Prevent connecting a port to itself
+                if output_port_item == input_port_item:
+                    print(f"Skipping self-connection for port: {output_port_item.port_name}")
+                    continue
+                print(f"Attempting to connect: {output_port_item.port_name} -> {input_port_item.port_name}")
+                # Use JackConnectionHandler
+                if output_port_item.is_midi: # Assuming PortItem has is_midi
+                    if self.scene.jack_connection_handler.make_midi_connection(output_port_item.port_name, input_port_item.port_name):
+                        connections_made += 1
+                else:
+                    if self.scene.jack_connection_handler.make_connection(output_port_item.port_name, input_port_item.port_name):
+                        connections_made += 1
+        
+        # Handle bulk area connections
+        elif len(selected_input_bulk_areas) >= 1 and len(selected_output_bulk_areas) >= 1:
+            # For each pair of input and output bulk areas
+            for input_bulk_area_item in selected_input_bulk_areas: # Renamed for clarity
+                for output_bulk_area_item in selected_output_bulk_areas: # Renamed for clarity
+                    # Get the parent nodes
+                    input_node = input_bulk_area_item.parent_node
+                    output_node = output_bulk_area_item.parent_node
+                    
+                    # Skip if same node
+                    if input_node == output_node:
+                        continue
+                    
+                    # Get all input ports from the input node
+                    input_port_items = list(input_node.input_ports.values()) # Renamed for clarity
+                    # Get all output ports from the output node
+                    output_port_items = list(output_node.output_ports.values()) # Renamed for clarity
+                    
+                    # Convert to lists of port names for JackConnectionHandler
+                    input_port_names = [p.port_name for p in input_port_items]
+                    output_port_names = [p.port_name for p in output_port_items]
+
+                    if output_port_names and input_port_names:
+                        print(f"Attempting bulk connection between {output_node.client_name} (OUT) and {input_node.client_name} (IN)")
+                        # JackConnectionHandler.make_multiple_connections determines MIDI type based on active tab.
+                        # This might need refinement if graph tab handles mixed types or has its own context.
+                        self.scene.jack_connection_handler.make_multiple_connections(output_port_names, input_port_names)
+                        # We assume make_multiple_connections handles history and UI updates.
+                        # Counting 'connections_made' here might be tricky as make_multiple_connections does many.
+                        # For simplicity, we'll consider this one "attempt".
+                        connections_made += 1 # Increment for the bulk attempt
+                    else:
+                        print(f"Skipping bulk connection between {output_node.client_name} and {input_node.client_name} due to empty port lists.")
+        
+        if connections_made > 0:
+            if hasattr(self, 'statusBar') and self.statusBar():
+                self.statusBar().showMessage(f"{connections_made} connection(s) attempted.", 3000)
+        else:
+            # Only show this if an attempt was actually possible (buttons were enabled)
+            if self.connect_button.isEnabled(): # Check if button was enabled before click
+                 if hasattr(self, 'statusBar') and self.statusBar():
+                     self.statusBar().showMessage("No new connections were made (possibly already connected or error).", 3000)
+        # self.update_graph_connection_buttons_state() # No longer needed here, scene signal will trigger it
+        self._update_graph_undo_redo_buttons_state() # Update undo/redo buttons
+
+
+    @pyqtSlot()
+    def handle_disconnect_action(self):
+        selected_items = self.scene.selectedItems()
+        disconnections_made = 0
+
+        selected_connection_items = [item for item in selected_items if isinstance(item, ConnectionItem)]
+        selected_port_items = [item for item in selected_items if isinstance(item, PortItem)]
+        selected_input_bulk_areas = []
+        selected_output_bulk_areas = []
+
+        # Check for BulkAreaItem selections
+        for item in selected_items:
+            if hasattr(item, 'is_input') and hasattr(item, 'parent_node'):
+                # This is likely a BulkAreaItem
+                if item.is_input:
+                    selected_input_bulk_areas.append(item)
+                else:
+                    selected_output_bulk_areas.append(item)
+
+        if selected_connection_items:
+            for conn_item in selected_connection_items:
+                if conn_item.source_port and conn_item.dest_port:
+                    print(f"Attempting to disconnect via ConnectionItem: {conn_item.source_port.port_name} -> {conn_item.dest_port.port_name}")
+                    # Use JackConnectionHandler
+                    if conn_item.source_port.is_midi: # Assuming PortItem has is_midi
+                        if self.scene.jack_connection_handler.break_midi_connection(conn_item.source_port.port_name, conn_item.dest_port.port_name):
+                            disconnections_made += 1
+                    else:
+                        if self.scene.jack_connection_handler.break_connection(conn_item.source_port.port_name, conn_item.dest_port.port_name):
+                            disconnections_made += 1
+                else:
+                    print(f"Warning: A selected ConnectionItem has missing source or destination port. Skipping.")
+        
+        elif selected_port_items:
+            selected_input_ports = []
+            selected_output_ports = []
+            for item in selected_port_items:
+                if item.is_input:
+                    selected_input_ports.append(item)
+                else:
+                    selected_output_ports.append(item)
+
+            # Button should be disabled if selection is invalid
+            # if not selected_input_ports or not selected_output_ports:
+            #     QMessageBox.warning(self, "Disconnection Error",
+            #                         "To disconnect ports, please select at least one input and one output port that are connected, or select the connection line(s) directly.")
+            #     return
+
+            if selected_input_ports and selected_output_ports: # Ensure both lists have items
+                for output_port_item in selected_output_ports:
+                    for input_port_item in selected_input_ports:
+                        connection_key = (output_port_item.port_name, input_port_item.port_name)
+                        if connection_key in self.scene.connections:
+                            print(f"Attempting to disconnect via PortItems: {output_port_item.port_name} -> {input_port_item.port_name}")
+                            # Use JackConnectionHandler
+                            if output_port_item.is_midi: # Assuming PortItem has is_midi
+                                if self.scene.jack_connection_handler.break_midi_connection(output_port_item.port_name, input_port_item.port_name):
+                                    disconnections_made += 1
+                            else:
+                                if self.scene.jack_connection_handler.break_connection(output_port_item.port_name, input_port_item.port_name):
+                                    disconnections_made += 1
+                        # else:
+                        #     print(f"Ports {output_port_item.port_name} and {input_port_item.port_name} are not directly connected in the scene's view.")
+        
+        # Handle bulk area disconnections
+        elif len(selected_input_bulk_areas) >= 1 and len(selected_output_bulk_areas) >= 1:
+            # For each pair of input and output bulk areas
+            for input_bulk in selected_input_bulk_areas:
+                for output_bulk in selected_output_bulk_areas:
+                    # Get the parent nodes
+                    input_node = input_bulk.parent_node
+                    output_node = output_bulk.parent_node
+                    
+                    # Skip if same node
+                    if input_node == output_node:
+                        continue
+                    
+                    # Get all input ports from the input node
+                    input_ports = list(input_node.input_ports.values())
+                    # Get all output ports from the output node
+                    output_ports = list(output_node.output_ports.values())
+                    
+                    # Sort ports by their vertical position
+                    input_ports.sort(key=lambda p: p.scenePos().y())
+                    output_ports.sort(key=lambda p: p.scenePos().y())
+                    
+                    # Check for position-based connections (left to left, right to right)
+                    for i in range(min(len(input_ports), len(output_ports))):
+                        output_port = output_ports[i]
+                        input_port = input_ports[i]
+                        connection_key = (output_port_item.port_name, input_port_item.port_name) # Corrected variable names
+                        if connection_key in self.scene.connections:
+                            print(f"Attempting bulk disconnection (position-based): {output_port_item.port_name} -> {input_port_item.port_name}")
+                             # Use JackConnectionHandler
+                            if output_port_item.is_midi: # Assuming PortItem has is_midi
+                                if self.scene.jack_connection_handler.break_midi_connection(output_port_item.port_name, input_port_item.port_name):
+                                    disconnections_made += 1
+                            else:
+                                if self.scene.jack_connection_handler.break_connection(output_port_item.port_name, input_port_item.port_name):
+                                    disconnections_made += 1
+
+        if disconnections_made > 0:
+            if hasattr(self, 'statusBar') and self.statusBar():
+                self.statusBar().showMessage(f"{disconnections_made} disconnection(s) attempted.", 3000)
+        else:
+            # Only show this if an attempt was actually possible (buttons were enabled)
+            if self.disconnect_button.isEnabled(): # Check if button was enabled before click
+                if hasattr(self, 'statusBar') and self.statusBar():
+                    self.statusBar().showMessage("No connections were broken (possibly not connected or error).", 3000)
+        # self.update_graph_connection_buttons_state() # No longer needed here, scene signal will trigger it
+        self._update_graph_undo_redo_buttons_state() # Update undo/redo buttons
+
+    @pyqtSlot()
+    def handle_jack_shutdown(self):
+        print("JACK has shut down. Disabling graph interaction.")
+        # Disable further interaction, maybe show a message
+        self.scene.clear_graph()
+        self.view.setEnabled(False)
+        # Check if statusBar exists before using it
+        if hasattr(self, 'statusBar') and self.statusBar():
+             self.statusBar().showMessage("JACK connection lost.", 5000)
+        # Optionally try to reconnect or close the app
+
+    def closeEvent(self, event):
+        """Ensure JACK client is cleaned up when closing the window."""
+        print("Closing application...")
+        # Disconnect signals that might try to access the scene after it's deleted
+        try:
+            self.scene.selectionChanged.disconnect(self.scene.interaction_handler.handle_selection_changed)
+        except TypeError: # Signal might already be disconnected or handler doesn't exist
+            pass # Ignore if disconnection fails
+        # Save node positions and zoom level before shutting down
+        # REMOVED: Saving on exit is no longer desired. States are saved immediately on change.
+        # current_zoom_level = self.view.get_zoom_level()
+        # print(f"MainWindow closeEvent: current_zoom_level from view = {current_zoom_level}") # DEBUG
+        # self.scene.save_node_states(graph_zoom_level=current_zoom_level) # Also ensure this uses save_node_states if kept
+        # self.jack_handler.stop() # Removed, main client lifecycle managed by JackConnectionManager
+        event.accept()

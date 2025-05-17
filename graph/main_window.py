@@ -1,8 +1,9 @@
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                              QLineEdit, QSpacerItem, QSizePolicy, QMessageBox, QToolButton, QMenu)
-from PyQt6.QtCore import pyqtSlot
+from PyQt6.QtCore import pyqtSlot, QSize # Added QSize
 from PyQt6.QtGui import QAction, QKeySequence # Added for shortcuts
 
+from cables.ui.shared_widgets import create_action_button
 import jack # For jack.Client type hint
 # from cables.connection_manager import JackConnectionManager # For type hint - REMOVED to break cycle
 from .jack_handler import GraphJackHandler # Updated import
@@ -39,37 +40,58 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(5, 5, 5, 5) # Small margins
         main_layout.setSpacing(5)
 
-        # Create buttons
-        self.connect_button = QPushButton("Connect")
-        self.connect_button.setToolTip("Connect selected items <span style='color:grey'>C</span>")
-        self.disconnect_button = QPushButton("Disconnect")
-        self.disconnect_button.setToolTip("Disconnect selected items <span style='color:grey'>D/Del</span>")
-        
-        self.preset_button = QToolButton()
-        self.preset_button.setText("Presets")
-        self.preset_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.graph_preset_menu = QMenu(self.preset_button) # Parent to button for lifetime
-        self.preset_button.setMenu(self.graph_preset_menu)
-        
-        self.undo_button = QPushButton("Undo")
-        self.undo_button.setToolTip("Undo last connection <span style='color:grey'>Ctrl+Z</span>")
-        self.redo_button = QPushButton("Redo")
-        self.redo_button.setToolTip("Redo last connection <span style='color:grey'>Shift+Ctrl+Z/Ctrl+Y</span>")
-        self.zoom_in_button = QPushButton("+")
-        self.zoom_out_button = QPushButton("-")
-        
-        # Style zoom buttons
-        button_size = 30 # Adjust as needed for a square look
-        self.zoom_in_button.setFixedSize(button_size, button_size)
-        self.zoom_in_button.setToolTip("Zoom In <span style='color:grey'>Ctrl++/Ctrl+Scroll</span>")
-        self.zoom_out_button.setFixedSize(button_size, button_size)
-        self.zoom_out_button.setToolTip("Zoom Out <span style='color:grey'>Ctrl+-/Ctrl+Scroll</span>")
+        # Create buttons using shared_widgets factory
+        # Assumes self.connection_manager.action_manager provides the necessary QAction instances
+        action_manager = self.connection_manager.action_manager
+
+        self.graph_connect_action = action_manager.graph_connect_action
+        self.connect_button = create_action_button(self, self.graph_connect_action, tooltip="Connect selected items <span style='color:grey'>C</span>")
+
+        self.graph_disconnect_action = action_manager.graph_disconnect_action
+        self.disconnect_button = create_action_button(self, self.graph_disconnect_action, tooltip="Disconnect selected items <span style='color:grey'>D/Del</span>")
+
+        self.presets_graph_action = action_manager.presets_graph_action # This action should have text "Presets" and its menu configured
+        self.preset_button = create_action_button(self, self.presets_graph_action, tooltip="Manage Presets")
+        self.preset_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup) # Ensure popup mode for menu
+
+        self.graph_undo_action = action_manager.graph_undo_action
+        self.undo_button = create_action_button(
+            self,
+            self.graph_undo_action,
+            tooltip="Undo last connection <span style='color:grey'>Ctrl+Z</span>",
+            min_width=90
+        )
+
+        self.graph_redo_action = action_manager.graph_redo_action
+        self.redo_button = create_action_button(
+            self,
+            self.graph_redo_action,
+            tooltip="Redo last connection <span style='color:grey'>Shift+Ctrl+Z/Ctrl+Y</span>",
+            min_width=90
+        )
+
+        self.zoom_in_action = action_manager.zoom_in_action # Assuming generic zoom actions
+        self.zoom_in_button = create_action_button(
+            self,
+            self.zoom_in_action,
+            tooltip="Zoom In <span style='color:grey'>Ctrl++/Ctrl+Scroll</span>",
+            fixed_size=QSize(25, 25)
+        )
+
+        self.zoom_out_action = action_manager.zoom_out_action
+        self.zoom_out_button = create_action_button(
+            self,
+            self.zoom_out_action,
+            tooltip="Zoom Out <span style='color:grey'>Ctrl+-/Ctrl+Scroll</span>",
+            fixed_size=QSize(25, 25)
+        )
 
         # Create filter boxes
-        # self.filter_box1 = QLineEdit() # Removed "Filter Nodes..." box
-        # self.filter_box1.setPlaceholderText("Filter Nodes...") # Removed "Filter Nodes..." box
-        # self.filter_box2 = QLineEdit() # Removed "Filter Ports..." box
-        # self.filter_box2.setPlaceholderText("Filter Ports...") # Removed "Filter Ports..." box
+        self.node_filter_box = QLineEdit()
+        self.node_filter_box.setPlaceholderText("Filter Nodes...")
+        self.node_filter_box.setFixedWidth(150)
+        self.node_filter_box.setToolTip("Use \"-\" prefix for exclusive filtering")
+        self.node_filter_box.textChanged.connect(self._handle_node_filter_change)
 
         # Top toolbar layout (Connect, Disconnect, Preset) - Centered
         top_toolbar_layout = QHBoxLayout()
@@ -82,8 +104,7 @@ class MainWindow(QMainWindow):
         # Bottom toolbar layout (Filters, Undo, Redo, Zoom) - Mimicking Audio tab structure
         bottom_toolbar_layout = QHBoxLayout()
         
-        # self.filter_box1.setFixedWidth(150) # Removed "Filter Nodes..." box
-        # bottom_toolbar_layout.addWidget(self.filter_box1) # Removed "Filter Nodes..." box
+        bottom_toolbar_layout.addWidget(self.node_filter_box)
         
         bottom_toolbar_layout.addStretch(1) # This stretch will now be at the beginning of the layout
         
@@ -106,8 +127,6 @@ class MainWindow(QMainWindow):
         
         bottom_toolbar_layout.addSpacerItem(QSpacerItem(10, 10, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum)) # Small spacer
         
-        # self.filter_box2.setFixedWidth(150) # Removed "Filter Ports..." box
-        # bottom_toolbar_layout.addWidget(self.filter_box2) # Removed "Filter Ports..." box
         
         # Add top toolbar and graph view to main layout
         main_layout.addLayout(top_toolbar_layout)
@@ -121,19 +140,10 @@ class MainWindow(QMainWindow):
         # Handle JACK shutdown - connect to the signal from JackConnectionManager
         self.connection_manager.jack_shutdown_signal.connect(self.handle_jack_shutdown)
 
-        # Connect button signals
-        self.connect_button.clicked.connect(self.handle_connect_action)
-        self.disconnect_button.clicked.connect(self.handle_disconnect_action)
-        self.undo_button.clicked.connect(self._handle_graph_undo)
-        self.redo_button.clicked.connect(self._handle_graph_redo)
-        self.zoom_in_button.clicked.connect(self._zoom_in_view)
-        self.zoom_out_button.clicked.connect(self._zoom_out_view)
-        
-        if self.preset_handler: # Check if a handler was provided
-            # Connect the menu's aboutToShow signal to the handler's method
-            self.graph_preset_menu.aboutToShow.connect(self.preset_handler._show_preset_menu)
-        else:
-            self.preset_button.setEnabled(False) # Disable if no handler
+        # Button signals are connected via QAction.triggered by button.setDefaultAction() in the factory.
+        # Tooltips are set by the factory or should be on the QAction.
+        # The presets_graph_action should have its menu and aboutToShow signal connected
+        # within ActionManager, and its enabled state managed based on self.preset_handler.
 
         # Connect scene selection change to update button states
         self.scene.selectionChanged.connect(self.update_graph_connection_buttons_state)
@@ -160,8 +170,8 @@ class MainWindow(QMainWindow):
         self._internal_controls = [
             self.connect_button, self.disconnect_button, self.preset_button,
             self.undo_button, self.redo_button,
-            self.zoom_in_button, self.zoom_out_button
-            # Add filter boxes here if they were kept: self.filter_box1, self.filter_box2
+            self.zoom_in_button, self.zoom_out_button,
+            self.node_filter_box  # Add the node filter box to be hidden in fullscreen
         ]
         # Also need to hide the layouts containing them if possible, or their container widgets.
         # Since layouts are added directly, we hide the widgets themselves.
@@ -180,12 +190,12 @@ class MainWindow(QMainWindow):
     @pyqtSlot()
     def _update_graph_undo_redo_buttons_state(self):
         """Updates the enabled state of Undo and Redo buttons for the graph tab."""
-        if self.connection_history:
-            self.undo_button.setEnabled(self.connection_history.can_undo())
-            self.redo_button.setEnabled(self.connection_history.can_redo())
+        if self.connection_history and hasattr(self, 'graph_undo_action') and hasattr(self, 'graph_redo_action'):
+            self.graph_undo_action.setEnabled(self.connection_history.can_undo())
+            self.graph_redo_action.setEnabled(self.connection_history.can_redo())
         else:
-            self.undo_button.setEnabled(False)
-            self.redo_button.setEnabled(False)
+            if hasattr(self, 'graph_undo_action'): self.graph_undo_action.setEnabled(False)
+            if hasattr(self, 'graph_redo_action'): self.graph_redo_action.setEnabled(False)
 
     @pyqtSlot()
     def _handle_graph_undo(self):
@@ -307,10 +317,13 @@ class MainWindow(QMainWindow):
                 for in_port in selected_input_ports:
                     if single_out == in_port: continue # Should not happen if selection logic is strict
                     potential_connections_to_make.append((single_out.port_name, in_port.port_name))
+                    # Check if this specific connection doesn't exist
+                    if (single_out.port_name, in_port.port_name) not in self.scene.connections:
+                        all_potential_connections_exist = False
                 if not potential_connections_to_make: # e.g. output selected, and the same port (if it were also input capable) selected as input
                     pass
                 else:
-                    can_connect = True # Basic pattern is valid
+                    can_connect = not all_potential_connections_exist # Only enable if at least one connection doesn't exist
 
         elif len(selected_input_ports) == 1 and len(selected_output_ports) >= 1:
             single_in = selected_input_ports[0]
@@ -320,21 +333,42 @@ class MainWindow(QMainWindow):
                 for out_port in selected_output_ports:
                     if single_in == out_port: continue
                     potential_connections_to_make.append((out_port.port_name, single_in.port_name))
+                    # Check if this specific connection doesn't exist
+                    if (out_port.port_name, single_in.port_name) not in self.scene.connections:
+                        all_potential_connections_exist = False
                 if not potential_connections_to_make:
                     pass
                 else:
-                    can_connect = True # Basic pattern is valid
+                    can_connect = not all_potential_connections_exist # Only enable if at least one connection doesn't exist
         
         # Check for bulk area connections (IN/OUT bulk areas selected)
         elif (len(selected_input_bulk_areas) >= 1 and len(selected_output_bulk_areas) >= 1):
-            # Enable connect button when both input and output bulk areas are selected
-            can_connect = True
-            
-        # Always enable the Connect button if there are valid port selections
-        # This ensures the button is active even when the connection check logic fails
-        # The jack_handler.connect() will handle already connected ports gracefully
+            # Check if any ports between the bulk areas are not connected
+            all_connected = True
+            for input_bulk in selected_input_bulk_areas:
+                for output_bulk in selected_output_bulk_areas:
+                    input_node = input_bulk.parent_node
+                    output_node = output_bulk.parent_node
+                    if input_node == output_node:
+                        continue
+                    input_ports = list(input_node.input_ports.values())
+                    output_ports = list(output_node.output_ports.values())
+                    input_ports.sort(key=lambda p: p.scenePos().y())
+                    output_ports.sort(key=lambda p: p.scenePos().y())
+                    for i in range(min(len(input_ports), len(output_ports))):
+                        output_port = output_ports[i]
+                        input_port = input_ports[i]
+                        if (output_port.port_name, input_port.port_name) not in self.scene.connections:
+                            all_connected = False
+                            break
+                    if not all_connected:
+                        break
+                if not all_connected:
+                    break
+            can_connect = not all_connected # Enable if any potential connections are missing
 
-        self.connect_button.setEnabled(can_connect)
+        if hasattr(self, 'graph_connect_action'):
+            self.graph_connect_action.setEnabled(can_connect)
 
         # Disconnect button state
         can_disconnect = False
@@ -383,7 +417,8 @@ class MainWindow(QMainWindow):
                 if can_disconnect:
                     break
         
-        self.disconnect_button.setEnabled(can_disconnect)
+        if hasattr(self, 'graph_disconnect_action'):
+            self.graph_disconnect_action.setEnabled(can_disconnect)
 
 
     @pyqtSlot()
@@ -486,8 +521,8 @@ class MainWindow(QMainWindow):
             if hasattr(self, 'statusBar') and self.statusBar():
                 self.statusBar().showMessage(f"{connections_made} connection(s) attempted.", 3000)
         else:
-            # Only show this if an attempt was actually possible (buttons were enabled)
-            if self.connect_button.isEnabled(): # Check if button was enabled before click
+            # Only show this if an attempt was actually possible (action was enabled)
+            if hasattr(self, 'graph_connect_action') and self.graph_connect_action.isEnabled(): # Check if action was enabled
                  if hasattr(self, 'statusBar') and self.statusBar():
                      self.statusBar().showMessage("No new connections were made (possibly already connected or error).", 3000)
         # self.update_graph_connection_buttons_state() # No longer needed here, scene signal will trigger it
@@ -599,14 +634,20 @@ class MainWindow(QMainWindow):
             if hasattr(self, 'statusBar') and self.statusBar():
                 self.statusBar().showMessage(f"{disconnections_made} disconnection(s) attempted.", 3000)
         else:
-            # Only show this if an attempt was actually possible (buttons were enabled)
-            if self.disconnect_button.isEnabled(): # Check if button was enabled before click
+            # Only show this if an attempt was actually possible (action was enabled)
+            if hasattr(self, 'graph_disconnect_action') and self.graph_disconnect_action.isEnabled(): # Check if action was enabled
                 if hasattr(self, 'statusBar') and self.statusBar():
                     self.statusBar().showMessage("No connections were broken (possibly not connected or error).", 3000)
         # self.update_graph_connection_buttons_state() # No longer needed here, scene signal will trigger it
         self._update_graph_undo_redo_buttons_state() # Update undo/redo buttons
 
     @pyqtSlot()
+    @pyqtSlot()
+    def _handle_node_filter_change(self):
+        """Handles text changes in the node filter box."""
+        filter_text = self.node_filter_box.text()
+        self.scene.filter_nodes(filter_text)
+
     def handle_jack_shutdown(self):
         print("JACK has shut down. Disabling graph interaction.")
         # Disable further interaction, maybe show a message

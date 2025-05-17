@@ -10,6 +10,7 @@ from PyQt6.QtGui import QFont
 import threading # Added for graph tab
 
 from cables.ui.port_tree_widget import DragPortTreeWidget, DropPortTreeWidget
+from cables.ui.shared_widgets import create_action_button
 
 # Imports for Graph Tab
 import graph
@@ -83,36 +84,51 @@ class TabUIManager:
         middle_layout = QVBoxLayout()
         button_layout = QHBoxLayout()  # Top buttons: Connect, Disconnect, Presets
         
-        # Create buttons
-        connect_button = QPushButton('Connect')
-        connect_button.setToolTip("Connect selected items <span style='color:grey'>C</span>")
-        disconnect_button = QPushButton('Disconnect')
-        disconnect_button.setToolTip("Disconnect selected items <span style='color:grey'>D/Del</span>")
-        
-        presets_button = QToolButton() # Changed to QToolButton
-        presets_button.setText("Presets")
-        presets_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        # Create a menu for this button, PresetHandler will populate it
-        preset_menu_for_button = QMenu(presets_button)
-        presets_button.setMenu(preset_menu_for_button)
+        # Create buttons using shared_widgets factory
+        # Assumes manager.action_manager provides the necessary QAction instances
+        # (e.g., audio_connect_action, midi_connect_action, refresh_ports_action, presets_action)
+        # QActions should be pre-configured with text, icons (if any), and connected to handlers.
+        # The presets_action should also have its menu and enabled state managed by ActionManager.
 
-        refresh_button = QPushButton('Refresh')
+        if port_type == 'audio':
+            actual_connect_action = manager.action_manager.audio_connect_action
+            actual_disconnect_action = manager.action_manager.audio_disconnect_action
+        elif port_type == 'midi':
+            actual_connect_action = manager.action_manager.midi_connect_action
+            actual_disconnect_action = manager.action_manager.midi_disconnect_action
+        else: # Fallback, should not be reached for valid port_types
+            actual_connect_action = None
+            actual_disconnect_action = None
+
+        connect_button = create_action_button(
+            parent_widget=tab_widget,
+            action=actual_connect_action,
+            tooltip="Connect selected items <span style='color:grey'>C</span>"
+            # icon_path can be specified if icons are desired and not set on the QAction itself
+        )
         
-        # Apply styles to buttons
-        # Note: QToolButton might need slightly different styling or might inherit well
-        # Only apply custom styling to buttons that should NOT match the Graph tab
-        for button in [presets_button, refresh_button]:
-            button.setStyleSheet(manager.button_stylesheet()) # Assuming this style works for QToolButton too
+        disconnect_button = create_action_button(
+            parent_widget=tab_widget,
+            action=actual_disconnect_action,
+            tooltip="Disconnect selected items <span style='color:grey'>D/Del</span>"
+        )
+
+        # Presets button: QAction should be configured with text "Presets" and its menu.
+        # ActionManager should handle connecting menu's aboutToShow and action's enabled state.
+        presets_action = manager.action_manager.presets_action
+        presets_button = create_action_button(
+            parent_widget=tab_widget,
+            action=presets_action,
+            tooltip="Manage Presets" # Standardized tooltip
+        )
+        # Ensure popup mode for menu buttons is set if not handled by factory or action style
+        presets_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+
+        # Refresh button removed - using only the bottom refresh button
         
-        # Connect, Disconnect buttons should match Graph tab styling
-        # Apply a specific stylesheet to disable hover effect
-        no_hover_style = """
-            QPushButton { background-color: palette(button); color: palette(buttonText); }
-            QPushButton:hover { background-color: palette(button); color: palette(buttonText); }
-        """
-        connect_button.setStyleSheet(no_hover_style)
-        disconnect_button.setStyleSheet(no_hover_style)
-        
+        # Old styling specific to QPushButton or individual QToolButton styling is removed.
+        # The create_action_button factory is now responsible for the common appearance.
+
         # Add buttons to layout
         button_layout.addWidget(connect_button)
         button_layout.addWidget(disconnect_button)
@@ -141,18 +157,14 @@ class TabUIManager:
             manager.connection_view = connection_view
             manager.connect_button = connect_button
             manager.disconnect_button = disconnect_button
-            manager.refresh_button = refresh_button
+            # Refresh button reference removed
             manager.presets_button = presets_button
             
-            # Connect signals (itemClicked signals are now connected in JackConnectionManager.__init__)
-            connect_button.clicked.connect(manager.make_connection_selected)
-            disconnect_button.clicked.connect(manager.break_connection_selected)
-            refresh_button.clicked.connect(manager.refresh_ports)
-            # Connect the menu's aboutToShow signal
-            if hasattr(manager, 'preset_handler') and manager.preset_handler:
-                preset_menu_for_button.aboutToShow.connect(manager.preset_handler._show_preset_menu)
-            else:
-                presets_button.setEnabled(False)
+            # Signal connections are now handled by QAction via button.setDefaultAction()
+            # in create_action_button.
+            # The QActions (e.g., audio_connect_action, presets_action) must be connected
+            # to their respective handlers within the ActionManager or JackConnectionManager.
+            # The enabled state of presets_button is also handled by presets_action.
             
             # Filter signals are now connected in PortManager.set_trees() after trees are created.
             # No need to connect them here anymore.
@@ -164,18 +176,14 @@ class TabUIManager:
             manager.midi_connection_view = connection_view
             manager.midi_connect_button = connect_button
             manager.midi_disconnect_button = disconnect_button
-            manager.midi_refresh_button = refresh_button
+            # Refresh button reference removed
             manager.midi_presets_button = presets_button
             
-            # Connect signals (itemClicked signals are now connected in JackConnectionManager.__init__)
-            connect_button.clicked.connect(manager.make_midi_connection_selected)
-            disconnect_button.clicked.connect(manager.break_midi_connection_selected)
-            refresh_button.clicked.connect(manager.refresh_ports)
-            # Connect the menu's aboutToShow signal for MIDI tab
-            if hasattr(manager, 'preset_handler') and manager.preset_handler:
-                preset_menu_for_button.aboutToShow.connect(manager.preset_handler._show_preset_menu)
-            else:
-                presets_button.setEnabled(False)
+            # Signal connections are now handled by QAction via button.setDefaultAction()
+            # in create_action_button.
+            # The QActions (e.g., midi_connect_action, presets_action) must be connected
+            # to their respective handlers within the ActionManager or JackConnectionManager.
+            # The enabled state of presets_button is also handled by presets_action.
         
         # Initial font size is now applied by UIStateManager after it's initialized
         # manager._apply_port_list_font_size() # Removed call

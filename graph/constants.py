@@ -61,7 +61,7 @@ SPLIT_OUTPUT_SUFFIX = " (Outputs)"
 NODE_HSPACING = 30
 
 # UI Layout Fine-tuning
-GRAPH_TOOLBAR_UNDO_REDO_OFFSET = 130 # Adjust to shift Undo/Redo buttons in Graph tab toolbar, e.g., 10 or -10
+GRAPH_TOOLBAR_UNDO_REDO_OFFSET = -65 # Adjust to shift Undo/Redo buttons in Graph tab toolbar, e.g., 10 or -10
 
 # Padding for the QGraphicsView sceneRect to prevent items from touching edges
 VIEW_PADDING = 50

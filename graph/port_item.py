@@ -30,6 +30,7 @@ class PortItem(QGraphicsItem):
         super().__init__(parent_node)
         self.parent_node = parent_node
         self.port_name = port_name
+        self.port_obj = port_obj  # Store the JACK port object
         self.short_name = port_obj.shortname # Correct attribute name
         self.is_input = is_input
         self.connections = [] # List of ConnectionItems attached

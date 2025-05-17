@@ -2,6 +2,7 @@
 import jack
 import re
 from PyQt6.QtCore import Qt
+from cables import jack_utils # Import the new jack_utils module
 
 class PortManager:
     """Manages fetching, sorting, and filtering of JACK ports."""
@@ -46,59 +47,80 @@ class PortManager:
 
         # Connect filter signals now that trees and filters exist
         if self.input_filter_edit:
-            # Ensure no duplicate connections if called multiple times (though it shouldn't be)
+            # Style to match Graph tab's filter
+            self.input_filter_edit.setFrame(False)
+            self.input_filter_edit.setStyleSheet("""
+                QLineEdit {
+                    border: 1px solid rgba(0, 0, 0, 0.1);
+                    border-radius: 3px;
+                    padding: 2px 5px;
+                }
+                QLineEdit:focus {
+                    border: 1px solid rgba(0, 85, 255, 0.3);
+                }
+            """)
+            # Ensure no duplicate connections if called multiple times
             try: self.input_filter_edit.textChanged.disconnect(self._handle_filter_change)
             except TypeError: pass
             self.input_filter_edit.textChanged.connect(self._handle_filter_change)
 
         if self.output_filter_edit:
+            # Style to match Graph tab's filter
+            self.output_filter_edit.setFrame(False)
+            self.output_filter_edit.setStyleSheet("""
+                QLineEdit {
+                    border: 1px solid rgba(0, 0, 0, 0.1);
+                    border-radius: 3px;
+                    padding: 2px 5px;
+                }
+                QLineEdit:focus {
+                    border: 1px solid rgba(0, 85, 255, 0.3);
+                }
+            """)
             try: self.output_filter_edit.textChanged.disconnect(self._handle_filter_change)
             except TypeError: pass
             self.output_filter_edit.textChanged.connect(self._handle_filter_change)
 
 
-    def _get_ports(self, is_midi):
+    def _get_ports(self, is_midi_tab: bool):
         """
-        Get the input and output ports.
+        Get the input and output ports using jack_utils.
 
         Args:
-            is_midi: Whether to get MIDI ports
+            is_midi_tab: Whether to get MIDI ports (for MIDI tab) or Audio ports (for Audio tab)
 
         Returns:
-            tuple: A tuple containing the input and output ports
+            tuple: A tuple containing the sorted input and output port names
         """
-        input_ports = []
-        output_ports = []
+        input_port_names = []
+        output_port_names = []
+
+        if not self.jack_client:
+            return input_port_names, output_port_names
+
         try:
-            # Get input port objects
-            input_port_objects = self.jack_client.get_ports(is_input=True, is_midi=is_midi)
-
-            # Get output port objects
-            output_port_objects = self.jack_client.get_ports(is_output=True, is_midi=is_midi)
-
-            # Explicitly filter for the Audio tab (is_midi=False)
-            # Ensure only ports reported as non-MIDI by the port object itself are included.
-            if not is_midi:
-                input_port_objects = [p for p in input_port_objects if p is not None and not p.is_midi]
-                output_port_objects = [p for p in output_port_objects if p is not None and not p.is_midi]
+            if is_midi_tab:
+                # For MIDI tab, get MIDI ports
+                input_port_objects = jack_utils.get_all_jack_ports(self.jack_client, is_input=True, is_midi=True)
+                output_port_objects = jack_utils.get_all_jack_ports(self.jack_client, is_output=True, is_midi=True)
             else:
-                # For MIDI tab, just ensure ports are not None
-                input_port_objects = [p for p in input_port_objects if p is not None]
-                output_port_objects = [p for p in output_port_objects if p is not None]
+                # For Audio tab, get Audio ports (explicitly not MIDI)
+                # jack.Client.get_ports(is_audio=True) is the most direct way.
+                input_port_objects = jack_utils.get_all_jack_ports(self.jack_client, is_input=True, is_audio=True)
+                output_port_objects = jack_utils.get_all_jack_ports(self.jack_client, is_output=True, is_audio=True)
 
-            # Extract names from the filtered objects
-            input_ports = [p.name for p in input_port_objects]
-            output_ports = [p.name for p in output_port_objects]
+            input_port_names = [p.name for p in input_port_objects]
+            output_port_names = [p.name for p in output_port_objects]
 
-            # Sort the names
-            input_ports = self._sort_ports(input_ports)
-            output_ports = self._sort_ports(output_ports)
-        except jack.JackError as e:
-            print(f"Error getting ports: {e}")
-            # Return current lists even if incomplete
+            input_port_names = self._sort_ports(input_port_names)
+            output_port_names = self._sort_ports(output_port_names)
+
+        except jack.JackError as e: # This might be redundant if jack_utils handles it, but good for safety.
+            print(f"Error getting ports via jack_utils: {e}")
+            # jack_utils functions return [] on JackError, so lists will be empty.
             pass
-
-        return input_ports, output_ports
+        
+        return input_port_names, output_port_names
 
     def _sort_ports(self, port_names):
         """
@@ -111,14 +133,14 @@ class PortManager:
             list: The sorted port names
         """
         def get_sort_key(port_name):
-            parts = re.split(r'(\d+)', port_name)
-            key = []
-            for part in parts:
-                if part.isdigit():
-                    key.append(int(part))
-                else:
-                    key.append(part.lower())
-            return key
+            """Natural sort key function with proper numeric handling"""
+            def tryint(text):
+                try:
+                    return int(text)
+                except ValueError:
+                    return text.lower()
+
+            return [tryint(part) for part in re.split(r'(\d+)', port_name)]
 
         return sorted(port_names, key=get_sort_key)
 

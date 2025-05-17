@@ -1,13 +1,13 @@
 # Cable
-PyQT GUI application to dynamically modify Pipewire and Wireplumber settings at runtime.
-It features side-by-side and graph style connections manager (uses Python Jack Client so will not list Pipewire items), pw-top and latency test tabs.
+PyQT GUI application to dynamically modify Pipewire and Wireplumber settings at runtime, such as quantum. sample rate, latency offset setting, services restart and more.
+It features side-by-side and graph style connections manager (uses Python Jack Client so will not list Pipewire items), pw-top wrapper, simple ALSA mixer and jack_delay GUI. 
 
 
 If you wonder what Latency Offset option does, look [here](https://pipewire.pages.freedesktop.org/wireplumber/daemon/configuration/alsa.html#alsa-extra-latency-properties). 
 
 
 
-To run, clone repository and start with `python Cable.py`. You will need python jack client, see [here](https://pypi.org/project/JACK-Client/0.5.1/), python PyQT6 and jack_delay (or jack-example-tools) installed.
+To run, clone repository and start with `python Cable.py`. You will need python jack client, see [here](https://pypi.org/project/JACK-Client/0.5.1/), python PyQT6, jack_delay (or jack-example-tools) and pyalsaaudio installed.
 
 Various packages are also available in [releases](https://github.com/magillos/Cable/releases).
 
@@ -24,6 +24,7 @@ On Arch Linux, install using PKGBUILD or Arch package. App is also available on 
 ![](https://github.com/magillos/Cable/blob/main/Cables.png)
 ![](https://github.com/magillos/Cable/blob/main/graph.png)
 ![](https://github.com/magillos/Cable/blob/main/pw-top.png)
+![](https://github.com/magillos/Cable/blob/main/mixer.png)
 ![](https://github.com/magillos/Cable/blob/main/latency.png)
 
 

@@ -4,14 +4,16 @@ import jack
 from PyQt6.QtCore import QObject # pyqtSignal, pyqtSlot, QTimer removed
 
 from . import constants # Import the constants module
+from cables import jack_utils # Import the new jack_utils module
 
 # --- JACK Interaction (Simplified for Graph Specifics) ---
 
 class GraphJackHandler(QObject):
     """Handles JACK client interactions using a shared client instance.
     This class is responsible for graph-specific JACK operations like
-    connecting/disconnecting ports and querying port information, but does
-    not manage the JACK client lifecycle or callbacks itself.
+    querying port information, but does not manage the JACK client
+    lifecycle or callbacks itself. Connection/disconnection logic is
+    handled by JackConnectionHandler.
     """
 
     def __init__(self, jack_client: jack.Client, connection_history_ref=None, main_window_ref=None, jack_connection_handler_ref=None):
@@ -23,57 +25,23 @@ class GraphJackHandler(QObject):
 
     # --- Safe Accessors ---
     def get_ports(self, **kwargs):
-        # with self._lock: # Lock removed
-        if not self.jack_client: return [] # Check if client exists
-        try:
-            return self.jack_client.get_ports(**kwargs)
-        except jack.JackError:
-            return []
-
-    def get_all_connections(self, port_name):
-        """Gets all connections for a given port name using the library's method."""
-        # with self._lock: # Lock removed
         if not self.jack_client: return []
-        try:
-            # Get the Port object for the given name
-            port_obj = self.jack_client.get_port_by_name(port_name)
-            if not port_obj:
-                # print(f"Warning: Port '{port_name}' not found in get_all_connections.")
-                return [] # Port doesn't exist
+        # Pass all keyword arguments directly to the utility function
+        return jack_utils.get_all_jack_ports(self.jack_client, **kwargs)
 
-            # Use the library's built-in method, passing the Port object
-            connected_ports = self.jack_client.get_all_connections(port_obj)
+    def get_all_connections(self, port_name: str):
+        """
+        Gets all connections for a given port name.
+        Returns a list of (source_port_name, dest_port_name) tuples.
+        """
+        if not self.jack_client: return []
+        # The utility function handles if port_name is a source or destination
+        # and returns the connections in (source, dest) format.
+        return jack_utils.get_all_jack_connections(self.jack_client, port_or_name=port_name)
 
-            # Convert the list of connected Port objects to the expected tuple format
-            connections = []
-            if port_obj.is_output:
-                # If the input port_name refers to an output port
-                for connected_in_port in connected_ports:
-                    if connected_in_port.is_input: # Sanity check
-                        connections.append((port_obj.name, connected_in_port.name))
-            elif port_obj.is_input:
-                 # If the input port_name refers to an input port
-                 for connected_out_port in connected_ports:
-                     if connected_out_port.is_output: # Sanity check
-                         connections.append((connected_out_port.name, port_obj.name))
-            # else: port is neither input nor output? Should not happen.
-
-            return connections # Returns list of (out_port_name, in_port_name) tuples
-        except jack.JackError as e:
-             print(f"JACK Error in get_all_connections for {port_name}: {e}", file=sys.stderr)
-             return []
-        except AttributeError as e: # Handle potential issues if port_obj is None or client inactive
-             print(f"AttributeError in get_all_connections for {port_name}: {e}", file=sys.stderr)
-             return []
-
-
-    def get_port_by_name(self, name):
-        # with self._lock: # Lock removed
+    def get_port_by_name(self, name: str):
         if not self.jack_client: return None
-        try:
-            return self.jack_client.get_port_by_name(name)
-        except jack.JackError:
-            return None
+        return jack_utils.get_jack_port_by_name(self.jack_client, name)
 
 
     # Connection methods (connect, disconnect, connect_all_between, disconnect_all_between)

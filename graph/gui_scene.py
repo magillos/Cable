@@ -9,6 +9,7 @@ from PyQt6.QtCore import Qt, QPointF, pyqtSlot, pyqtSignal
 
 from . import constants # Import the new constants module
 from .jack_handler import GraphJackHandler # Import the refactored class
+from cables import jack_utils # Import the new jack_utils module
 from .port_item import PortItem
 from .node_item import NodeItem
 # from cables.connection_manager import JackConnectionManager # For signals and client access - REMOVED to break cycle
@@ -87,8 +88,9 @@ class JackGraphScene(QGraphicsScene):
             return
 
         try:
-            all_ports = self.jack_client.get_ports() # Use the direct jack.Client instance
-            if all_ports is None:
+            # Use the new utility function to get all ports
+            all_ports = jack_utils.get_all_jack_ports(self.jack_client)
+            if all_ports is None: # Should not happen if jack_utils returns [] on error
                 all_ports = []
 
             self._synchronize_nodes_with_jack(all_ports)
@@ -193,6 +195,59 @@ class JackGraphScene(QGraphicsScene):
         for conn_key in all_connections_set: # Add all connections found in JACK
             self.add_connection(*conn_key)
         # Note: Removal of old connections was handled by clearing all connections first.
+
+    def filter_nodes(self, filter_text: str):
+        """Filters nodes based on their client names.
+        
+        Args:
+            filter_text: The filter text to match against node names.
+                        Supports space-separated terms and exclusion with '-' prefix.
+        """
+        if not self.nodes:
+            return
+            
+        filter_text_lower = filter_text.lower()
+        terms = filter_text_lower.split()
+        include_terms = [term for term in terms if not term.startswith('-')]
+        exclude_terms = [term[1:] for term in terms if term.startswith('-') and len(term) > 1]
+
+        for node in self.nodes.values():
+            # Skip hidden split origin nodes
+            if node.is_split_origin and not node.isVisible():
+                continue
+                
+            node_name_lower = node.client_name.lower()
+            
+            # Check exclusion terms first
+            excluded = any(term in node_name_lower for term in exclude_terms)
+            if excluded:
+                node.setVisible(False)
+                # Hide connections for this node
+                self._update_connections_visibility(node)
+                continue
+                
+            # Check inclusion terms (all must match)
+            included = True
+            if include_terms:
+                included = all(term in node_name_lower for term in include_terms)
+                
+            node.setVisible(included)
+            self._update_connections_visibility(node)
+
+    def _update_connections_visibility(self, node: 'NodeItem'):
+        """Updates visibility of connections for a node based on its visibility."""
+        if not node.isVisible():
+            # Hide all connections for this node's ports
+            for port in list(node.input_ports.values()) + list(node.output_ports.values()):
+                for conn in port.connections:
+                    conn.setVisible(False)
+        else:
+            # Show connections only if both nodes are visible
+            for port in list(node.input_ports.values()) + list(node.output_ports.values()):
+                for conn in port.connections:
+                    other_port = conn.source_port if port.is_input else conn.dest_port
+                    if other_port and other_port.parentItem().isVisible():
+                        conn.setVisible(True)
 
     def clear_graph(self):
         """Remove all items from the scene."""

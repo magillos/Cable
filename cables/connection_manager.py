@@ -477,10 +477,17 @@ class JackConnectionManager(QMainWindow):
             self.show_bottom_controls(False)
         elif index == 4: # Alsa Mixer tab (index 4)
             self.show_bottom_controls(False)
-            # AlsMixerApp manages its own state/timers
+            if hasattr(self, 'alsa_mixer_app') and self.alsa_mixer_app:
+                # Start ALSA mixer updates only if the window is focused
+                if self.isActiveWindow():
+                    self.alsa_mixer_app.start_updates()
         elif index == 5:  # Latency Test tab (index 5)
             self.show_bottom_controls(False)
         
+        # Stop ALSA mixer updates when switching away from the tab
+        if self.last_active_tab == 4 and hasattr(self, 'alsa_mixer_app') and self.alsa_mixer_app:
+            self.alsa_mixer_app.stop_updates()
+
         self.last_active_tab = index
         self.config_manager.set_int('last_active_tab', index)
 
@@ -650,8 +657,21 @@ class JackConnectionManager(QMainWindow):
     def changeEvent(self, event):
         super().changeEvent(event)
         if event.type() == event.Type.ActivationChange:
+            is_focused = self.isActiveWindow()
             if hasattr(self, 'ui_state_manager'):
-                 self.ui_state_manager.handle_focus_change(self.isActiveWindow())
+                 self.ui_state_manager.handle_focus_change(is_focused)
+
+            # Manage ALSA mixer updates based on focus and active tab
+            if hasattr(self, 'tab_widget') and hasattr(self, 'alsa_mixer_tab_widget') and hasattr(self, 'alsa_mixer_app'):
+                current_tab_index = self.tab_widget.currentIndex()
+                current_widget = self.tab_widget.widget(current_tab_index)
+                is_alsa_mixer_tab_active = (current_widget == self.alsa_mixer_tab_widget)
+
+                if is_alsa_mixer_tab_active:
+                    if is_focused:
+                        self.alsa_mixer_app.start_updates()
+                    else:
+                        self.alsa_mixer_app.stop_updates()
 
     def _animate_button_press(self, button):
         if not button:
@@ -1102,8 +1122,10 @@ class JackConnectionManager(QMainWindow):
             self.client.deactivate()
             self.client.close()
         
-        self.connection_view.stop_refresh_timer()
-        self.midi_connection_view.stop_refresh_timer()
+        if hasattr(self.connection_view, 'refresh_timer'):
+            self.connection_view.refresh_timer.stop()
+        if hasattr(self.midi_connection_view, 'refresh_timer'):
+            self.midi_connection_view.refresh_timer.stop()
         
         if hasattr(self, 'pwtop_monitor') and self.pwtop_monitor is not None:
             self.pwtop_monitor.stop()

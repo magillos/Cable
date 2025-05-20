@@ -64,6 +64,8 @@ class TabUIManager:
         from cables.ui.connection_view import ConnectionView
         connection_scene = QGraphicsScene()
         connection_view = ConnectionView(connection_scene)
+        # Connect to JACK client signals for real-time updates
+        connection_view.connect_to_jack_signals(manager.client)
         
         # Apply styles
         input_tree.setStyleSheet(manager.list_stylesheet())

@@ -156,10 +156,10 @@ class UIStateManager(QObject):
             self._update_refresh_timer_interval()
         else:
             # Stop timers
-            if self.connection_view:
-                self.connection_view.stop_refresh_timer()
-            if self.midi_connection_view:
-                self.midi_connection_view.stop_refresh_timer()
+            if self.connection_view and hasattr(self.connection_view, 'refresh_timer'):
+                self.connection_view.refresh_timer.stop()
+            if self.midi_connection_view and hasattr(self.midi_connection_view, 'refresh_timer'):
+                self.midi_connection_view.refresh_timer.stop()
             logger.debug("Auto Refresh Timers Stopped")
 
     def _update_refresh_timer_interval(self):
@@ -175,11 +175,13 @@ class UIStateManager(QObject):
         interval = app_config.REFRESH_RATE_UNFOCUSED_MS # Default unfocused
         if self._is_focused:
             current_index = self.main_window.tab_widget.currentIndex()
+            # Indices for tabs that should use the slower refresh rate when focused
+            special_tabs_indices = [2, 3, 4, 5] # Graph, Alsa Mixer, pw-top, Latency Test
             if current_index in [0, 1]: # Audio or MIDI tab
                 interval = app_config.REFRESH_RATE_FOCUSED_MS
-            elif current_index in [2, 3]: # pw-top or Latency Test tab
+            elif current_index in special_tabs_indices:
                  interval = app_config.REFRESH_RATE_SPECIAL_TABS_MS
-            else: # Fallback for other tabs (use focused rate as default when focused)
+            else: # Fallback for any other tabs (shouldn't happen with current tabs, but good practice)
                  interval = app_config.REFRESH_RATE_FOCUSED_MS
         # else: # Not focused - already set as default above
 

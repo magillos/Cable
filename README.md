@@ -1,5 +1,5 @@
 # Cable
-PyQT GUI application to dynamically modify Pipewire and Wireplumber settings at runtime, such as quantum. sample rate, latency offset, services restart and more.
+PyQT GUI application to dynamically modify Pipewire and Wireplumber settings at runtime, such as quantum, sample rate, latency offset, services restart and more.
 It features side-by-side and graph style connections managers (uses Python Jack Client so will not list Pipewire items), pw-top wrapper, simple ALSA mixer and jack_delay GUI. 
 
 

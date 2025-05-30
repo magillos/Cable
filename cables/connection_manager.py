@@ -30,6 +30,7 @@ from cables.port_manager import PortManager # Added import
 from cables.interaction_manager import InteractionManager # Added import
 from cable_core import app_config
 from cables.features.mixer import AlsMixerApp # Added import for Alsa Mixer
+from cables.features.node_visibility_manager import NodeVisibilityManager
 
 class JackConnectionManager(QMainWindow):
     """
@@ -73,7 +74,10 @@ class JackConnectionManager(QMainWindow):
         
         # Set up the main window
         self.setWindowTitle('Cables')
-        self.setGeometry(app_config.CONN_MANAGER_INITIAL_X, app_config.CONN_MANAGER_INITIAL_Y, app_config.CONN_MANAGER_INITIAL_WIDTH, app_config.CONN_MANAGER_INITIAL_HEIGHT)
+        # Load window dimensions from config or use app_config defaults
+        conn_manager_initial_width = self.config_manager.get_int_setting("CONN_MANAGER_INITIAL_WIDTH", app_config.CONN_MANAGER_INITIAL_WIDTH)
+        conn_manager_initial_height = self.config_manager.get_int_setting("CONN_MANAGER_INITIAL_HEIGHT", app_config.CONN_MANAGER_INITIAL_HEIGHT)
+        self.setGeometry(app_config.CONN_MANAGER_INITIAL_X, app_config.CONN_MANAGER_INITIAL_Y, conn_manager_initial_width, conn_manager_initial_height)
         self.initial_middle_width = 250
         self.port_type = 'audio'
         
@@ -224,6 +228,13 @@ class JackConnectionManager(QMainWindow):
                     item, self.midi_output_tree, True
                 )
             )
+
+        # Initialize NodeVisibilityManager
+        self.node_visibility_manager = NodeVisibilityManager(self, self.config_manager)
+        
+        # Pass node visibility manager to port_manager
+        if hasattr(self, 'port_manager') and self.port_manager:
+            self.port_manager.set_node_visibility_manager(self.node_visibility_manager)
 
     def _setup_ui(self):
         main_widget = QWidget()
@@ -591,6 +602,10 @@ class JackConnectionManager(QMainWindow):
             self._refresh_single_port_type('midi')
         else:
             self._refresh_single_port_type(self.port_type)
+        
+        # Apply node visibility settings after refreshing ports
+        if hasattr(self, 'node_visibility_manager') and self.node_visibility_manager:
+            self.node_visibility_manager.apply_visibility_settings()
     
     def _get_selected_item_info(self, tree_widget):
         if not hasattr(tree_widget, 'currentItem'):
@@ -1231,3 +1246,15 @@ class JackConnectionManager(QMainWindow):
             self.centralWidget().layout().activate()
         if self.graph_tab_widget and self.graph_tab_widget.layout():
             self.graph_tab_widget.layout().activate()
+
+    def show_node_visibility_dialog(self):
+        """Show the node visibility configuration dialog."""
+        if hasattr(self, 'node_visibility_manager') and self.node_visibility_manager:
+            self.node_visibility_manager.show_configuration_dialog(self)
+            
+            # After dialog closes, pass node visibility manager to graph_main_window.scene if needed
+            if hasattr(self, 'graph_main_window') and self.graph_main_window:
+                if hasattr(self.graph_main_window, 'scene') and self.graph_main_window.scene:
+                    self.graph_main_window.scene.set_node_visibility_manager(self.node_visibility_manager)
+                    # Refresh the graph view
+                    self.graph_main_window.scene.full_graph_refresh()

@@ -211,55 +211,65 @@ class BulkAreaItem(QGraphicsItem):
                             port_item.setSelected(new_selection_state)
 
                     # Part 2: Inter-Node Bulk Area Selection Synchronization
-                    # This part runs after child ports have been set. If selecting this bulk area
-                    # caused all its ports to select, and those ports caused other ports on another node
-                    # to select, and that caused the other node's bulk area to select, this logic
-                    # might re-select an already selected item, but the .setSelected(True) on an
-                    # already selected item is a no-op in terms of visual change and itemChange trigger.
-                    all_items_in_scene = list(self.scene().items())
+                    # Determine if this level can propagate bulk-to-bulk selection
+                    can_propagate_bulk_to_bulk = False
+                    if not handler._is_in_auto_selection_cascade:
+                        can_propagate_bulk_to_bulk = True
+                        handler._is_in_auto_selection_cascade = True
+                    
+                    try:
+                        if can_propagate_bulk_to_bulk:
+                            # 2. Propagate selection to connected BulkAreaItems on other nodes
+                            # This involves iterating through all nodes in the scene to find potential connections.
+                            # This is less direct than PortItem's connection list but necessary for bulk-to-bulk.
+                            all_items_in_scene = list(self.scene().items())
 
-                    if value: # Current bulk area (self) is being SELECTED
-                        for item_in_scene_check in all_items_in_scene:
-                            if not isinstance(item_in_scene_check, NodeItem) or item_in_scene_check == self.parent_node:
-                                continue
-                            
-                            other_node = item_in_scene_check
-                            target_bulk_on_other_node = other_node.input_area_item if not self.is_input else other_node.output_area_item
-
-                            if target_bulk_on_other_node and not target_bulk_on_other_node.isSelected():
-                                if self._is_connected_to_other_bulk(target_bulk_on_other_node):
-                                    target_bulk_on_other_node.setSelected(True) # Triggers itemChange on other bulk
-                    else: # Current bulk area (self) is being DESELECTED
-                        for item_in_scene_check in all_items_in_scene:
-                            if not isinstance(item_in_scene_check, NodeItem) or item_in_scene_check == self.parent_node:
-                                continue
-
-                            other_node_to_check = item_in_scene_check
-                            bulk_on_other_to_check = other_node_to_check.input_area_item if not self.is_input else other_node_to_check.output_area_item
-                            
-                            if bulk_on_other_to_check and bulk_on_other_to_check.isSelected():
-                                # Check if bulk_on_other_to_check was connected to 'self' (which is now being deselected)
-                                if self._is_connected_to_other_bulk(bulk_on_other_to_check):
-                                    # It was connected to self. Now check if it has other reasons to stay selected.
-                                    should_other_remain_selected = False
-                                    for third_item_check_loop in all_items_in_scene:
-                                        if not isinstance(third_item_check_loop, NodeItem) or \
-                                           third_item_check_loop == bulk_on_other_to_check.parent_node or \
-                                           third_item_check_loop == self.parent_node: # Exclude self, and the node of the item being checked
-                                            continue
-                                        
-                                        third_node_as_peer_source = third_item_check_loop
-                                        # Peer bulk area on third_node that could connect to bulk_on_other_to_check
-                                        peer_bulk_on_third_node = third_node_as_peer_source.input_area_item if not bulk_on_other_to_check.is_input else third_node_as_peer_source.output_area_item
-                                        
-                                        if peer_bulk_on_third_node and peer_bulk_on_third_node.isSelected():
-                                            # Check connection from bulk_on_other_to_check to this *selected* peer
-                                            if bulk_on_other_to_check._is_connected_to_other_bulk(peer_bulk_on_third_node):
-                                                should_other_remain_selected = True
-                                                break
+                            if value: # Current bulk area (self) is being SELECTED
+                                for item_in_scene_check in all_items_in_scene:
+                                    if not isinstance(item_in_scene_check, typing.cast(type, NodeItem)) or item_in_scene_check == self.parent_node:
+                                        continue
                                     
-                                    if not should_other_remain_selected:
-                                        bulk_on_other_to_check.setSelected(False) # Triggers itemChange on other bulk
+                                    other_node = item_in_scene_check
+                                    target_bulk_on_other_node = other_node.input_area_item if not self.is_input else other_node.output_area_item
+
+                                    if target_bulk_on_other_node and not target_bulk_on_other_node.isSelected():
+                                        if self._is_connected_to_other_bulk(target_bulk_on_other_node):
+                                            target_bulk_on_other_node.setSelected(True) # Triggers itemChange on other bulk
+                            else: # Current bulk area (self) is being DESELECTED
+                                for item_in_scene_check in all_items_in_scene:
+                                    if not isinstance(item_in_scene_check, typing.cast(type, NodeItem)) or item_in_scene_check == self.parent_node:
+                                        continue
+
+                                    other_node_to_check = item_in_scene_check
+                                    bulk_on_other_to_check = other_node_to_check.input_area_item if not self.is_input else other_node_to_check.output_area_item
+                                    
+                                    if bulk_on_other_to_check and bulk_on_other_to_check.isSelected():
+                                        # Check if bulk_on_other_to_check was connected to 'self' (which is now being deselected)
+                                        if self._is_connected_to_other_bulk(bulk_on_other_to_check):
+                                            # It was connected to self. Now check if it has other reasons to stay selected.
+                                            should_other_remain_selected = False
+                                            for third_item_check_loop in all_items_in_scene:
+                                                if not isinstance(third_item_check_loop, typing.cast(type, NodeItem)) or \
+                                                   third_item_check_loop == bulk_on_other_to_check.parent_node or \
+                                                   third_item_check_loop == self.parent_node: # Exclude self, and the node of the item being checked
+                                                    continue
+                                                
+                                                third_node_as_peer_source = third_item_check_loop
+                                                # Peer bulk area on third_node that could connect to bulk_on_other_to_check
+                                                peer_bulk_on_third_node = third_node_as_peer_source.input_area_item if not bulk_on_other_to_check.is_input else third_node_as_peer_source.output_area_item
+                                                
+                                                if peer_bulk_on_third_node and peer_bulk_on_third_node.isSelected():
+                                                    # Check connection from bulk_on_other_to_check to this *selected* peer
+                                                    if bulk_on_other_to_check._is_connected_to_other_bulk(peer_bulk_on_third_node):
+                                                        should_other_remain_selected = True
+                                                        break
+                                            
+                                            if not should_other_remain_selected:
+                                                bulk_on_other_to_check.setSelected(False) # Triggers itemChange on other bulk
+                        # If not can_propagate_bulk_to_bulk, the above block is skipped.
+                    finally:
+                        if can_propagate_bulk_to_bulk:
+                            handler._is_in_auto_selection_cascade = False
                 finally:
                     self._is_handling_selection_change = False
         return super().itemChange(change, value)

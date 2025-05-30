@@ -4,7 +4,8 @@ import traceback # For error reporting in _split_node
 
 from PyQt6.QtWidgets import (
     QGraphicsItem, QGraphicsTextItem, QGraphicsPathItem, QMenu,
-    QStyleOptionGraphicsItem, QWidget, QStyle, QGraphicsSceneHoverEvent
+    QStyleOptionGraphicsItem, QWidget, QStyle, QGraphicsSceneHoverEvent,
+    QMessageBox, QCheckBox, QVBoxLayout, QDialog, QDialogButtonBox, QLabel
 )
 from PyQt6.QtGui import (
     QPainter, QPen, QBrush, QColor, QPainterPath, QFont, QAction, QPolygonF,
@@ -112,6 +113,8 @@ class NodeItem(QGraphicsItem):
             if not ports_added:
                  self.layout_ports() # Calculate initial size
 
+        # Store the configuration object
+        self.config = {}
 
     # --- Helper Methods ---
     def _is_effectively_folded(self) -> bool:
@@ -450,6 +453,222 @@ class NodeItem(QGraphicsItem):
     # _disconnect_all_inputs and _disconnect_all_outputs are no longer needed.
 
     # --- Context Menu Helper Methods ---
+    def _hide_node(self):
+        """Hides this node or part based on the NodeVisibilityManager settings."""
+        current_scene = self.scene()
+        if not current_scene or not hasattr(current_scene, 'node_visibility_manager') or not current_scene.node_visibility_manager:
+            print("Cannot hide node: NodeVisibilityManager not available")
+            return
+
+        # Determine the client name to hide
+        client_name = None
+        
+        # For split parts, use the original client name from origin node
+        if self.is_split_part and self.split_origin_node:
+            # Get the original name from the origin node
+            client_name = self.split_origin_node.client_name
+        # For split origin, use its own client name
+        elif self.is_split_origin:
+            client_name = self.client_name
+        # For normal nodes, use the client name
+        else:
+            client_name = self.client_name
+        
+        # Use original_client_name if set (for any node type)
+        if self.original_client_name:
+            client_name = self.original_client_name
+        
+        # Determine if this is a MIDI node by checking any port
+        is_midi = False
+        
+        # First check this node's ports
+        for port_list in [self.input_ports, self.output_ports]:
+            for port_item in port_list.values():
+                if hasattr(port_item.port_obj, 'is_midi') and port_item.port_obj.is_midi:
+                    is_midi = True
+                    break
+            if is_midi:
+                break
+        
+        # For split parts/origin, check the related nodes as well
+        if not is_midi:
+            # If this is a split origin, check its parts
+            if self.is_split_origin:
+                # Check input part
+                if self.split_input_node:
+                    for port_item in self.split_input_node.input_ports.values():
+                        if hasattr(port_item.port_obj, 'is_midi') and port_item.port_obj.is_midi:
+                            is_midi = True
+                            break
+                # Check output part
+                if not is_midi and self.split_output_node:
+                    for port_item in self.split_output_node.output_ports.values():
+                        if hasattr(port_item.port_obj, 'is_midi') and port_item.port_obj.is_midi:
+                            is_midi = True
+                            break
+            # If this is a split part, check the origin node
+            elif self.is_split_part and self.split_origin_node:
+                # Check other part via origin
+                other_part = None
+                if bool(self.input_ports) and not bool(self.output_ports):  # This is input part
+                    other_part = self.split_origin_node.split_output_node
+                else:  # This is output part
+                    other_part = self.split_origin_node.split_input_node
+                
+                if other_part:
+                    for port_list in [other_part.input_ports, other_part.output_ports]:
+                        for port_item in port_list.values():
+                            if hasattr(port_item.port_obj, 'is_midi') and port_item.port_obj.is_midi:
+                                is_midi = True
+                                break
+                        if is_midi:
+                            break
+
+        if not client_name:
+            print(f"Cannot hide node: Unable to determine client name")
+            return
+        
+        # Get a parent widget for the dialog (the view)
+        parent_widget = None
+        if current_scene.views():
+            parent_widget = current_scene.views()[0]
+        
+        # Check if we should show the confirmation dialog
+        show_dialog = True
+        
+        # Try to get the global config from the connection_manager
+        if hasattr(current_scene, 'connection_manager') and current_scene.connection_manager:
+            if hasattr(current_scene.connection_manager, 'config_manager') and current_scene.connection_manager.config_manager:
+                # Use the application-level config_manager which has get_bool method
+                app_config = current_scene.connection_manager.config_manager
+                show_dialog = app_config.get_bool('show_hide_node_confirmation', default=True)
+        
+        # Determine what to hide based on node type
+        hide_inputs = False
+        hide_outputs = False
+        
+        if self.is_split_part:
+            # For split parts, only hide the specific part (input or output)
+            if bool(self.input_ports) and not bool(self.output_ports):
+                # This is the input part
+                hide_inputs = True
+                message_type = "input" + (" MIDI" if is_midi else " audio")
+            elif bool(self.output_ports) and not bool(self.input_ports):
+                # This is the output part
+                hide_outputs = True
+                message_type = "output" + (" MIDI" if is_midi else " audio")
+            else:
+                # This should not happen, but handle it anyway
+                hide_inputs = True
+                hide_outputs = True
+                message_type = "MIDI" if is_midi else "audio"
+        else:
+            # For regular nodes or split origins, hide both input and output
+            hide_inputs = True
+            hide_outputs = True
+            message_type = "MIDI" if is_midi else "audio"
+        
+        if show_dialog and parent_widget:
+            # Create a custom dialog with checkbox
+            if hide_inputs and hide_outputs:
+                message = f"Hide {client_name} {message_type} node?"
+            elif hide_inputs:
+                message = f"Hide {client_name} input ports?"
+            elif hide_outputs:
+                message = f"Hide {client_name} output ports?"
+            else:
+                message = f"Hide {client_name}?"  # Fallback
+                
+            result = self._show_hide_confirmation_dialog(parent_widget, client_name, message_type, message)
+            if not result:
+                return
+        
+        # Update visibility setting and apply
+        if is_midi:
+            if hide_inputs:
+                current_scene.node_visibility_manager.midi_input_visibility[client_name] = False
+            if hide_outputs:
+                current_scene.node_visibility_manager.midi_output_visibility[client_name] = False
+        else:
+            if hide_inputs:
+                current_scene.node_visibility_manager.audio_input_visibility[client_name] = False
+            if hide_outputs:
+                current_scene.node_visibility_manager.audio_output_visibility[client_name] = False
+                
+        # Save and apply the updated settings
+        current_scene.node_visibility_manager.save_visibility_settings()
+        
+        # When hiding a node part, also hide its connections if this is a split part
+        if self.is_split_part:
+            # For split parts, hide connections before applying visibility settings
+            # which will eventually hide the node
+            if hasattr(current_scene, '_update_node_connections_visibility'):
+                current_scene._update_node_connections_visibility(self, False)
+                
+        # Apply the changes which will hide the node(s)
+        current_scene.node_visibility_manager.apply_visibility_settings()
+        
+        # Do a full refresh of all connection visibility to ensure consistency
+        if hasattr(current_scene, '_refresh_all_connection_visibility'):
+            current_scene._refresh_all_connection_visibility()
+    
+    def _show_hide_confirmation_dialog(self, parent, client_name, message_type, custom_message=None):
+        """
+        Show a confirmation dialog with 'don't show again' checkbox.
+        
+        Args:
+            parent: Parent widget for the dialog
+            client_name: Name of the client to hide
+            message_type: Type of the node (audio/MIDI)
+            custom_message: Optional custom message to show
+            
+        Returns:
+            bool: True if user confirmed, False otherwise
+        """
+        # Create a custom dialog
+        dialog = QDialog(parent)
+        dialog.setWindowTitle("Hide Node")
+        dialog.setModal(True)
+        
+        # Create layout
+        layout = QVBoxLayout(dialog)
+        
+        # Add message
+        if custom_message:
+            message = f"{custom_message}\n\nYou can restore it later from the Node Visibility dialog."
+        else:
+            message = f"Hide {client_name} {message_type} node?\n\nYou can restore it later from the Node Visibility dialog."
+        
+        label = QLabel(message)
+        layout.addWidget(label)
+        
+        # Add checkbox
+        checkbox = QCheckBox("Don't show this message again")
+        layout.addWidget(checkbox)
+        
+        # Add buttons
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Yes | QDialogButtonBox.StandardButton.No)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+        
+        # Execute dialog
+        result = dialog.exec() == QDialog.DialogCode.Accepted
+        
+        # Save checkbox state if accepted
+        if result and checkbox.isChecked():
+            # Try to get the global config from the scene's connection_manager
+            current_scene = self.scene()
+            if current_scene and hasattr(current_scene, 'connection_manager') and current_scene.connection_manager:
+                if hasattr(current_scene.connection_manager, 'config_manager') and current_scene.connection_manager.config_manager:
+                    app_config = current_scene.connection_manager.config_manager
+                    if hasattr(app_config, 'set_bool'):
+                        app_config.set_bool('show_hide_node_confirmation', False)
+                    else:
+                        print("Warning: config_manager doesn't have set_bool method")
+        
+        return result
+
     def _build_context_menu_for_split_part(self, menu: QMenu, disconnect_is_enabled: bool):
         is_input_part = bool(self.input_ports and not self.output_ports)
         is_output_part = bool(self.output_ports and not self.input_ports)
@@ -462,34 +681,46 @@ class NodeItem(QGraphicsItem):
         else: action.triggered.connect(self._disconnect_all_connections)
 
         if self.split_origin_node:
-            menu.addAction("Unsplit Node").triggered.connect(lambda: self.split_origin_node.split_handler.unsplit_node(save_state=True))
+            menu.addAction("Unsplit").triggered.connect(lambda: self.split_origin_node.split_handler.unsplit_node(save_state=True))
         else:
-            menu.addAction("Unsplit Node (Error: No Origin)").setEnabled(False)
+            menu.addAction("Unsplit (Error: No Origin)").setEnabled(False)
 
         if is_input_part:
             fold_text = "Unfold Input Part" if self.input_part_folded else "Fold Input Part"
-            menu.addAction(fold_text).triggered.connect(self.fold_handler.toggle_input_part_fold)
+            menu.addAction(fold_text).triggered.connect(lambda: self.fold_handler.toggle_input_part_fold())
         elif is_output_part:
             fold_text = "Unfold Output Part" if self.output_part_folded else "Fold Output Part"
-            menu.addAction(fold_text).triggered.connect(self.fold_handler.toggle_output_part_fold)
+            menu.addAction(fold_text).triggered.connect(lambda: self.fold_handler.toggle_output_part_fold())
+            
+        # Add the Hide option
+        menu.addSeparator()
+        menu.addAction("Hide").triggered.connect(self._hide_node)
 
     def _build_context_menu_for_split_origin(self, menu: QMenu, disconnect_is_enabled: bool):
         disconnect_action = menu.addAction("Disconnect all")
         disconnect_action.setEnabled(disconnect_is_enabled)
         disconnect_action.triggered.connect(self._disconnect_all_connections)
         menu.addAction("Unsplit Node").triggered.connect(lambda: self.split_handler.unsplit_node(save_state=True))
+        
+        # Add the Hide option
+        menu.addSeparator()
+        menu.addAction("Hide").triggered.connect(self._hide_node)
 
     def _build_context_menu_for_normal_node(self, menu: QMenu, disconnect_is_enabled: bool):
         disconnect_action = menu.addAction("Disconnect all")
         disconnect_action.setEnabled(disconnect_is_enabled)
         disconnect_action.triggered.connect(self._disconnect_all_connections)
         
-        split_action = menu.addAction("Split Node")
+        split_action = menu.addAction("Split")
         split_action.setEnabled(bool(self.input_ports) and bool(self.output_ports))
         split_action.triggered.connect(lambda: self.split_handler.split_node(save_state=True))
         
-        fold_text = "Unfold Node" if self.is_folded else "Fold Node"
+        fold_text = "Unfold" if self.is_folded else "Fold"
         menu.addAction(fold_text).triggered.connect(self.fold_handler.toggle_main_fold_state)
+        
+        # Add the Hide option
+        menu.addSeparator()
+        menu.addAction("Hide").triggered.connect(self._hide_node)
 
     def contextMenuEvent(self, event):
         if not (event.pos().y() <= self._calculated_title_height):
@@ -551,6 +782,9 @@ class NodeItem(QGraphicsItem):
 
     def apply_configuration(self, config: dict):
         """Applies visual state (split, position, fold states) from a configuration dictionary."""
+        # Store the config on the node for reference
+        self.config = config.copy()  # Make a copy to avoid reference issues
+        
         self.split_handler.apply_split_config(config) # Establishes split state first
 
         # Apply positions based on the now-current split state

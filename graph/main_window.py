@@ -88,7 +88,7 @@ class MainWindow(QMainWindow):
 
         # Create filter boxes
         self.node_filter_box = QLineEdit()
-        self.node_filter_box.setPlaceholderText("Filter Nodes...")
+        self.node_filter_box.setPlaceholderText("Filter Clients...")
         self.node_filter_box.setFixedWidth(150)
         self.node_filter_box.setToolTip("Use \"-\" prefix for exclusive filtering")
         self.node_filter_box.textChanged.connect(self._handle_node_filter_change)
@@ -100,6 +100,9 @@ class MainWindow(QMainWindow):
         top_toolbar_layout.addWidget(self.disconnect_button)
         top_toolbar_layout.addWidget(self.preset_button)
         top_toolbar_layout.addStretch(1)
+        
+        # Store a reference to the top toolbar layout for external access
+        self._top_toolbar_layout = top_toolbar_layout
 
         # Bottom toolbar layout (Filters, Undo, Redo, Zoom) - Mimicking Audio tab structure
         bottom_toolbar_layout = QHBoxLayout()
@@ -673,3 +676,25 @@ class MainWindow(QMainWindow):
         # self.scene.save_node_states(graph_zoom_level=current_zoom_level) # Also ensure this uses save_node_states if kept
         # self.jack_handler.stop() # Removed, main client lifecycle managed by JackConnectionManager
         event.accept()
+
+    def get_top_toolbar_layout(self):
+        """Returns the top toolbar layout for external modification.
+        
+        Returns:
+            QHBoxLayout: The top toolbar layout containing Connect, Disconnect, and Preset buttons
+        """
+        # Store a reference to the top_toolbar_layout as a class member
+        if hasattr(self, '_top_toolbar_layout'):
+            return self._top_toolbar_layout
+            
+        if self.centralWidget() and isinstance(self.centralWidget().layout(), QVBoxLayout):
+            main_layout = self.centralWidget().layout()
+            if main_layout.count() > 0:
+                # The first item should be the top_toolbar_layout
+                item = main_layout.itemAt(0)
+                if item and item.layout() and isinstance(item.layout(), QHBoxLayout):
+                    # Cache the reference for future use
+                    self._top_toolbar_layout = item.layout()
+                    return self._top_toolbar_layout
+        
+        return None

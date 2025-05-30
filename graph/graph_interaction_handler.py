@@ -58,6 +58,7 @@ class GraphInteractionHandler:
         self._potential_drag_start_pos = None
         self._processing_selection = False
         self._last_mouse_pos = None
+        self._is_in_auto_selection_cascade = False
 
     def _select_items(self, items_to_select: list[QGraphicsItem]):
         """Adds the given items to the scene's current selection."""

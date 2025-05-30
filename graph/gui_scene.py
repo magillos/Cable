@@ -5,7 +5,7 @@ from collections import defaultdict
 
 from PyQt6.QtWidgets import QGraphicsScene, QGraphicsPathItem
 from PyQt6.QtGui import QColor, QPen, QPainterPath
-from PyQt6.QtCore import Qt, QPointF, pyqtSlot, pyqtSignal
+from PyQt6.QtCore import Qt, QPointF, pyqtSlot, pyqtSignal, QRectF, QLineF, QObject, QTimer
 
 from . import constants # Import the new constants module
 from .jack_handler import GraphJackHandler # Import the refactored class
@@ -80,55 +80,328 @@ class JackGraphScene(QGraphicsScene):
  
     @pyqtSlot()
     def full_graph_refresh(self):
-        """Completely rebuild the graph based on current JACK state by calling helper methods."""
+        """
+        Perform a full refresh of the graph based on current JACK state.
+        This includes updating visibility based on NodeVisibilityManager settings.
+        """
         print("Performing full graph refresh...")
-        if not self.jack_client: # Check if the jack.Client instance is available
-            self.clear_graph()
-            print("Full graph refresh aborted: JACK client not available.")
-            return
 
         try:
-            # Use the new utility function to get all ports
-            all_ports = jack_utils.get_all_jack_ports(self.jack_client)
-            if all_ports is None: # Should not happen if jack_utils returns [] on error
-                all_ports = []
-
+            # Get all ports from JACK
+            all_ports = []
+            midi_ports = jack_utils.get_all_jack_ports(self.jack_client, is_midi=True)
+            audio_ports = jack_utils.get_all_jack_ports(self.jack_client, is_audio=True)
+            
+            if midi_ports:
+                all_ports.extend(midi_ports)
+            if audio_ports:
+                all_ports.extend(audio_ports)
+            
+            # Synchronize nodes and connections
             self._synchronize_nodes_with_jack(all_ports)
-            self._apply_node_configurations() # This will use the new NodeItem.apply_configuration
             self._synchronize_connections_with_jack(all_ports)
+            
+            # Refresh connection visibility for all connections
+            self._refresh_all_connection_visibility()
 
-            print("Graph refresh complete.")
+            # Emit signal that connections may have changed
+            self.scene_connections_changed.emit()
 
-        except jack.JackError as e:
-            print(f"JACK error during full graph refresh: {e}")
         except Exception as e:
-            print(f"Unexpected error during full graph refresh: {e}")
+            print(f"Error during full graph refresh: {e}")
+            import traceback
             traceback.print_exc()
 
     def _synchronize_nodes_with_jack(self, all_ports: list):
         """Adds new nodes from JACK and removes nodes not in JACK. Updates ports on existing nodes."""
         print("Synchronizing nodes with JACK...")
-        clients_ports = defaultdict(list)
+        
+        # Create a lookup of client_name -> list of ports
+        clients_ports = {}
+        current_client_names = set()
+        
         for port in all_ports:
-            client_name = port.name.split(':')[0]
-            clients_ports[client_name].append(port)
-
-        current_client_names = set(clients_ports.keys())
+            client_name, port_short_name = port.name.split(':', 1)
+            current_client_names.add(client_name)
+            
+            if client_name not in clients_ports:
+                clients_ports[client_name] = {}
+            
+            clients_ports[client_name][port.name] = port
+        
+        # Get the list of nodes we currently have
         existing_client_names = set(self.nodes.keys())
+        
+        if not hasattr(self, 'node_visibility_manager') or not self.node_visibility_manager:
+            # If we don't have a node visibility manager, just show everything
+            pass
+        else:
+            # Check each client for visibility and process it accordingly
+            clients_to_remove = []
+            clients_to_split = []
+            
+            for client_name in existing_client_names.intersection(current_client_names):
+                # Determine if this is a MIDI client
+                is_midi = False
+                if client_name in clients_ports:
+                    # Check if any port is a MIDI port
+                    for port_name, port_obj in clients_ports[client_name].items():
+                        if hasattr(port_obj, 'is_midi') and port_obj.is_midi:
+                            is_midi = True
+                            break
+                
+                # Check input and output visibility
+                input_visible = self.node_visibility_manager.is_input_visible(client_name, is_midi=is_midi)
+                output_visible = self.node_visibility_manager.is_output_visible(client_name, is_midi=is_midi)
+                
+                # Determine what to do with this node
+                if not input_visible and not output_visible:
+                    # If both input and output are hidden, remove the node completely
+                    clients_to_remove.append(client_name)
+                elif input_visible and output_visible:
+                    # Both visible - if the node is split, we should unsplit it
+                    node = self.nodes.get(client_name)
+                    if node and node.is_split_origin:
+                        # Check if this was a manual split (don't unsplit manual splits)
+                        is_manual_split = False
+                        if hasattr(node, 'config') and node.config:
+                            is_manual_split = node.config.get('manual_split', False)
+                        
+                        # For manually split nodes, make sure both parts are visible
+                        if is_manual_split:
+                            if node.split_input_node:
+                                node.split_input_node.show()
+                                # Also show connections to this part
+                                self._update_node_connections_visibility(node.split_input_node, True)
+                            if node.split_output_node:
+                                node.split_output_node.show()
+                                # Also show connections to this part
+                                self._update_node_connections_visibility(node.split_output_node, True)
+                        # Only unsplit if it wasn't a manual split
+                        else:
+                            # Node should be unsplit as both parts are visible
+                            node.split_handler.unsplit_node(save_state=True)
+                            
+                            # Make sure both parts are visible as well 
+                            # (this helps with the case where one part was previously hidden)
+                            if node.split_input_node:
+                                node.split_input_node.show()
+                            if node.split_output_node:
+                                node.split_output_node.show()
+                                
+                            # Also make sure the main node is visible
+                            node.show()
+                elif (input_visible and not output_visible) or (not input_visible and output_visible):
+                    # Only one side is visible - node should be split if it has both inputs and outputs
+                    node = self.nodes.get(client_name)
+                    
+                    # Check if node has both input and output ports
+                    has_inputs = False
+                    has_outputs = False
+                    
+                    if client_name in clients_ports:
+                        for port_name, port_obj in clients_ports[client_name].items():
+                            if hasattr(port_obj, 'is_input'):
+                                if port_obj.is_input:
+                                    has_inputs = True
+                                else:
+                                    has_outputs = True
+                            
+                            if has_inputs and has_outputs:
+                                break
+                    
+                    if has_inputs and has_outputs:
+                        # Node has both inputs and outputs, check if it should be split
+                        if node and not node.is_split_origin:
+                            # Add to list of nodes to split
+                            clients_to_split.append(client_name)
+                        elif node and node.is_split_origin:
+                            # Node is already split, make sure the appropriate parts are shown/hidden
+                            # based on current visibility settings
+                            
+                            # For input part
+                            if node.split_input_node:
+                                if input_visible:
+                                    node.split_input_node.show()
+                                    # Also show connections to this part
+                                    self._update_node_connections_visibility(node.split_input_node, True)
+                                else:
+                                    node.split_input_node.hide()
+                                    # Also hide connections to this part
+                                    self._update_node_connections_visibility(node.split_input_node, False)
+                            
+                            # For output part
+                            if node.split_output_node:
+                                if output_visible:
+                                    node.split_output_node.show()
+                                    # Also show connections to this part
+                                    self._update_node_connections_visibility(node.split_output_node, True)
+                                else:
+                                    node.split_output_node.hide()
+                                    # Also hide connections to this part
+                                    self._update_node_connections_visibility(node.split_output_node, False)
+                            
+                            # Do a full refresh of connection visibility to ensure consistency
+                            self._refresh_all_connection_visibility()
 
-        # Remove nodes for clients that no longer exist
-        for client_name in existing_client_names - current_client_names:
-            self.remove_node(client_name)
+            # Remove hidden nodes
+            for client_name in clients_to_remove:
+                self.remove_node(client_name)
+                # Also remove it from the set of existing names to avoid processing it further
+                existing_client_names.discard(client_name)
+            
+            # Split nodes as needed
+            for client_name in clients_to_split:
+                node = self.nodes.get(client_name)
+                if node and not node.is_split_origin:
+                    # Split the node
+                    node.split_handler.split_node(save_state=True)
+                    
+                    # Now hide the appropriate part based on visibility
+                    is_midi = False
+                    for port_name, port_obj in clients_ports[client_name].items():
+                        if hasattr(port_obj, 'is_midi') and port_obj.is_midi:
+                            is_midi = True
+                            break
+                    
+                    input_visible = self.node_visibility_manager.is_input_visible(client_name, is_midi=is_midi)
+                    output_visible = self.node_visibility_manager.is_output_visible(client_name, is_midi=is_midi)
+                    
+                    # For input part
+                    if node.split_input_node:
+                        if input_visible:
+                            node.split_input_node.show()
+                            # Also show connections to this part
+                            self._update_node_connections_visibility(node.split_input_node, True)
+                        else:
+                            node.split_input_node.hide()
+                            # Also hide connections to this part
+                            self._update_node_connections_visibility(node.split_input_node, False)
+                    
+                    # For output part  
+                    if node.split_output_node:
+                        if output_visible:
+                            node.split_output_node.show()
+                            # Also show connections to this part
+                            self._update_node_connections_visibility(node.split_output_node, True)
+                        else:
+                            node.split_output_node.hide()
+                            # Also hide connections to this part
+                            self._update_node_connections_visibility(node.split_output_node, False)
+                        
+                    # Do a full refresh of all connection visibility to ensure consistency
+                    self._refresh_all_connection_visibility()
 
-        # Add nodes for new clients (initial add, configuration applied separately)
-        for client_name in current_client_names - existing_client_names:
-            self.add_node(client_name) # Adds the original node item, position/split state handled later
+        # Update existing nodes and add new ones
+        new_node_y_offset = 0
+        for client_name in sorted(current_client_names):
+            if client_name in existing_client_names:
+                self._update_node_ports(client_name, clients_ports[client_name])
+            else:
+                # Check if the node should be visible according to visibility settings
+                if hasattr(self, 'node_visibility_manager') and self.node_visibility_manager:
+                    is_midi = False
+                    for port_name, port_obj in clients_ports[client_name].items():
+                        if hasattr(port_obj, 'is_midi') and port_obj.is_midi:
+                            is_midi = True
+                            break
+                    
+                    input_visible = self.node_visibility_manager.is_input_visible(client_name, is_midi=is_midi)
+                    output_visible = self.node_visibility_manager.is_output_visible(client_name, is_midi=is_midi)
+                    
+                    if not input_visible and not output_visible:
+                        # Node should not be visible at all
+                        continue
+                
+                # Add the node
+                node = self.add_node(client_name, clients_ports[client_name])
+                
+                # Get the loaded config or create an empty one
+                config = self.node_configs.get(client_name, {})
+                
+                # We pass the config directly. NodeItem will interpret it.
+                node.apply_configuration(config) # This is the new method in NodeItem
 
-        # Update ports within existing nodes
-        for client_name in current_client_names.intersection(existing_client_names):
-            if client_name in self.nodes:
-                node = self.nodes[client_name]
-                node.update_ports() # Update ports on the original node item
+                # Check if we need to split the node based on visibility settings
+                if hasattr(self, 'node_visibility_manager') and self.node_visibility_manager:
+                    is_midi = False
+                    for port_name, port_obj in clients_ports[client_name].items():
+                        if hasattr(port_obj, 'is_midi') and port_obj.is_midi:
+                            is_midi = True
+                            break
+                    
+                    input_visible = self.node_visibility_manager.is_input_visible(client_name, is_midi=is_midi)
+                    output_visible = self.node_visibility_manager.is_output_visible(client_name, is_midi=is_midi)
+                    
+                    # Check if node has both input and output ports
+                    has_inputs = False
+                    has_outputs = False
+                    
+                    for port_name, port_obj in clients_ports[client_name].items():
+                        if hasattr(port_obj, 'is_input'):
+                            if port_obj.is_input:
+                                has_inputs = True
+                            else:
+                                has_outputs = True
+                        
+                        if has_inputs and has_outputs:
+                            break
+                    
+                    if has_inputs and has_outputs and ((input_visible and not output_visible) or (not input_visible and output_visible)):
+                        # Node should be split with one part hidden
+                        node.split_handler.split_node(save_state=True)
+                        
+                        # For input part
+                        if node.split_input_node:
+                            if input_visible:
+                                node.split_input_node.show()
+                                # Also show connections to this part
+                                self._update_node_connections_visibility(node.split_input_node, True)
+                            else:
+                                node.split_input_node.hide()
+                                # Also hide connections to this part
+                                self._update_node_connections_visibility(node.split_input_node, False)
+                        
+                        # For output part
+                        if node.split_output_node:
+                            if output_visible:
+                                node.split_output_node.show()
+                                # Also show connections to this part
+                                self._update_node_connections_visibility(node.split_output_node, True)
+                            else:
+                                node.split_output_node.hide()
+                                # Also hide connections to this part
+                                self._update_node_connections_visibility(node.split_output_node, False)
+                        
+                        # Do a full refresh of all connection visibility to ensure consistency
+                        self._refresh_all_connection_visibility()
+
+                # Fallback default positioning for nodes that had no 'pos' in their config
+                # and were not split (apply_configuration would handle split pos).
+                # This is mainly for brand new nodes not in config yet.
+                if not config.get('pos') and not node.is_split_origin and not node.is_split_part:
+                    # Check if the node is visible (not a hidden original of a split node)
+                    if node.isVisible():
+                        # Check if it's truly a new node without any position set by apply_configuration
+                        # A simple check could be if its pos is still (0,0) or if it's a new client
+                        # For simplicity, let's assume apply_configuration handles existing configs.
+                        # This part is for nodes that are genuinely new and had no config.
+                        # A better check might be if client_name was not in self.node_configs initially.
+                        # However, self.node_configs might have an empty dict for it.
+                        # Let's rely on apply_configuration to set pos if 'pos' exists.
+                        # If 'pos' doesn't exist and it's not split, it needs a default.
+                        
+                        # A simple way to check if it was newly added and not configured:
+                        # If it's at (0,0) and not a split part (split parts are positioned by apply_config)
+                        # This might conflict if (0,0) is a valid saved position.
+                        # A robust way: if config was empty or lacked 'pos' and 'is_split'.
+                        if not config or ('pos' not in config and not config.get('is_split')):
+                            node.setPos(QPointF(20, 20 + new_node_y_offset))
+                            # print(f"Applied default position to new/unconfigured node {client_name}") # Silenced
+                            new_node_y_offset += 100
+
+        # Finally, refresh all connection visibility to ensure consistency
+        self._refresh_all_connection_visibility()
 
     def _apply_node_configurations(self):
         """Applies stored configurations (position, split state) to all current nodes."""
@@ -265,27 +538,101 @@ class JackGraphScene(QGraphicsScene):
         self.clear() # Clears the underlying QGraphicsScene
 
 
-    def add_node(self, client_name):
-        if client_name not in self.nodes:
-            print(f"Adding node: {client_name}")
-            # Pass the GraphJackHandler instance and config_manager to the NodeItem constructor
-            node = NodeItem(client_name, self.graph_jack_handler, self.config_manager)
-            self.nodes[client_name] = node
+    def add_node(self, client_name, client_ports=None):
+        """
+        Add a node representing a JACK client to the scene.
+        
+        Args:
+            client_name: The name of the JACK client
+            client_ports: Optional dictionary of ports to add to the node
+            
+        Returns:
+            NodeItem: The created node, or None if creation failed
+        """
+        # Check if we should show this node based on visibility settings
+        if hasattr(self, 'node_visibility_manager') and self.node_visibility_manager:
+            # Determine if this is a MIDI client
+            is_midi = False
+            if client_ports:
+                # Check if any port is a MIDI port
+                for port_name, port_obj in client_ports.items():
+                    if hasattr(port_obj, 'is_midi') and port_obj.is_midi:
+                        is_midi = True
+                        break
+            
+            # Check if the node should be visible
+            if not self.node_visibility_manager.is_node_visible(client_name, is_midi=is_midi):
+                return None
+        
+        # Proceed with existing code
+        if client_name in self.nodes:
+            print(f"Node {client_name} already exists")
+            return self.nodes[client_name]
+        
+        try:
+            # Pass the required jack_handler and config_manager to the NodeItem constructor
+            node = NodeItem(client_name, self.graph_jack_handler, self.config_manager, ports_to_add=client_ports)
             self.addItem(node)
-            # Initial position will be set by auto_layout_nodes
+            
+            # Position the node intelligently if not loading from config
+            if client_name not in self.node_configs:
+                # Try to find a good position for the new node
+                # This is a simple grid layout, but could be improved
+                x = 50 + (len(self.nodes) % 5) * 200
+                y = 50 + (len(self.nodes) // 5) * 200
+                node.setPos(x, y)
+            
+            self.nodes[client_name] = node
             return node
-        return self.nodes[client_name]
+        except Exception as e:
+            print(f"Error creating node for {client_name}: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
 
     def remove_node(self, client_name):
         node = self.nodes.pop(client_name, None)
         if node:
             print(f"Removing node: {client_name}")
-            # Connections should be handled by port removal or graph refresh
-            # Ensure ports are visually removed
-            ports_to_clean = list(node.input_ports.values()) + list(node.output_ports.values())
-            for port in ports_to_clean:
-                node.remove_port(port.port_name) # Clean internal refs and visual item
-            self.removeItem(node)
+            
+            # Check if this is a split origin node - if so, also remove its split parts
+            if node.is_split_origin:
+                # Save references to split parts before handling the origin
+                input_part = node.split_input_node
+                output_part = node.split_output_node
+                
+                # Clean up the origin node first
+                ports_to_clean = list(node.input_ports.values()) + list(node.output_ports.values())
+                for port in ports_to_clean:
+                    node.remove_port(port.port_name)
+                self.removeItem(node)
+                
+                # Now clean up the split parts if they exist
+                if input_part:
+                    # Clean up connections from the input part
+                    input_ports_to_clean = list(input_part.input_ports.values()) + list(input_part.output_ports.values())
+                    for port in input_ports_to_clean:
+                        input_part.remove_port(port.port_name)
+                    # Remove the input part from the scene
+                    if input_part.scene():
+                        self.removeItem(input_part)
+                
+                if output_part:
+                    # Clean up connections from the output part
+                    output_ports_to_clean = list(output_part.input_ports.values()) + list(output_part.output_ports.values())
+                    for port in output_ports_to_clean:
+                        output_part.remove_port(port.port_name)
+                    # Remove the output part from the scene
+                    if output_part.scene():
+                        self.removeItem(output_part)
+            else:
+                # Original behavior for non-split nodes
+                # Connections should be handled by port removal or graph refresh
+                # Ensure ports are visually removed
+                ports_to_clean = list(node.input_ports.values()) + list(node.output_ports.values())
+                for port in ports_to_clean:
+                    node.remove_port(port.port_name) # Clean internal refs and visual item
+                self.removeItem(node)
 
     # New handlers for detailed signals from JackConnectionManager
 
@@ -296,32 +643,38 @@ class JackGraphScene(QGraphicsScene):
         node = self.nodes.get(client_name)
         if not node:
             print(f"GraphScene: Node '{client_name}' not found for adding port '{port_name}'. Adding node first.")
-            node = self.add_node(client_name)
-            # Apply any stored configuration for this new node
-            config = self.node_configs.get(client_name, {})
-            node.apply_configuration(config)
-            if not config.get('pos') and not node.is_split_origin and not node.is_split_part:
-                # Basic default positioning if no config, similar to full_graph_refresh
-                # This might need refinement to avoid overlaps if many nodes are added quickly
-                node.setPos(QPointF(20, 20 + len(self.nodes) * 50))
-
-
+            
+            # Fetch all ports for this client to ensure we get a complete picture
+            try:
+                client_ports = {}
+                all_ports = jack_utils.get_all_jack_ports(self.jack_client, name_pattern=f"{client_name}:*")
+                
+                for port in all_ports:
+                    client_ports[port.name] = port
+                
+                node = self.add_node(client_name, client_ports)
+                
+                # Apply any stored configuration for this new node
+                if node:
+                    config = self.node_configs.get(client_name, {})
+                    node.apply_configuration(config)
+                    if not config.get('pos') and not node.is_split_origin and not node.is_split_part:
+                        # Basic default positioning if no config, similar to full_graph_refresh
+                        node.setPos(QPointF(20, 20 + len(self.nodes) * 50))
+                
+                return  # Since we've added all ports, no need to add the individual port
+            except Exception as e:
+                print(f"Error fetching all ports for client {client_name}: {e}")
+                # Continue with single port addition as fallback
+        
         if node:
-            # We can create a mock/partial jack.Port object if GraphJackHandler or NodeItem needs it,
-            # or adapt NodeItem.add_port to accept these parameters directly.
-            # For now, let's assume NodeItem.add_port can be adapted or we fetch the full port object.
-            # Fetching the full port object is safer to ensure all attributes are correct.
+            # Fetch the port object from JACK
             port_obj = self.graph_jack_handler.get_port_by_name(port_name)
             if port_obj:
                 node.add_port(port_name, port_obj)
             else:
-                # Fallback: Try to create a port item with available info if full object fetch fails
-                # This would require NodeItem.add_port to handle potentially incomplete port objects
-                # or direct parameters. For now, we log and rely on full_graph_refresh if this path is taken.
-                print(f"GraphScene: Could not fetch full jack.Port object for '{port_name}'. Port item might be incomplete or a refresh might be needed.")
-                # As a simple fallback, we could try to add with basic info, but NodeItem expects a jack.Port
-                # node.add_port_basic(port_name, is_input, type_str, flags) # Hypothetical
-                self.full_graph_refresh() # Safer to refresh if port object is missing
+                print(f"GraphScene: Could not fetch jack.Port object for '{port_name}'. Port item might be incomplete.")
+                # We could try to create a mock port object here if absolutely necessary
         else:
             print(f"GraphScene: Failed to add/find node '{client_name}' for port '{port_name}'.")
 
@@ -341,14 +694,34 @@ class JackGraphScene(QGraphicsScene):
         """Handles the client_added signal from JackConnectionManager."""
         print(f"GraphScene: Client added - Name: {client_name}")
         if client_name not in self.nodes:
-            node = self.add_node(client_name)
-            # Apply configuration and default position
-            config = self.node_configs.get(client_name, {})
-            node.apply_configuration(config)
-            if not config.get('pos') and not node.is_split_origin and not node.is_split_part:
-                 node.setPos(QPointF(20, 20 + len(self.nodes) * 50)) # Simple default
-            # Ports for this client will be added via subsequent _handle_port_added signals
-            # or a full_graph_refresh if events are batched.
+            # Fetch all ports for this client
+            try:
+                client_ports = {}
+                # Get all audio and MIDI ports for this client
+                all_ports = jack_utils.get_all_jack_ports(self.jack_client, name_pattern=f"{client_name}:*")
+                
+                # Organize ports by name
+                for port in all_ports:
+                    client_ports[port.name] = port
+                
+                # Add the node with the fetched ports
+                node = self.add_node(client_name, client_ports)
+                
+                # Apply configuration and default position
+                if node:
+                    config = self.node_configs.get(client_name, {})
+                    node.apply_configuration(config)
+                    if not config.get('pos') and not node.is_split_origin and not node.is_split_part:
+                        node.setPos(QPointF(20, 20 + len(self.nodes) * 50)) # Simple default
+            except Exception as e:
+                print(f"Error fetching ports for new client {client_name}: {e}")
+                # Fall back to just adding the node without ports
+                node = self.add_node(client_name)
+                if node:
+                    config = self.node_configs.get(client_name, {})
+                    node.apply_configuration(config)
+                    if not config.get('pos') and not node.is_split_origin and not node.is_split_part:
+                        node.setPos(QPointF(20, 20 + len(self.nodes) * 50))
         else:
             print(f"GraphScene: Client '{client_name}' already exists.")
 
@@ -626,3 +999,73 @@ class JackGraphScene(QGraphicsScene):
         for connection_item in self.connections.values():
             connection_item.update_path()
         self.update() # Request a general scene update
+
+    def set_node_visibility_manager(self, node_visibility_manager):
+        """Set the NodeVisibilityManager instance for this scene."""
+        self.node_visibility_manager = node_visibility_manager
+        print("Node visibility manager set for graph scene")
+
+    def _update_node_ports(self, client_name, port_dict):
+        """Update ports within an existing node"""
+        if client_name not in self.nodes:
+            return
+            
+        node = self.nodes[client_name]
+        
+        # Get existing port names in the node
+        existing_port_names = set()
+        existing_port_names.update(node.input_ports.keys())
+        existing_port_names.update(node.output_ports.keys())
+        
+        # Get current port names from JACK
+        current_port_names = set(port_dict.keys())
+        
+        # Remove ports that don't exist anymore
+        for port_name in existing_port_names - current_port_names:
+            node.remove_port(port_name)
+        
+        # Add new ports
+        for port_name in current_port_names - existing_port_names:
+            port_obj = port_dict[port_name]
+            node.add_port(port_name, port_obj)
+
+    def _update_node_connections_visibility(self, node: 'NodeItem', visible: bool):
+        """
+        Update the visibility of all connections for a node.
+        
+        Args:
+            node: The node whose connections should be updated
+            visible: Whether the connections should be visible
+        """
+        if not node:
+            return
+            
+        # For all ports of this node
+        for port_list in [node.input_ports, node.output_ports]:
+            for port_item in port_list.values():
+                # For all connections of this port
+                for conn in list(port_item.connections):
+                    if conn:
+                        conn.setVisible(visible)
+
+    def _refresh_all_connection_visibility(self):
+        """
+        Ensure all connections have proper visibility based on their connected ports.
+        A connection should only be visible if BOTH its source and destination ports 
+        are visible.
+        """
+        for conn_key, conn in list(self.connections.items()):
+            if not conn or not conn.source_port or not conn.dest_port:
+                continue
+                
+            # Get the parent node items for both ports
+            source_node = conn.source_port.parentItem()
+            dest_node = conn.dest_port.parentItem()
+            
+            # A connection is visible only if both its connected nodes are visible
+            should_be_visible = (source_node and dest_node and 
+                                source_node.isVisible() and 
+                                dest_node.isVisible())
+            
+            # Update the connection visibility
+            conn.setVisible(should_be_visible)

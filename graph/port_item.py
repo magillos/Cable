@@ -222,38 +222,52 @@ class PortItem(QGraphicsItem):
 
                 self._is_handling_selection_change = True
                 try:
-                    # 1. Port-to-Port selection cascade
-                    if value: # Current port (self) is being SELECTED
-                        ports_to_potentially_select = []
-                        for conn in self.connections:
-                            other_port = conn.source_port if conn.dest_port == self else conn.dest_port
-                            if other_port and not other_port.isSelected():
-                                ports_to_potentially_select.append(other_port)
-                        for p_to_select in ports_to_potentially_select:
-                            p_to_select.setSelected(True) # This will trigger itemChange on other_port
+                    # Determine if this level can propagate port-to-port selection
+                    can_propagate_port_to_port = False
+                    if not handler._is_in_auto_selection_cascade:
+                        can_propagate_port_to_port = True
+                        handler._is_in_auto_selection_cascade = True
+                    
+                    try:
+                        if can_propagate_port_to_port:
+                            # 1. Port-to-Port selection cascade
+                            if value: # Current port (self) is being SELECTED
+                                ports_to_potentially_select = []
+                                for conn in self.connections:
+                                    other_port = conn.source_port if conn.dest_port == self else conn.dest_port
+                                    if other_port and not other_port.isSelected():
+                                        ports_to_potentially_select.append(other_port)
+                                for p_to_select in ports_to_potentially_select:
+                                    p_to_select.setSelected(True) # This will trigger itemChange on other_port
 
-                    else: # Current port (self) is being DESELECTED
-                        ports_to_potentially_deselect = []
-                        for conn in self.connections:
-                            other_port = conn.source_port if conn.dest_port == self else conn.dest_port
-                            if other_port and other_port.isSelected():
-                                should_other_remain_selected = False
-                                for other_conn in other_port.connections:
-                                    port_at_far_end_of_other_conn = None
-                                    if other_conn.source_port == other_port:
-                                        port_at_far_end_of_other_conn = other_conn.dest_port
-                                    else:
-                                        port_at_far_end_of_other_conn = other_conn.source_port
-                                    
-                                    if port_at_far_end_of_other_conn and \
-                                       port_at_far_end_of_other_conn != self and \
-                                       port_at_far_end_of_other_conn.isSelected():
-                                        should_other_remain_selected = True
-                                        break
-                                if not should_other_remain_selected:
-                                    ports_to_potentially_deselect.append(other_port)
-                        for p_to_deselect in ports_to_potentially_deselect:
-                            p_to_deselect.setSelected(False) # This will trigger itemChange on other_port
+                            else: # Current port (self) is being DESELECTED
+                                ports_to_potentially_deselect = []
+                                for conn in self.connections:
+                                    other_port = conn.source_port if conn.dest_port == self else conn.dest_port
+                                    if other_port and other_port.isSelected():
+                                        should_other_remain_selected = False
+                                        for other_conn in other_port.connections:
+                                            port_at_far_end_of_other_conn = None
+                                            if other_conn.source_port == other_port:
+                                                port_at_far_end_of_other_conn = other_conn.dest_port
+                                            else:
+                                                port_at_far_end_of_other_conn = other_conn.source_port
+                                            
+                                            if port_at_far_end_of_other_conn and \
+                                               port_at_far_end_of_other_conn != self and \
+                                               port_at_far_end_of_other_conn.isSelected():
+                                                should_other_remain_selected = True
+                                                break
+                                        if not should_other_remain_selected:
+                                            ports_to_potentially_deselect.append(other_port)
+                                for p_to_deselect in ports_to_potentially_deselect:
+                                    p_to_deselect.setSelected(False) # This will trigger itemChange on other_port
+                        # If not can_propagate_port_to_port, the above block is skipped, preventing cascade.
+                    finally:
+                        # Reset the flag only if this level was the one that set it.
+                        if can_propagate_port_to_port: # This implies it was False before, and this level set it to True.
+                            handler._is_in_auto_selection_cascade = False
+                    # End of controlled port-to-port cascade. The original empty line (256) is now covered.
 
                     # 2. Update parent BulkAreaItem's selection state
                     bulk_area_to_update = None

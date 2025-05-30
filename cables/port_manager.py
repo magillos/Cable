@@ -21,6 +21,9 @@ class PortManager:
         self.jack_client = jack_client
         self.input_filter_edit = input_filter_edit
         self.output_filter_edit = output_filter_edit
+        
+        # Node visibility manager will be set by JackConnectionManager
+        self.node_visibility_manager = None
 
         # Initialize trees as None, they will be set by set_trees()
         self.input_tree = None
@@ -81,6 +84,14 @@ class PortManager:
             except TypeError: pass
             self.output_filter_edit.textChanged.connect(self._handle_filter_change)
 
+    def set_node_visibility_manager(self, node_visibility_manager):
+        """
+        Set the node visibility manager.
+        
+        Args:
+            node_visibility_manager: The NodeVisibilityManager instance
+        """
+        self.node_visibility_manager = node_visibility_manager
 
     def _get_ports(self, is_midi_tab: bool):
         """
@@ -109,8 +120,24 @@ class PortManager:
                 input_port_objects = jack_utils.get_all_jack_ports(self.jack_client, is_input=True, is_audio=True)
                 output_port_objects = jack_utils.get_all_jack_ports(self.jack_client, is_output=True, is_audio=True)
 
-            input_port_names = [p.name for p in input_port_objects]
-            output_port_names = [p.name for p in output_port_objects]
+            # Filter ports by visibility if node_visibility_manager is available
+            if self.node_visibility_manager:
+                # For input ports, only check input visibility
+                input_port_names = []
+                for p in input_port_objects:
+                    client_name = p.name.split(':', 1)[0] if ':' in p.name else p.name
+                    if self.node_visibility_manager.is_input_visible(client_name, is_midi=is_midi_tab):
+                        input_port_names.append(p.name)
+                
+                # For output ports, only check output visibility
+                output_port_names = []
+                for p in output_port_objects:
+                    client_name = p.name.split(':', 1)[0] if ':' in p.name else p.name
+                    if self.node_visibility_manager.is_output_visible(client_name, is_midi=is_midi_tab):
+                        output_port_names.append(p.name)
+            else:
+                input_port_names = [p.name for p in input_port_objects]
+                output_port_names = [p.name for p in output_port_objects]
 
             input_port_names = self._sort_ports(input_port_names)
             output_port_names = self._sort_ports(output_port_names)

@@ -1,8 +1,10 @@
 import os
 import sys
-from PyQt6.QtWidgets import QSystemTrayIcon, QMenu, QApplication, QMessageBox # Added QMessageBox
+from PyQt6.QtWidgets import QSystemTrayIcon, QMenu, QApplication, QMessageBox
 from PyQt6.QtGui import QIcon, QAction, QActionGroup
 from PyQt6.QtCore import Qt, QProcess
+
+from cable_core.other_settings_dialog import OtherSettingsDialog # Import the new dialog
 
 class TrayManager:
     def __init__(self, app):
@@ -275,7 +277,6 @@ class TrayManager:
         restore_minimized_action.toggled.connect(self.app.restore_only_minimized_checkbox.setChecked) # Connect action toggle to app's checkbox
         context_menu.addAction(restore_minimized_action)
 
-        context_menu.addSeparator()
 
         check_now_action = QAction("Check for new version", self.app)
         # Use lambda to pass manual_check=True
@@ -292,9 +293,21 @@ class TrayManager:
         download_action = QAction("Download from GitHub", self.app)
         download_action.triggered.connect(self.app.update_manager.open_download_page) # Connect to update_manager method
         context_menu.addAction(download_action)
+        
+        context_menu.addSeparator() # Add separator before "Other Settings"
+
+        # Add "Other Settings" menu item at the very bottom
+        other_settings_action = QAction("Other Settings", self.app)
+        other_settings_action.triggered.connect(self._show_other_settings_dialog)
+        context_menu.addAction(other_settings_action)
 
         # Show the menu at the global position of the click
         context_menu.exec(self.app.version_label.mapToGlobal(pos)) # Use app's label
+
+    def _show_other_settings_dialog(self):
+        """Opens the Other Settings dialog."""
+        dialog = OtherSettingsDialog(parent=self.app, config_manager=self.app.config_manager)
+        dialog.exec()
 
     def toggle_autostart(self, checked):
         """Toggle autostart setting and sync menu actions."""

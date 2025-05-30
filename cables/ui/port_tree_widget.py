@@ -3,7 +3,7 @@ PortTreeWidget - Tree widget for displaying ports with collapsible groups
 """
 
 import re
-from PyQt6.QtWidgets import QTreeWidget, QTreeWidgetItem, QMenu, QSizePolicy, QApplication
+from PyQt6.QtWidgets import QTreeWidget, QTreeWidgetItem, QMenu, QSizePolicy, QApplication, QMessageBox, QDialog, QCheckBox, QVBoxLayout, QDialogButtonBox, QLabel
 from PyQt6.QtCore import Qt, QSize, QPoint, pyqtSignal
 from PyQt6.QtGui import QBrush, QDrag, QPixmap, QPainter, QFontMetrics, QAction, QPalette, QFont
 from PyQt6.QtCore import QMimeData
@@ -394,6 +394,10 @@ class PortTreeWidget(QTreeWidget):
             disconnect_group_action.setEnabled(bool(target_group_items))
             disconnect_group_action.triggered.connect(lambda: self.window().disconnect_selected_groups(target_group_items))
             
+            # Add "Hide" option for the group node
+            hide_action = QAction("Hide", self)
+            hide_action.triggered.connect(lambda: self._hide_group_node(group_name))
+            
             menu.addAction(toggle_action)
             menu.addSeparator()
             menu.addAction(expand_all_action)
@@ -417,8 +421,121 @@ class PortTreeWidget(QTreeWidget):
                 # Add the global actions to the menu
                 menu.addAction(move_up_action)
                 menu.addAction(move_down_action)
+            
+            # Add the Hide action at the very bottom
+            menu.addSeparator()
+            menu.addAction(hide_action)
 
             menu.exec(self.mapToGlobal(position))
+    
+    def _hide_group_node(self, group_name):
+        """
+        Hide a group node by updating the node visibility settings.
+        
+        Args:
+            group_name: The name of the group/node to hide
+        """
+        # Get the main window
+        main_window = self.window()
+        
+        # Check if the main window has a node_visibility_manager
+        if hasattr(main_window, 'node_visibility_manager') and main_window.node_visibility_manager:
+            # Determine if this is a MIDI or audio node based on which tree this is
+            is_midi = (self == main_window.midi_input_tree or self == main_window.midi_output_tree)
+            
+            # Determine if this is an input or output tree
+            is_input_tree = (self == main_window.input_tree or self == main_window.midi_input_tree)
+            
+            # Check if we should show the confirmation dialog
+            show_dialog = True
+            
+            # Try to get the config from the config_manager
+            if hasattr(main_window, 'config_manager') and main_window.config_manager:
+                show_dialog = main_window.config_manager.get_bool('show_hide_node_confirmation', default=True)
+            
+            confirmed = True
+            if show_dialog:
+                # Create and show custom dialog with checkbox
+                if is_input_tree:
+                    message_type = "input" + (" MIDI" if is_midi else " audio")
+                    message = f"Hide {group_name} input ports?"
+                else:
+                    message_type = "output" + (" MIDI" if is_midi else " audio")
+                    message = f"Hide {group_name} output ports?"
+                    
+                confirmed = self._show_hide_confirmation_dialog(group_name, message_type, message)
+                
+            if not confirmed:
+                return
+            
+            # Update the appropriate visibility dictionary
+            if is_midi:
+                if is_input_tree:
+                    main_window.node_visibility_manager.midi_input_visibility[group_name] = False
+                else:
+                    main_window.node_visibility_manager.midi_output_visibility[group_name] = False
+            else:
+                if is_input_tree:
+                    main_window.node_visibility_manager.audio_input_visibility[group_name] = False
+                else:
+                    main_window.node_visibility_manager.audio_output_visibility[group_name] = False
+                
+            # Save the updated settings
+            main_window.node_visibility_manager.save_visibility_settings()
+            
+            # Apply the new settings
+            main_window.node_visibility_manager.apply_visibility_settings()
+    
+    def _show_hide_confirmation_dialog(self, group_name, message_type, custom_message=None):
+        """
+        Show a confirmation dialog with 'don't show again' checkbox.
+        
+        Args:
+            group_name: The name of the group/node to hide
+            message_type: Type of the node (audio/MIDI)
+            custom_message: Optional custom message to show
+            
+        Returns:
+            bool: True if user confirmed, False otherwise
+        """
+        # Create a custom dialog
+        dialog = QDialog(self.window())
+        dialog.setWindowTitle("Hide Node")
+        dialog.setModal(True)
+        
+        # Create layout
+        layout = QVBoxLayout(dialog)
+        
+        # Add message
+        if custom_message:
+            message = f"{custom_message}\n\nYou can restore it later from the Node Visibility dialog."
+        else:
+            message = f"Hide {group_name} {message_type} node?\n\nYou can restore it later from the Node Visibility dialog."
+        
+        label = QLabel(message)
+        layout.addWidget(label)
+        
+        # Add checkbox
+        checkbox = QCheckBox("Don't show this message again")
+        layout.addWidget(checkbox)
+        
+        # Add buttons
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Yes | QDialogButtonBox.StandardButton.No)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+        
+        # Execute dialog
+        result = dialog.exec() == QDialog.DialogCode.Accepted
+        
+        # Save checkbox state if accepted
+        if result and checkbox.isChecked():
+            # Try to get the config from the config_manager
+            main_window = self.window()
+            if hasattr(main_window, 'config_manager') and main_window.config_manager:
+                main_window.config_manager.set_bool('show_hide_node_confirmation', False)
+        
+        return result
     
     def getSelectedPortNames(self):
         """
@@ -499,7 +616,6 @@ class PortTreeWidget(QTreeWidget):
                 self.current_drag_highlight_item = None
             event.ignore()
 
-# Escaped marker from original code (part of the replacement content)
     def dragLeaveEvent(self, event):
         """
         Handle drag leave events.
@@ -560,8 +676,13 @@ class PortTreeWidget(QTreeWidget):
             self.insertTopLevelItem(current_index - 1, taken_item)
             # Restore expansion state
             taken_item.setExpanded(is_expanded)
-            self.setCurrentItem(taken_item)  # Keep the moved item selected
-            self.group_order = self.get_current_group_order()  # Update stored order
+            # Ensure item remains selected and visible
+            self.setCurrentItem(taken_item)
+            self.scrollToItem(taken_item)
+            # Update stored order
+            self.group_order = self.get_current_group_order()
+            # Ensure the tree widget has focus
+            self.setFocus()
     
     def move_group_down(self, item):
         """
@@ -579,8 +700,13 @@ class PortTreeWidget(QTreeWidget):
             self.insertTopLevelItem(current_index + 1, taken_item)
             # Restore expansion state
             taken_item.setExpanded(is_expanded)
-            self.setCurrentItem(taken_item)  # Keep the moved item selected
-            self.group_order = self.get_current_group_order()  # Update stored order
+            # Ensure item remains selected and visible
+            self.setCurrentItem(taken_item)
+            self.scrollToItem(taken_item)
+            # Update stored order
+            self.group_order = self.get_current_group_order()
+            # Ensure the tree widget has focus
+            self.setFocus()
     
     def startDrag(self, supportedActions=None):
         """

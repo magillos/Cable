@@ -178,6 +178,14 @@ class NodeSplitHandler:
             if original_client_name not in scene.node_configs:
                 scene.node_configs[original_client_name] = {}
             scene.node_configs[original_client_name]['is_split'] = True
+            
+            # If this is a manual split (save_state=True), mark it so it won't be auto-unsplit
+            if save_state:
+                scene.node_configs[original_client_name]['manual_split'] = True
+                
+                # Also update the node's own config
+                if hasattr(ni, 'config'):
+                    ni.config['manual_split'] = True
         
         ni.layout_ports()
         ni.update()
@@ -213,6 +221,32 @@ class NodeSplitHandler:
 
         # Determine the fold state of the unsplit node
         ni.is_folded = input_part.input_part_folded and output_part.output_part_folded
+
+        # IMPORTANT: When unsplitting, we need to make both parts visible in the node_visibility_manager
+        # Check if scene has node_visibility_manager
+        if hasattr(scene, 'node_visibility_manager') and scene.node_visibility_manager:
+            # Determine if this is a MIDI client
+            is_midi = False
+            for port_name in list(ni.input_ports.keys()) + list(ni.output_ports.keys()):
+                port_obj = ni.jack_handler.get_port_by_name(port_name)
+                if port_obj and hasattr(port_obj, 'is_midi') and port_obj.is_midi:
+                    is_midi = True
+                    break
+            
+            # Update visibility settings - make both input and output visible
+            client_name = ni.client_name
+            
+            if is_midi:
+                scene.node_visibility_manager.midi_input_visibility[client_name] = True
+                scene.node_visibility_manager.midi_output_visibility[client_name] = True
+            else:
+                scene.node_visibility_manager.audio_input_visibility[client_name] = True
+                scene.node_visibility_manager.audio_output_visibility[client_name] = True
+            
+            # Save the updated visibility settings to the config file
+            scene.node_visibility_manager.save_visibility_settings()
+            
+            print(f"Restored visibility for both input and output of node {client_name}")
 
         # Transfer visual connections back
         # Local import for ConnectionItem
@@ -270,6 +304,7 @@ class NodeSplitHandler:
         # original_client_name remains on ni, it's not reset by unsplit.
         # is_split_part is on the parts, not ni.
 
+        # Make sure all ports are visible
         for port_item in ni.input_ports.values(): port_item.show()
         for port_item in ni.output_ports.values(): port_item.show()
         if ni.input_area_item: ni.input_area_item.show()
@@ -279,14 +314,22 @@ class NodeSplitHandler:
         ni.layout_ports()
         ni.update()
 
-        if hasattr(scene, 'node_configs'):
-            if ni.client_name not in scene.node_configs:
-                scene.node_configs[ni.client_name] = {}
+        # Update node configs
+        if hasattr(scene, 'node_configs') and ni.client_name in scene.node_configs:
             scene.node_configs[ni.client_name]['is_split'] = False
+            
+            # If this is a manual unsplit (save_state=True), clear the manual_split flag
+            if save_state and 'manual_split' in scene.node_configs[ni.client_name]:
+                scene.node_configs[ni.client_name]['manual_split'] = False
+                
+                # Also update the node's own config
+                if hasattr(ni, 'config'):
+                    ni.config['manual_split'] = False
         
+        # Clean up and restore node state
         ni.layout_ports()
         ni.update()
-
+        
         ni._internal_state_change_in_progress = False
         if save_state and scene and hasattr(scene, 'request_specific_node_save'):
             scene.request_specific_node_save(ni)

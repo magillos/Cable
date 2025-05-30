@@ -16,6 +16,7 @@ class ConfigManager:
     IS_FOLDED_KEY = "::is_folded" # Added for fold state
     INPUT_PART_FOLDED_KEY = "::input_part_folded"
     OUTPUT_PART_FOLDED_KEY = "::output_part_folded"
+    MANUAL_SPLIT_KEY = "::manual_split" # Added for manual split flag
  
     def __init__(self):
         self.config_dir = Path.home() / ".config" / "cable"
@@ -66,6 +67,15 @@ class ConfigManager:
             node_data["is_split"] = is_currently_split
             if is_currently_split:
                 split_nodes_currently += 1
+                
+            # Save the manual split flag if it exists in the node's config
+            if hasattr(node, 'config') and node.config and 'manual_split' in node.config:
+                node_data[self.MANUAL_SPLIT_KEY] = node.config['manual_split']
+            # If the node is split but we don't have the flag in the config, check the scene.node_configs
+            elif is_currently_split and hasattr(node.scene(), 'node_configs'):
+                scene_node_config = node.scene().node_configs.get(client_name, {})
+                if 'manual_split' in scene_node_config:
+                    node_data[self.MANUAL_SPLIT_KEY] = scene_node_config['manual_split']
 
             # 3. Save the last known positions of split parts IF they exist
             # These might exist even if is_split_origin is False, if it was split then unsplit
@@ -153,6 +163,8 @@ class ConfigManager:
                     config["split_output_pos"] = QPointF(node_data["split_output_pos"]["x"], node_data["split_output_pos"]["y"])
                 if self.IS_FOLDED_KEY in node_data: # Load fold state
                     config[self.IS_FOLDED_KEY] = bool(node_data.get(self.IS_FOLDED_KEY, False)) # Use the constant key
+                if self.MANUAL_SPLIT_KEY in node_data: # Load manual split flag
+                    config["manual_split"] = bool(node_data.get(self.MANUAL_SPLIT_KEY, False))
  
                 # If the node is marked as split, load part fold states
                 if config.get("is_split", False):

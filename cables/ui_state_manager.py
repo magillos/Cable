@@ -296,9 +296,9 @@ class UIStateManager(QObject):
             2: "Untangle: <<"
         }
         tooltips = {
-            0: "Sort ports alphabetically (Default)",
-            1: "Sort ports to minimize line crossing (Layout A)",
-            2: "Sort ports to minimize line crossing (Layout B)"
+            0: "Sort clients alphabetically (Default)",
+            1: "Sort clients to minimize cable crossing (Layout A)",
+            2: "Sort clients to minimize cable crossing (Layout B)"
         }
         if self.untangle_button:
             self.untangle_button.setText(modes.get(self._untangle_mode, "Untangle: ???"))

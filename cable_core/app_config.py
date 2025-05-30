@@ -1,7 +1,7 @@
 # cable_core/app_config.py
 
 # --- Application Version ---
-APP_VERSION = "0.9.8.1"
+APP_VERSION = "0.9.9"
 # Main App Window (Cable.py)
 MAIN_WINDOW_MIN_WIDTH = 300
 MAIN_WINDOW_MIN_HEIGHT = 600

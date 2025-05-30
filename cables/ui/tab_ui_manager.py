@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (QVBoxLayout, QHBoxLayout, QLabel, QSpacerItem,
                              QSizePolicy, QWidget, QTextEdit, QComboBox, QPushButton,
                              QToolButton, QMenu) # Added QToolButton, QMenu
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QIcon, QAction
 import threading # Added for graph tab
 
 from cables.ui.port_tree_widget import DragPortTreeWidget, DropPortTreeWidget
@@ -42,7 +42,66 @@ class TabUIManager:
             tab_name: The name of the tab ('Audio' or 'MIDI')
             port_type: The type of ports to display ('audio' or 'midi')
         """
+        # Create main layout for the tab
         layout = QVBoxLayout(tab_widget)
+
+        # Create button widget and layout at the top
+        button_widget = QWidget()
+        button_layout = QHBoxLayout(button_widget)
+        button_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Create buttons using shared_widgets factory
+        if port_type == 'audio':
+            actual_connect_action = manager.action_manager.audio_connect_action
+            actual_disconnect_action = manager.action_manager.audio_disconnect_action
+        elif port_type == 'midi':
+            actual_connect_action = manager.action_manager.midi_connect_action
+            actual_disconnect_action = manager.action_manager.midi_disconnect_action
+        else: # Fallback, should not be reached for valid port_types
+            actual_connect_action = None
+            actual_disconnect_action = None
+
+        connect_button = create_action_button(
+            parent_widget=button_widget,
+            action=actual_connect_action,
+            tooltip="Connect selected items <span style='color:grey'>C</span>"
+        )
+        
+        disconnect_button = create_action_button(
+            parent_widget=button_widget,
+            action=actual_disconnect_action,
+            tooltip="Disconnect selected items <span style='color:grey'>D/Del</span>"
+        )
+
+        presets_action = manager.action_manager.presets_action
+        presets_button = create_action_button(
+            parent_widget=button_widget,
+            action=presets_action,
+            tooltip="Manage Presets"
+        )
+        presets_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        
+        # Add Node Visibility button
+        node_visibility_action = QAction("Clients Visibility", button_widget)
+        node_visibility_action.triggered.connect(manager.show_node_visibility_dialog)
+        node_visibility_button = create_action_button(
+            parent_widget=button_widget,
+            action=node_visibility_action,
+            tooltip="Configure which nodes should be visible"
+        )
+
+        # Add buttons to layout with stretches for centering
+        button_layout.addStretch()  # Push buttons to center
+        button_layout.addWidget(connect_button)
+        button_layout.addWidget(disconnect_button)
+        button_layout.addWidget(presets_button)
+        button_layout.addWidget(node_visibility_button)  # Add in line with other buttons
+        button_layout.addStretch()  # Push buttons to center
+
+        # Add button widget to main layout
+        layout.addWidget(button_widget)
+
+        # Create port list layouts
         input_layout = QVBoxLayout()
         output_layout = QVBoxLayout()
         input_label = QLabel(f' {tab_name} Input Ports')
@@ -73,8 +132,8 @@ class TabUIManager:
         connection_view.setStyleSheet(f"background: {manager.background_color.name()}; border: none;")
         
         # Add spacers and labels to layouts
-        input_layout.addSpacerItem(QSpacerItem(20, 17, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed))
-        output_layout.addSpacerItem(QSpacerItem(20, 17, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed))
+        input_layout.addSpacerItem(QSpacerItem(20, 10, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed))
+        output_layout.addSpacerItem(QSpacerItem(20, 10, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed))
         
         input_layout.addWidget(input_label)
         input_layout.addWidget(input_tree)
@@ -82,67 +141,19 @@ class TabUIManager:
         output_layout.addWidget(output_label)
         output_layout.addWidget(output_tree)
         
-        # Create middle layout with buttons and connection view
+        # Create middle layout with connection view
         middle_layout = QVBoxLayout()
-        button_layout = QHBoxLayout()  # Top buttons: Connect, Disconnect, Presets
-        
-        # Create buttons using shared_widgets factory
-        # Assumes manager.action_manager provides the necessary QAction instances
-        # (e.g., audio_connect_action, midi_connect_action, refresh_ports_action, presets_action)
-        # QActions should be pre-configured with text, icons (if any), and connected to handlers.
-        # The presets_action should also have its menu and enabled state managed by ActionManager.
-
-        if port_type == 'audio':
-            actual_connect_action = manager.action_manager.audio_connect_action
-            actual_disconnect_action = manager.action_manager.audio_disconnect_action
-        elif port_type == 'midi':
-            actual_connect_action = manager.action_manager.midi_connect_action
-            actual_disconnect_action = manager.action_manager.midi_disconnect_action
-        else: # Fallback, should not be reached for valid port_types
-            actual_connect_action = None
-            actual_disconnect_action = None
-
-        connect_button = create_action_button(
-            parent_widget=tab_widget,
-            action=actual_connect_action,
-            tooltip="Connect selected items <span style='color:grey'>C</span>"
-            # icon_path can be specified if icons are desired and not set on the QAction itself
-        )
-        
-        disconnect_button = create_action_button(
-            parent_widget=tab_widget,
-            action=actual_disconnect_action,
-            tooltip="Disconnect selected items <span style='color:grey'>D/Del</span>"
-        )
-
-        # Presets button: QAction should be configured with text "Presets" and its menu.
-        # ActionManager should handle connecting menu's aboutToShow and action's enabled state.
-        presets_action = manager.action_manager.presets_action
-        presets_button = create_action_button(
-            parent_widget=tab_widget,
-            action=presets_action,
-            tooltip="Manage Presets" # Standardized tooltip
-        )
-        # Ensure popup mode for menu buttons is set if not handled by factory or action style
-        presets_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-
-        # Refresh button removed - using only the bottom refresh button
-        
-        # Old styling specific to QPushButton or individual QToolButton styling is removed.
-        # The create_action_button factory is now responsible for the common appearance.
-
-        # Add buttons to layout
-        button_layout.addWidget(connect_button)
-        button_layout.addWidget(disconnect_button)
-        button_layout.addWidget(presets_button)
-        middle_layout.addLayout(button_layout)
+        # Add spacer to align with port areas
+        middle_layout.addSpacerItem(QSpacerItem(20, 30, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed))
         middle_layout.addWidget(connection_view)
         
         # Create middle layout widget
         middle_layout_widget = QWidget()
         middle_layout_widget.setLayout(middle_layout)
         middle_layout_widget.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
-        middle_layout_widget.setFixedWidth(app_config.CONNECTION_VIEW_INITIAL_WIDTH)
+        # Load connection view width from config or use app_config default
+        connection_view_initial_width = manager.config_manager.get_int_setting("CONNECTION_VIEW_INITIAL_WIDTH", app_config.CONNECTION_VIEW_INITIAL_WIDTH)
+        middle_layout_widget.setFixedWidth(connection_view_initial_width)
         
         # Combine layouts
         content_layout = QHBoxLayout()
@@ -161,6 +172,7 @@ class TabUIManager:
             manager.disconnect_button = disconnect_button
             # Refresh button reference removed
             manager.presets_button = presets_button
+            manager.audio_node_visibility_button = node_visibility_button
             
             # Signal connections are now handled by QAction via button.setDefaultAction()
             # in create_action_button.
@@ -180,6 +192,7 @@ class TabUIManager:
             manager.midi_disconnect_button = disconnect_button
             # Refresh button reference removed
             manager.midi_presets_button = presets_button
+            manager.midi_node_visibility_button = node_visibility_button
             
             # Signal connections are now handled by QAction via button.setDefaultAction()
             # in create_action_button.
@@ -208,7 +221,7 @@ class TabUIManager:
                 background-color: {manager.background_color.name()};
                 color: {manager.text_color.name()};
                 font-family: monospace;
-                font-size: {app_config.PWTOP_FONT_SIZE_PT}pt;
+                font-size: {manager.config_manager.get_int_setting("PWTOP_FONT_SIZE_PT", app_config.PWTOP_FONT_SIZE_PT)}pt;
             }}
         """)
         layout.addWidget(pwtop_text_widget)
@@ -342,7 +355,7 @@ class TabUIManager:
         """
         layout = QVBoxLayout(tab_widget)
         tab_widget.setLayout(layout) # Ensure layout is set for the tab_widget
-
+        
         # The Graph tab will now use the main jack.Client from JackConnectionManager (manager.client)
         # No separate GraphJackHandler instance is created here anymore.
 
@@ -358,14 +371,6 @@ class TabUIManager:
             # and JackGraphScene, passing the jack_client and connection_manager down.
         )
         
-        # Store a reference to the graph tab's preset button on the connection manager
-        # so PresetHandler can find it.
-        if hasattr(manager.graph_main_window, 'preset_button'):
-            manager.graph_tab_presets_button = manager.graph_main_window.preset_button
-        else:
-            manager.graph_tab_presets_button = None
-
-
         # Get the central widget (JackGraphView) from the graph's MainWindow
         graph_view_widget = manager.graph_main_window.centralWidget()
 
@@ -385,6 +390,61 @@ class TabUIManager:
                 graph_view_widget.addAction(manager.graph_main_window.zoom_in_action)
             if hasattr(manager.graph_main_window, 'zoom_out_action') and manager.graph_main_window.zoom_out_action:
                 graph_view_widget.addAction(manager.graph_main_window.zoom_out_action)
+                
+            # Create Node Visibility button and add it to the main window's top toolbar layout
+            if hasattr(manager.graph_main_window, 'preset_button') and manager.graph_main_window.preset_button:
+                # Create the Node Visibility button
+                graph_node_visibility_action = QAction("Clients Visibility", manager.graph_main_window)
+                graph_node_visibility_action.triggered.connect(manager.show_node_visibility_dialog)
+                graph_node_visibility_button = create_action_button(
+                    parent_widget=manager.graph_main_window,
+                    action=graph_node_visibility_action,
+                    tooltip="Configure which nodes should be visible"
+                )
+                
+                # Try to get the top toolbar layout
+                top_toolbar_layout = None
+                if hasattr(manager.graph_main_window, 'get_top_toolbar_layout'):
+                    top_toolbar_layout = manager.graph_main_window.get_top_toolbar_layout()
+                
+                if top_toolbar_layout:
+                    # Get the index of the last stretch to insert before it
+                    for i in range(top_toolbar_layout.count()):
+                        item = top_toolbar_layout.itemAt(i)
+                        # We want to insert before the ending stretch
+                        if item.spacerItem() and i > 0:  # Skip the first stretch
+                            top_toolbar_layout.insertWidget(i, graph_node_visibility_button)
+                            break
+                    else:
+                        # Fallback if no ending stretch found - add after preset button
+                        preset_index = -1
+                        for i in range(top_toolbar_layout.count()):
+                            item = top_toolbar_layout.itemAt(i)
+                            if item.widget() == manager.graph_main_window.preset_button:
+                                preset_index = i
+                                break
+                        
+                        if preset_index != -1:
+                            top_toolbar_layout.insertWidget(preset_index + 1, graph_node_visibility_button)
+                        else:
+                            # Just add it at the end
+                            top_toolbar_layout.addWidget(graph_node_visibility_button)
+                else:
+                    # Create a separate button container if we can't access the top toolbar
+                    button_container = QWidget()
+                    button_layout = QHBoxLayout(button_container)
+                    button_layout.setContentsMargins(0, 0, 0, 0)
+                    button_layout.addStretch(1)
+                    button_layout.addWidget(graph_node_visibility_button)
+                    button_layout.addStretch(1)
+                    layout.insertWidget(0, button_container)
+                
+                # Store a reference to the graph tab's node visibility button
+                manager.graph_node_visibility_button = graph_node_visibility_button
+                
+                # Add to the internal controls to handle fullscreen mode
+                if hasattr(manager.graph_main_window, '_internal_controls'):
+                    manager.graph_main_window._internal_controls.append(graph_node_visibility_button)
         else:
             # Fallback if central widget is None
             error_label = QLabel("Could not load Graph View.")
@@ -397,6 +457,13 @@ class TabUIManager:
         if hasattr(manager.graph_main_window, 'zoom_out_action') and manager.graph_main_window.zoom_out_action:
             tab_widget.addAction(manager.graph_main_window.zoom_out_action)
 
+        # Store a reference to the graph tab's preset button on the connection manager
+        # so PresetHandler can find it.
+        if hasattr(manager.graph_main_window, 'preset_button'):
+            manager.graph_tab_presets_button = manager.graph_main_window.preset_button
+        else:
+            manager.graph_tab_presets_button = None
+            
         # The graph's Jack client (the main client) is managed by JackConnectionManager,
         # so no separate thread or start call is needed here for a graph-specific handler.
             
@@ -415,6 +482,11 @@ class TabUIManager:
             from PyQt6.QtCore import QTimer # Ensure QTimer is imported if not already at top
             QTimer.singleShot(250, delayed_refresh) # Increased delay to 250ms
             
+            # Pass node visibility manager to the graph scene
+            if (hasattr(manager, 'node_visibility_manager') and manager.node_visibility_manager and
+                hasattr(manager.graph_main_window, 'scene') and manager.graph_main_window.scene):
+                manager.graph_main_window.scene.set_node_visibility_manager(manager.node_visibility_manager)
+
         # Styling: For now, assume main app styling is sufficient.
         # If graph-specific styles are needed, they could be applied here:
         # e.g., graph_view_widget.setStyleSheet(...)

@@ -1,3 +1,0 @@
-"""
-Feature modules for Cables.
-"""

@@ -416,6 +416,9 @@ class ActionManager:
             item = focused_tree.currentItem()
             if item and item.parent() is None:  # Only move top-level items (groups)
                 focused_tree.move_group_up(item) # Call method on the tree widget itself
+                # Ensure the item is still selected and tree has focus
+                focused_tree.setCurrentItem(focused_tree.topLevelItem(focused_tree.indexOfTopLevelItem(focused_tree.currentItem())))
+                focused_tree.setFocus()
 
     def _handle_move_group_down(self):
         """Handles the global 'Move Down' action trigger."""
@@ -424,6 +427,9 @@ class ActionManager:
             item = focused_tree.currentItem()
             if item and item.parent() is None:  # Only move top-level items (groups)
                 focused_tree.move_group_down(item) # Call method on the tree widget itself
+                # Ensure the item is still selected and tree has focus
+                focused_tree.setCurrentItem(focused_tree.topLevelItem(focused_tree.indexOfTopLevelItem(focused_tree.currentItem())))
+                focused_tree.setFocus()
 
     def _handle_tab_switch(self, forwards=True):
         """Switch focus between output and input trees in the current tab."""

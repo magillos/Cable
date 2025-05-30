@@ -15,26 +15,37 @@ class ConfigManager:
     
     def __init__(self):
         """Initialize the ConfigManager."""
-        self.config = configparser.ConfigParser()
-        self.config_dir = os.path.expanduser('~/.config/cable')
-        self.config_file = os.path.join(self.config_dir, 'config.ini')
-        self.load_config()
-    
-    def load_config(self):
-        """Load configuration from file or create with defaults if it doesn't exist."""
-        # Create directory if it doesn't exist
-        if not os.path.exists(self.config_dir):
-            os.makedirs(self.config_dir)
-        
-        # Load existing config or create with defaults
-        if os.path.exists(self.config_file):
-            self.config.read(self.config_file)
-        
-        # Ensure DEFAULT section exists
+        self.config_path = os.path.expanduser('~/.config/cable/config.ini')
+        self.config = self._get_config_parser()
+        self.load_defaults() # Load defaults after initializing config
+
+    def _get_config_parser(self):
+        """Helper to get a ConfigParser instance, loading existing config."""
+        config = configparser.ConfigParser()
+        config_dir = os.path.dirname(self.config_path)
+        if not os.path.exists(config_dir):
+            os.makedirs(config_dir)
+        if os.path.exists(self.config_path):
+            try:
+                config.read(self.config_path)
+            except configparser.ParsingError as e:
+                print(f"Warning: Could not parse existing config file {self.config_path}. Error: {e}")
+        return config
+
+    def _write_config(self, config):
+        """Helper method to write config."""
+        try:
+            os.makedirs(os.path.dirname(self.config_path), exist_ok=True)
+            with open(self.config_path, 'w') as configfile:
+                config.write(configfile)
+        except Exception as e:
+            print(f"Error writing config file {self.config_path}: {e}")
+
+    def load_defaults(self):
+        """Load default settings if not present."""
         if 'DEFAULT' not in self.config:
             self.config['DEFAULT'] = {}
         
-        # Set defaults if not present
         defaults = {
             'tray_enabled': 'True',
             'tray_click_opens_cables': 'True',
@@ -49,13 +60,8 @@ class ConfigManager:
             if key not in self.config['DEFAULT']:
                 self.config['DEFAULT'][key] = value
         
-        self.save_config()
-    
-    def save_config(self):
-        """Save configuration to file."""
-        with open(self.config_file, 'w') as configfile:
-            self.config.write(configfile)
-    
+        self._write_config(self.config) # Use internal helper
+
     def get_bool(self, key, default=True):
         """
         Get a boolean value from the configuration.
@@ -78,7 +84,7 @@ class ConfigManager:
             value: The boolean value to set
         """
         self.config['DEFAULT'][key] = 'True' if value else 'False'
-        self.save_config()
+        self._write_config(self.config) # Use internal helper
     
     def get_int(self, key, default=0):
         """
@@ -102,7 +108,37 @@ class ConfigManager:
             value: The integer value to set
         """
         self.config['DEFAULT'][key] = str(value)
-        self.save_config()
+        self._write_config(self.config) # Use internal helper
+
+    def get_int_setting(self, key, default_value):
+        """Gets an integer setting from the config file."""
+        config = self._get_config_parser()
+        try:
+            return config.getint('DEFAULT', key, fallback=default_value)
+        except ValueError:
+            print(f"Warning: Invalid integer value for '{key}' in config. Using default: {default_value}")
+            return default_value
+        except Exception as e:
+            print(f"Error reading int setting '{key}' from config: {e}. Using default: {default_value}")
+            return default_value
+
+    def set_int_setting(self, key, value):
+        """Sets an integer setting in the config file."""
+        config = self._get_config_parser()
+        if 'DEFAULT' not in config:
+            config['DEFAULT'] = {}
+        config['DEFAULT'][key] = str(value)
+        self._write_config(config)
+
+    def clear_settings(self, keys_to_clear):
+        """Removes specific keys from the config file."""
+        config = self._get_config_parser()
+        if 'DEFAULT' in config:
+            for key in keys_to_clear:
+                if key in config['DEFAULT']:
+                    del config['DEFAULT'][key]
+                    print(f"Cleared setting: {key}")
+            self._write_config(config)
     
     def get_str(self, key, default=None):
         """
@@ -126,4 +162,4 @@ class ConfigManager:
             value: The string value to set
         """
         self.config['DEFAULT'][key] = str(value) if value is not None else ''
-        self.save_config()
+        self._write_config(self.config) # Use internal helper

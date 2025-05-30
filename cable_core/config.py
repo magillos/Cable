@@ -11,12 +11,62 @@ except ImportError:
     EDIT_LIST_TEXT = "Edit List..."
 
 class ConfigManager:
-    def __init__(self, app):
+    def __init__(self, app=None): # Make app optional for standalone use in dialog
         self.app = app
+        self.config_path = os.path.expanduser("~/.config/cable/config.ini")
+
+    def _get_config_parser(self):
+        """Helper to get a ConfigParser instance, loading existing config."""
+        config = configparser.ConfigParser()
+        if os.path.exists(self.config_path):
+            try:
+                config.read(self.config_path)
+            except configparser.ParsingError as e:
+                print(f"Warning: Could not parse existing config file {self.config_path}. Error: {e}")
+        return config
+
+    def _write_config(self, config):
+        """Helper method to write config."""
+        try:
+            os.makedirs(os.path.dirname(self.config_path), exist_ok=True)
+            with open(self.config_path, 'w') as configfile:
+                config.write(configfile)
+        except Exception as e:
+            print(f"Error writing config file {self.config_path}: {e}")
+
+    def get_int_setting(self, key, default_value):
+        """Gets an integer setting from the config file."""
+        config = self._get_config_parser()
+        try:
+            return config.getint('DEFAULT', key, fallback=default_value)
+        except ValueError:
+            print(f"Warning: Invalid integer value for '{key}' in config. Using default: {default_value}")
+            return default_value
+        except Exception as e:
+            print(f"Error reading int setting '{key}' from config: {e}. Using default: {default_value}")
+            return default_value
+
+    def set_int_setting(self, key, value):
+        """Sets an integer setting in the config file."""
+        config = self._get_config_parser()
+        if 'DEFAULT' not in config:
+            config['DEFAULT'] = {}
+        config['DEFAULT'][key] = str(value)
+        self._write_config(config)
+
+    def clear_settings(self, keys_to_clear):
+        """Removes specific keys from the config file."""
+        config = self._get_config_parser()
+        if 'DEFAULT' in config:
+            for key in keys_to_clear:
+                if key in config['DEFAULT']:
+                    del config['DEFAULT'][key]
+                    print(f"Cleared setting: {key}")
+            self._write_config(config)
+
     def load_settings(self):
         """Load saved settings from config file"""
-        config = configparser.ConfigParser()
-        config_path = os.path.expanduser("~/.config/cable/config.ini")
+        config = self._get_config_parser() # Use the new helper method
 
         # Default settings
         tray_enabled = False
@@ -28,9 +78,9 @@ class ConfigManager:
         self.app.check_updates_at_start = False # Default value
         self.app.restore_only_minimized = False # Default value for the new setting
 
-        if os.path.exists(config_path):
+        if os.path.exists(self.config_path):
             try:
-                config.read(config_path)
+                config.read(self.config_path)
                 # Load tray enabled state
                 tray_enabled = config.getboolean('DEFAULT', 'tray_enabled', fallback=False)
                 # Load default app setting
@@ -175,24 +225,14 @@ class ConfigManager:
         # Manually call update_latency_display after potentially changing indices without signals
         self.app.update_latency_display() # Call app's method
 
-    def _write_config(self, config, config_path):
-        """Helper method to write config."""
-        try:
-            os.makedirs(os.path.dirname(config_path), exist_ok=True)
-            with open(config_path, 'w') as configfile:
-                config.write(configfile)
-        except Exception as e:
-            print(f"Error writing config file {config_path}: {e}")
-            # Optionally raise or show a message box here
 
     def save_settings(self):
         """Save UI settings to config file (does not save audio settings)"""
-        config = configparser.ConfigParser()
-        config_path = os.path.expanduser("~/.config/cable/config.ini")
+        config = self._get_config_parser() # Use the new helper method
 
         # Load existing config if it exists
-        if os.path.exists(config_path):
-            config.read(config_path)
+        if os.path.exists(self.config_path):
+            config.read(self.config_path)
 
         if 'DEFAULT' not in config:
             config['DEFAULT'] = {}
@@ -208,7 +248,7 @@ class ConfigManager:
         })
 
         # Use the helper method to write the config
-        self._write_config(config, config_path) # Internal call uses self
+        self._write_config(config) # Internal call uses self
 
     def toggle_remember_settings(self, state):
         """Handle remember settings checkbox state changes"""
@@ -219,11 +259,10 @@ class ConfigManager:
         self.app.restore_only_minimized_checkbox.setEnabled(remember)
 
         # Update config
-        config = configparser.ConfigParser()
-        config_path = os.path.expanduser("~/.config/cable/config.ini")
+        config = self._get_config_parser() # Use the new helper method
 
-        if os.path.exists(config_path):
-            config.read(config_path)
+        if os.path.exists(self.config_path):
+            config.read(self.config_path)
 
         if 'DEFAULT' not in config:
             config['DEFAULT'] = {}
@@ -265,7 +304,7 @@ class ConfigManager:
             config['DEFAULT']['tray_click_opens_cables'] = str(self.app.tray_click_opens_cables)
 
         # Use the helper method to write the config
-        self._write_config(config, config_path) # Internal call uses self
+        self._write_config(config) # Internal call uses self
 
     def toggle_restore_only_minimized(self, state):
         """Handle restore only when auto-started checkbox state changes"""
@@ -275,17 +314,16 @@ class ConfigManager:
 
     def ensure_config_lists(self):
         """Ensure config.ini contains quantum_values and sample_rate_values keys."""
-        config = configparser.ConfigParser(allow_no_value=True)
-        config_path = os.path.expanduser("~/.config/cable/config.ini")
+        config = self._get_config_parser() # Use the new helper method
 
-        if os.path.exists(config_path):
+        if os.path.exists(self.config_path):
             try:
-                config.read(config_path)
+                config.read(self.config_path)
             except configparser.ParsingError as e:
-                print(f"Warning: Could not parse existing config file {config_path}. It might be overwritten. Error: {e}")
+                print(f"Warning: Could not parse existing config file {self.config_path}. It might be overwritten. Error: {e}")
                 config = configparser.ConfigParser(allow_no_value=True)
         else:
-            os.makedirs(os.path.dirname(config_path), exist_ok=True)
+            os.makedirs(os.path.dirname(self.config_path), exist_ok=True)
 
         if 'DEFAULT' not in config:
             config['DEFAULT'] = {}
@@ -303,16 +341,15 @@ class ConfigManager:
             config_updated = True
 
         if config_updated:
-            self._write_config(config, config_path) # Internal call uses self
+            self._write_config(config) # Internal call uses self
             print("Added missing default list(s) to config.ini")
 
     def get_list_from_config(self, key, default_values):
         """Gets a list of integers from a comma-separated config value, ignoring comments."""
-        config = configparser.ConfigParser()
-        config_path = os.path.expanduser("~/.config/cable/config.ini")
+        config = self._get_config_parser() # Use the new helper method
         try:
-            if os.path.exists(config_path):
-                config.read(config_path)
+            if os.path.exists(self.config_path):
+                config.read(self.config_path)
                 raw = config['DEFAULT'].get(key, None)
                 if raw is not None:
                     parts = [x.strip() for x in raw.split(',')]
@@ -338,15 +375,14 @@ class ConfigManager:
             print(f"Skipping save of {setting_name} setting after reset")
             return
 
-        config = configparser.ConfigParser()
-        config_path = os.path.expanduser("~/.config/cable/config.ini")
+        config = self._get_config_parser() # Use the new helper method
 
         # Load existing config if it exists
-        if os.path.exists(config_path):
+        if os.path.exists(self.config_path):
             try:
-                config.read(config_path)
+                config.read(self.config_path)
             except configparser.ParsingError as e:
-                 print(f"Warning: Could not parse config file {config_path} during save. Error: {e}")
+                 print(f"Warning: Could not parse config file {self.config_path} during save. Error: {e}")
 
         if 'DEFAULT' not in config:
             config['DEFAULT'] = {}
@@ -363,7 +399,7 @@ class ConfigManager:
             print(f"Removed invalid/empty {setting_name} setting ({config_key}) from config")
 
         # Use the helper method to write the config
-        self._write_config(config, config_path) # Internal call uses self
+        self._write_config(config) # Internal call uses self
 
     def save_quantum_setting(self):
         """Save only the quantum setting to config file"""

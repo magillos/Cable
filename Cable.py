@@ -386,8 +386,12 @@ class PipeWireSettingsApp(QWidget):
 
         self.setLayout(main_layout)
         self.setWindowTitle('Cable')
+        # Load window dimensions from config or use app_config defaults
+        initial_width = self.config_manager.get_int_setting("MAIN_WINDOW_INITIAL_WIDTH", app_config.MAIN_WINDOW_INITIAL_WIDTH)
+        initial_height = self.config_manager.get_int_setting("MAIN_WINDOW_INITIAL_HEIGHT", app_config.MAIN_WINDOW_INITIAL_HEIGHT)
+
         self.setMinimumSize(app_config.MAIN_WINDOW_MIN_WIDTH, app_config.MAIN_WINDOW_MIN_HEIGHT)  # Set minimum window size
-        self.resize(app_config.MAIN_WINDOW_INITIAL_WIDTH, app_config.MAIN_WINDOW_INITIAL_HEIGHT)  # Set initial size to the minimum
+        self.resize(initial_width, initial_height)  # Set initial size
 
         self.pipewire_manager.load_nodes() # Use manager
         self.pipewire_manager.load_devices() # Use manager

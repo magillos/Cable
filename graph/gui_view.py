@@ -1,4 +1,4 @@
-from PyQt6.QtWidgets import QGraphicsView
+from PyQt6.QtWidgets import QGraphicsView, QMenu
 from PyQt6.QtGui import QPainter, QCursor, QMouseEvent # Import QMouseEvent
 from PyQt6.QtCore import Qt, pyqtSignal
 
@@ -256,3 +256,33 @@ class JackGraphView(QGraphicsView):
             event.accept() # Indicate event was handled, even if not fullscreen (to consume Esc)
         else:
             super().keyPressEvent(event) # Pass to base class for other keys
+
+    def contextMenuEvent(self, event):
+        """Show a context menu when right-clicking on empty areas of the canvas."""
+        # First, let's check if there's an item under the cursor
+        item_under_cursor = self.itemAt(event.pos())
+        
+        # Only show our custom context menu if there's no item under the cursor
+        if item_under_cursor is None:
+            menu = QMenu(self)
+            save_layout_action = menu.addAction("Save current layout")
+            
+            # Connect to a signal that will be handled by the main window
+            save_layout_action.triggered.connect(self._request_save_layout)
+            
+            menu.exec(event.globalPos())
+            event.accept()
+        else:
+            # If there's an item, pass the event to the parent implementation
+            super().contextMenuEvent(event)
+            
+    def _request_save_layout(self):
+        """Signal to the main window to save the current layout."""
+        # We'll emit a signal that can be connected to a method in MainWindow
+        # Since we don't have a dedicated signal for this yet, we'll create one
+        # For now, let's try to access the parent MainWindow and call its method directly
+        if self.scene() and hasattr(self.scene(), 'parent') and self.scene().parent():
+            main_window = self.scene().parent()
+            if hasattr(main_window, 'save_current_layout'):
+                main_window.save_current_layout()
+                print("Requested to save current layout")

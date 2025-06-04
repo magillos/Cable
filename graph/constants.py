@@ -11,10 +11,10 @@ PORT_LABEL_OFFSET = 5
 NODE_VMARGIN = 5 # Vertical margin inside node between title/ports/ports
 
 PORT_DRAG_COLOR = QColor(100, 200, 255, 150)
-CONNECTION_COLOR = QColor(100, 180, 255)
+CONNECTION_COLOR = QColor(80, 150, 220)  # Slightly darker blue for normal connections
 CONNECTION_WIDTH = 1.5
 CONNECTION_HIGHLIGHT_WIDTH = 3.0
-CONNECTION_HIGHLIGHT_COLOR = QColor(150, 220, 255) # Brighter blue for highlight
+CONNECTION_HIGHLIGHT_COLOR = QColor(170, 230, 255)  # Brighter blue for highlighted connections
 DEFAULT_CONNECTION_FACTOR = 0.5    # Default Bezier curve factor
 SELF_CONNECTION_FACTOR = 0.85   # Bezier curve factor for self-connections (node to itself)
 NODE_BG_COLOR = QColor(45, 45, 45)

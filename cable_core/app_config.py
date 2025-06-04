@@ -1,7 +1,7 @@
 # cable_core/app_config.py
 
 # --- Application Version ---
-APP_VERSION = "0.9.9"
+APP_VERSION = "0.9.10"
 # Main App Window (Cable.py)
 MAIN_WINDOW_MIN_WIDTH = 300
 MAIN_WINDOW_MIN_HEIGHT = 600
@@ -24,3 +24,6 @@ CONNECTION_VIEW_INITIAL_WIDTH = 250
 
 # PW-Top Tab Font Size (cables/ui/tab_ui_manager.py)
 PWTOP_FONT_SIZE_PT = 13
+
+# Graph View Settings (graph/main_window.py)
+DEFAULT_UNTANGLE_VALUES = [3, 4, 5, 2]

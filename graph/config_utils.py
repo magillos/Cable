@@ -179,3 +179,81 @@ class ConfigManager:
         except Exception as e:
             print(f"Error loading node states: {e}")
             return {}, None # Return empty dict and None for zoom on error
+
+    def save_node_states_as_default(self, node_states, graph_zoom_level=None):
+        """Save provided node states directly to the node_positions.json file.
+        This is used for saving the current layout as the default.
+        
+        Args:
+            node_states (dict): Dict of node configurations from get_node_states().
+            graph_zoom_level (float, optional): The current zoom level of the graph view.
+                If None, will attempt to preserve the current zoom level from the file.
+        """
+        # Load existing data first to get the zoom level if not provided
+        loaded_data = {}
+        existing_zoom_level = None
+        if self.node_positions_file.exists():
+            try:
+                with open(self.node_positions_file, 'r') as f:
+                    loaded_data = json.load(f)
+                    # Extract existing zoom level if not provided
+                    if graph_zoom_level is None and self.GRAPH_ZOOM_LEVEL_KEY in loaded_data:
+                        existing_zoom_level = loaded_data[self.GRAPH_ZOOM_LEVEL_KEY]
+            except Exception as e:
+                print(f"Warning: Error loading node states file {self.node_positions_file}: {e}. Starting with empty config.")
+        
+        # Create the new data to save
+        data_to_save = {}
+        
+        # Add the node states
+        for client_name, config in node_states.items():
+            node_data = {}
+            
+            # Convert QPointF positions to serializable format
+            if "pos" in config:
+                pos = config["pos"]
+                node_data["pos"] = {"x": pos.x(), "y": pos.y()}
+                
+            # Set split state
+            if "is_split" in config:
+                node_data["is_split"] = bool(config["is_split"])
+                
+            # Convert split positions
+            if "split_input_pos" in config:
+                pos = config["split_input_pos"]
+                node_data["split_input_pos"] = {"x": pos.x(), "y": pos.y()}
+                
+            if "split_output_pos" in config:
+                pos = config["split_output_pos"]
+                node_data["split_output_pos"] = {"x": pos.x(), "y": pos.y()}
+                
+            # Copy fold states
+            if self.IS_FOLDED_KEY in config:
+                node_data[self.IS_FOLDED_KEY] = bool(config[self.IS_FOLDED_KEY])
+                
+            if self.MANUAL_SPLIT_KEY in config:
+                node_data[self.MANUAL_SPLIT_KEY] = bool(config[self.MANUAL_SPLIT_KEY])
+                
+            # Copy part fold states if the node is split
+            if config.get("is_split", False):
+                if self.INPUT_PART_FOLDED_KEY in config:
+                    node_data[self.INPUT_PART_FOLDED_KEY] = bool(config[self.INPUT_PART_FOLDED_KEY])
+                if self.OUTPUT_PART_FOLDED_KEY in config:
+                    node_data[self.OUTPUT_PART_FOLDED_KEY] = bool(config[self.OUTPUT_PART_FOLDED_KEY])
+            
+            # Store the node data
+            data_to_save[client_name] = node_data
+        
+        # Add the zoom level
+        if graph_zoom_level is not None:
+            data_to_save[self.GRAPH_ZOOM_LEVEL_KEY] = graph_zoom_level
+        elif existing_zoom_level is not None:
+            data_to_save[self.GRAPH_ZOOM_LEVEL_KEY] = existing_zoom_level
+            
+        # Save to file
+        try:
+            with open(self.node_positions_file, 'w') as f:
+                json.dump(data_to_save, f, indent=4)
+            print(f"Saved {len(data_to_save) - (1 if self.GRAPH_ZOOM_LEVEL_KEY in data_to_save else 0)} node configurations as default layout.")
+        except Exception as e:
+            print(f"Error saving node states as default: {e}")

@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                              QLineEdit, QSpacerItem, QSizePolicy, QMessageBox, QToolButton, QMenu)
 from PyQt6.QtCore import pyqtSlot, QSize # Added QSize
-from PyQt6.QtGui import QAction, QKeySequence # Added for shortcuts
+from PyQt6.QtGui import QAction, QKeySequence, QIcon # Added for shortcuts and icons
 
 from cables.ui.shared_widgets import create_action_button
 import jack # For jack.Client type hint
@@ -12,6 +12,13 @@ from .gui_view import JackGraphView
 from .port_item import PortItem
 from .connection_item import ConnectionItem
 from .constants import GRAPH_TOOLBAR_UNDO_REDO_OFFSET
+from cable_core import app_config
+import os
+import configparser
+import copy
+
+# Special value to represent the original layout in the untangle cycle
+ORIGINAL_LAYOUT = -1
 
 class MainWindow(QMainWindow):
     def __init__(self, jack_client: jack.Client, connection_manager: 'JackConnectionManager', preset_handler_ref, connection_history_ref):
@@ -21,6 +28,21 @@ class MainWindow(QMainWindow):
         self.preset_handler = preset_handler_ref # Store the reference
         self.connection_history = connection_history_ref # Store the reference
         # self.jack_handler is removed, GraphJackHandler is now part of JackGraphScene
+        
+        # Load untangle values from config or use defaults
+        self.untangle_values = self._load_untangle_values()
+        
+        # Add the special value for original layout to the untangle values
+        if ORIGINAL_LAYOUT not in self.untangle_values:
+            self.untangle_values.append(ORIGINAL_LAYOUT)
+        
+        # Current max_nodes_per_row value for untangle
+        self.current_untangle_setting = self.untangle_values[0] if self.untangle_values else 6  # Default value
+        # Track if untangle has been used at least once
+        self.untangle_button_clicked = False
+        
+        # Will store the initial node positions
+        self.initial_node_positions = None
 
         self.setWindowTitle("PyQt JACK Graph")
         self.setGeometry(100, 100, 1000, 700)
@@ -33,6 +55,9 @@ class MainWindow(QMainWindow):
             parent=self # Pass self as parent, which JackGraphScene uses as main_window_ref for its GraphJackHandler
         )
         self.view = JackGraphView(self.scene)
+        
+        # Store initial node positions after the scene is fully loaded
+        self.scene.scene_fully_loaded.connect(self._store_initial_node_positions)
 
         # Main widget and layout
         main_widget = QWidget()
@@ -68,6 +93,19 @@ class MainWindow(QMainWindow):
             self.graph_redo_action,
             tooltip="Redo last connection <span style='color:grey'>Shift+Ctrl+Z/Ctrl+Y</span>",
             min_width=90
+        )
+        
+        # Create Untangle button and action
+        self.untangle_action = QAction("Untangle", self)
+        next_value = self._get_next_untangle_value()
+        # At startup, only show the next value in the tooltip
+        self.untangle_action.setToolTip(f"Automatically organize nodes to reduce visual clutter (next: {next_value})")
+        self.untangle_action.triggered.connect(self._handle_untangle)
+        self.untangle_button = create_action_button(
+            self,
+            self.untangle_action,
+            tooltip=f"Reorganize graph (next: {next_value})",
+            min_width=100
         )
 
         self.zoom_in_action = action_manager.zoom_in_action # Assuming generic zoom actions
@@ -113,9 +151,12 @@ class MainWindow(QMainWindow):
         
         # bottom_toolbar_layout.addStretch(1) # Add another stretch to push undo/redo buttons to the center # Removed to re-center Undo/Redo buttons
         
-        # Apply offset for Undo/Redo buttons
+        # Apply offset for buttons
         if GRAPH_TOOLBAR_UNDO_REDO_OFFSET > 0:
             bottom_toolbar_layout.addSpacerItem(QSpacerItem(GRAPH_TOOLBAR_UNDO_REDO_OFFSET, 0, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum))
+        
+        # Add Untangle button to the left of Undo/Redo
+        bottom_toolbar_layout.addWidget(self.untangle_button)
         
         bottom_toolbar_layout.addWidget(self.undo_button)
         bottom_toolbar_layout.addWidget(self.redo_button)
@@ -172,12 +213,62 @@ class MainWindow(QMainWindow):
         # Store references to controls that can be hidden in fullscreen
         self._internal_controls = [
             self.connect_button, self.disconnect_button, self.preset_button,
-            self.undo_button, self.redo_button,
+            self.untangle_button, self.undo_button, self.redo_button, 
             self.zoom_in_button, self.zoom_out_button,
             self.node_filter_box  # Add the node filter box to be hidden in fullscreen
         ]
         # Also need to hide the layouts containing them if possible, or their container widgets.
         # Since layouts are added directly, we hide the widgets themselves.
+
+    def _load_untangle_values(self):
+        """Load untangle values from config or use defaults."""
+        config_path = os.path.expanduser("~/.config/cable/config.ini")
+        if os.path.exists(config_path):
+            config = configparser.ConfigParser()
+            try:
+                config.read(config_path)
+                if 'DEFAULT' in config and 'GRAPH_UNTANGLE_VALUES' in config['DEFAULT']:
+                    values_str = config['DEFAULT']['GRAPH_UNTANGLE_VALUES']
+                    try:
+                        # Parse comma-separated values
+                        values = [int(v.strip()) for v in values_str.split(',') if v.strip().isdigit()]
+                        if values:  # Only return if we have valid values
+                            return values
+                    except ValueError:
+                        print(f"Error parsing untangle values from config: {values_str}")
+            except Exception as e:
+                print(f"Error reading untangle values from config: {e}")
+        
+        # Return default values if config doesn't exist or has invalid values
+        return app_config.DEFAULT_UNTANGLE_VALUES
+
+    def _store_initial_node_positions(self):
+        """Store the initial node positions when the scene is first loaded."""
+        if not self.initial_node_positions:
+            # Get current node positions from the scene
+            node_states = self.scene.get_node_states()
+            if node_states:
+                self.initial_node_positions = copy.deepcopy(node_states)
+                print("Initial node positions stored")
+
+    def _get_next_untangle_value(self):
+        """Get the next untangle value in the cycle."""
+        if not self.untangle_values:
+            return 6  # Default if no values
+        
+        try:
+            current_index = self.untangle_values.index(self.current_untangle_setting)
+            next_index = (current_index + 1) % len(self.untangle_values)
+            next_value = self.untangle_values[next_index]
+            
+            # Format the value for display
+            if next_value == ORIGINAL_LAYOUT:
+                # Indicate if the original layout was saved by the user
+                return "original layout (saved)" if hasattr(self, 'initial_node_positions') and self.initial_node_positions else "original layout"
+            return next_value
+        except (ValueError, IndexError):
+            # If current value not in the list or list is empty
+            return self.untangle_values[0] if self.untangle_values else 6
 
     def toggle_internal_controls(self, visible: bool):
         """Shows or hides the internal toolbar/control widgets."""
@@ -256,29 +347,64 @@ class MainWindow(QMainWindow):
     @pyqtSlot(float)
     def handle_zoom_changed(self, zoom_level: float):
         """Handles the zoom_changed signal from the view and saves the state."""
-        if self.scene:
-            # print(f"GraphMainWindow: Zoom changed to {zoom_level}, saving states.") # DEBUG
-            self.scene.save_node_states(graph_zoom_level=zoom_level)
-            
-    # def _setup_zoom_actions(self):
-    #     self.zoom_in_action = QAction("Zoom In", self)
-    #     # Use multiple shortcuts to ensure compatibility across systems
-    #     self.zoom_in_action.setShortcuts([
-    #         QKeySequence.StandardKey.ZoomIn,  # Standard Qt zoom in
-    #         QKeySequence("Ctrl++"),
-    #         QKeySequence("Ctrl+=")
-    #     ])
-    #     self.zoom_in_action.triggered.connect(self._zoom_in_view)
-    #     self.addAction(self.zoom_in_action)
-
-    #     self.zoom_out_action = QAction("Zoom Out", self)
-    #     # Use StandardKey.ZoomOut to ensure compatibility
-    #     self.zoom_out_action.setShortcuts([
-    #         QKeySequence.StandardKey.ZoomOut,  # Standard Qt zoom out
-    #         QKeySequence("Ctrl+-")
-    #     ])
-    #     self.zoom_out_action.triggered.connect(self._zoom_out_view)
-    #     self.addAction(self.zoom_out_action)
+        # print(f"Handling zoom change event in MainWindow: {zoom_level}") # Silenced
+        # Save node positions and zoom level
+        self.scene.save_node_states(graph_zoom_level=zoom_level)
+        
+    def _handle_untangle(self):
+        """Handles the untangle button action and cycles through max_nodes_per_row values."""
+        # Use the loaded untangle values from config
+        if not self.untangle_values:
+            # If no values are available, use defaults
+            self.untangle_values = app_config.DEFAULT_UNTANGLE_VALUES
+            # Make sure the original layout option is included
+            if ORIGINAL_LAYOUT not in self.untangle_values:
+                self.untangle_values.append(ORIGINAL_LAYOUT)
+        
+        # Get the index of the current setting in the cycle
+        try:
+            current_index = self.untangle_values.index(self.current_untangle_setting)
+            # Move to the next value in the cycle
+            next_index = (current_index + 1) % len(self.untangle_values)
+            self.current_untangle_setting = self.untangle_values[next_index]
+        except ValueError:
+            # If current value not in the list, start with the first value
+            self.current_untangle_setting = self.untangle_values[0]
+        
+        # If the current setting is the special value for original layout
+        if self.current_untangle_setting == ORIGINAL_LAYOUT:
+            # Restore the original node positions
+            if self.initial_node_positions:
+                self.scene.restore_node_states(self.initial_node_positions)
+                # Display a status message
+                if hasattr(self, 'statusBar') and self.statusBar():
+                    self.statusBar().showMessage("Restored original layout.", 3000)
+            else:
+                # If no initial positions are stored, use a default untangle
+                print("No initial node positions stored, using default untangle")
+                self.scene.untangle_graph(max_nodes_per_row=6)
+                if hasattr(self, 'statusBar') and self.statusBar():
+                    self.statusBar().showMessage("Original layout not available, using default untangle.", 3000)
+        else:
+            # Otherwise use the regular untangle with the current setting
+            self.scene.untangle_graph(max_nodes_per_row=self.current_untangle_setting)
+            # Display a status message with the current setting
+            if hasattr(self, 'statusBar') and self.statusBar():
+                self.statusBar().showMessage(f"Graph untangled with {self.current_untangle_setting} nodes per row.", 3000)
+        
+        # Update the button tooltip to show both current and next values after first click
+        next_value = self._get_next_untangle_value()
+        self.untangle_button_clicked = True
+        
+        # Format the current setting for display
+        if self.current_untangle_setting == ORIGINAL_LAYOUT:
+            # Indicate if the original layout was saved by the user
+            original_label = "original layout (saved)" if hasattr(self, 'initial_node_positions') and self.initial_node_positions else "original layout"
+            current_display = original_label
+        else:
+            current_display = f"{self.current_untangle_setting} nodes per row"
+        
+        self.untangle_button.setToolTip(f"Reorganize graph ({current_display}, next: {next_value})")
 
     @pyqtSlot()
     def update_graph_connection_buttons_state(self):
@@ -698,3 +824,27 @@ class MainWindow(QMainWindow):
                     return self._top_toolbar_layout
         
         return None
+
+    def save_current_layout(self):
+        """Save the current node layout to the node_positions.json file.
+        This is called when the user selects "Save current layout" from the context menu.
+        """
+        # Get the current node states from the scene
+        current_states = self.scene.get_node_states()
+        
+        # Save the node states to the config file
+        self.scene.config_manager.save_node_states_as_default(current_states)
+        
+        # Update the in-memory initial_node_positions variable
+        # This ensures that when cycling back to the original layout with the Untangle button,
+        # the saved layout will be used
+        self.initial_node_positions = copy.deepcopy(current_states)
+        
+        # Show a status message
+        if hasattr(self, 'statusBar') and self.statusBar():
+            self.statusBar().showMessage("Current layout saved as default and will be used as 'original layout' in Untangle cycle", 5000)
+        
+        # Update the Untangle button tooltip to reflect that the original layout has been changed
+        next_value = self._get_next_untangle_value()
+        current_display = "original layout (saved)" if self.current_untangle_setting == ORIGINAL_LAYOUT else f"{self.current_untangle_setting} nodes per row"
+        self.untangle_button.setToolTip(f"Reorganize graph ({current_display}, next: {next_value})")

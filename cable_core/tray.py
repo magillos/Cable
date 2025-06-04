@@ -277,6 +277,8 @@ class TrayManager:
         restore_minimized_action.toggled.connect(self.app.restore_only_minimized_checkbox.setChecked) # Connect action toggle to app's checkbox
         context_menu.addAction(restore_minimized_action)
 
+        # Add separator between restore settings and update options
+        context_menu.addSeparator()
 
         check_now_action = QAction("Check for new version", self.app)
         # Use lambda to pass manual_check=True

@@ -679,9 +679,14 @@ class NodeItem(QGraphicsItem):
         if is_input_part: action.triggered.connect(self._disconnect_this_part_input_ports)
         elif is_output_part: action.triggered.connect(self._disconnect_this_part_output_ports)
         else: action.triggered.connect(self._disconnect_all_connections)
+        
+        # Add separator after Disconnect
+        menu.addSeparator()
 
         if self.split_origin_node:
-            menu.addAction("Unsplit").triggered.connect(lambda: self.split_origin_node.split_handler.unsplit_node(save_state=True))
+            unsplit_action = menu.addAction("Unsplit")
+            unsplit_action.setShortcut(Qt.Key.Key_U)
+            unsplit_action.triggered.connect(lambda: self.split_origin_node.split_handler.unsplit_node(save_state=True))
         else:
             menu.addAction("Unsplit (Error: No Origin)").setEnabled(False)
 
@@ -693,25 +698,37 @@ class NodeItem(QGraphicsItem):
             menu.addAction(fold_text).triggered.connect(lambda: self.fold_handler.toggle_output_part_fold())
             
         # Add the Hide option
-        menu.addSeparator()
-        menu.addAction("Hide").triggered.connect(self._hide_node)
+        hide_action = menu.addAction("Hide")
+        hide_action.setShortcut(Qt.Key.Key_H)
+        hide_action.triggered.connect(self._hide_node)
 
     def _build_context_menu_for_split_origin(self, menu: QMenu, disconnect_is_enabled: bool):
         disconnect_action = menu.addAction("Disconnect all")
         disconnect_action.setEnabled(disconnect_is_enabled)
         disconnect_action.triggered.connect(self._disconnect_all_connections)
-        menu.addAction("Unsplit Node").triggered.connect(lambda: self.split_handler.unsplit_node(save_state=True))
+        
+        # Add separator after Disconnect
+        menu.addSeparator()
+        
+        unsplit_action = menu.addAction("Unsplit Node")
+        unsplit_action.setShortcut(Qt.Key.Key_U)
+        unsplit_action.triggered.connect(lambda: self.split_handler.unsplit_node(save_state=True))
         
         # Add the Hide option
-        menu.addSeparator()
-        menu.addAction("Hide").triggered.connect(self._hide_node)
+        hide_action = menu.addAction("Hide")
+        hide_action.setShortcut(Qt.Key.Key_H)
+        hide_action.triggered.connect(self._hide_node)
 
     def _build_context_menu_for_normal_node(self, menu: QMenu, disconnect_is_enabled: bool):
         disconnect_action = menu.addAction("Disconnect all")
         disconnect_action.setEnabled(disconnect_is_enabled)
         disconnect_action.triggered.connect(self._disconnect_all_connections)
         
+        # Add separator after Disconnect
+        menu.addSeparator()
+        
         split_action = menu.addAction("Split")
+        split_action.setShortcut(Qt.Key.Key_S)
         split_action.setEnabled(bool(self.input_ports) and bool(self.output_ports))
         split_action.triggered.connect(lambda: self.split_handler.split_node(save_state=True))
         
@@ -719,8 +736,9 @@ class NodeItem(QGraphicsItem):
         menu.addAction(fold_text).triggered.connect(self.fold_handler.toggle_main_fold_state)
         
         # Add the Hide option
-        menu.addSeparator()
-        menu.addAction("Hide").triggered.connect(self._hide_node)
+        hide_action = menu.addAction("Hide")
+        hide_action.setShortcut(Qt.Key.Key_H)
+        hide_action.triggered.connect(self._hide_node)
 
     def contextMenuEvent(self, event):
         if not (event.pos().y() <= self._calculated_title_height):

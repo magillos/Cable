@@ -90,12 +90,13 @@ class ConnectionItem(QGraphicsPathItem):
         palette = option.palette if option else self.scene().palette() # Get palette from option or scene
 
         if is_highlighted:
-            # current_pen = self._highlight_pen
-            highlight_color = palette.color(QPalette.ColorRole.Highlight)
+            # Use a brighter color for highlighted connections
+            # Instead of using palette.Highlight, use a brighter color
+            highlight_color = constants.CONNECTION_HIGHLIGHT_COLOR
             current_pen = QPen(highlight_color, constants.CONNECTION_HIGHLIGHT_WIDTH)
         else:
-            # current_pen = self._base_pen
-            base_color = palette.color(QPalette.ColorRole.Link) # Use Link color for connections
+            # Use a darker color for normal connections
+            base_color = constants.CONNECTION_COLOR
             current_pen = QPen(base_color, constants.CONNECTION_WIDTH)
 
         painter.setPen(current_pen)

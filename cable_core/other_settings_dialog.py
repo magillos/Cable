@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QPushButton,
-    QDialogButtonBox, QMessageBox, QFrame
+    QDialogButtonBox, QMessageBox, QFrame, QLineEdit
 )
 from PyQt6.QtCore import Qt
 
@@ -49,6 +49,7 @@ class OtherSettingsDialog(QDialog):
 
         self.sliders = {}
         self.value_labels = {}
+        self.text_fields = {}  # New dictionary to store text fields
 
         self._init_ui()
         self._load_settings_from_config()
@@ -67,7 +68,7 @@ class OtherSettingsDialog(QDialog):
             label.deleteLater()
 
         # Add some padding
-        max_label_width += 20
+        max_label_width += 60
 
         for key, setting_info in self.settings_map.items():
             h_layout = QHBoxLayout()
@@ -98,6 +99,31 @@ class OtherSettingsDialog(QDialog):
                 separator.setFrameShadow(QFrame.Shadow.Sunken)
                 main_layout.addWidget(separator)
 
+        # Add separator after the last slider
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.HLine)
+        separator.setFrameShadow(QFrame.Shadow.Sunken)
+        main_layout.addWidget(separator)
+
+        # Add untangle values text field
+        untangle_layout = QHBoxLayout()
+        untangle_label = QLabel("Graph Untangle configuration\n(clients in a row and cycle order)")
+        untangle_label.setFixedWidth(max_label_width)
+        untangle_layout.addWidget(untangle_label)
+
+        untangle_field = QLineEdit()
+        untangle_field.setToolTip("Enter comma-separated values (e.g., 4,5,6,7,2,3)")
+        untangle_layout.addWidget(untangle_field)
+        self.text_fields["GRAPH_UNTANGLE_VALUES"] = untangle_field
+
+        main_layout.addLayout(untangle_layout)
+
+        # Add separator after untangle values
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.HLine)
+        separator.setFrameShadow(QFrame.Shadow.Sunken)
+        main_layout.addWidget(separator)
+
         button_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.RestoreDefaults |
             QDialogButtonBox.StandardButton.Apply |
@@ -118,6 +144,19 @@ class OtherSettingsDialog(QDialog):
             current_value = self.config_manager.get_int_setting(key, default_value)
             self.sliders[key].setValue(current_value)
             self.value_labels[key].setText(str(current_value))
+        
+        # Load untangle values
+        default_untangle_values = app_config.DEFAULT_UNTANGLE_VALUES
+        config = self.config_manager._get_config_parser()
+        untangle_values_str = ""
+        
+        if 'DEFAULT' in config and 'GRAPH_UNTANGLE_VALUES' in config['DEFAULT']:
+            untangle_values_str = config['DEFAULT']['GRAPH_UNTANGLE_VALUES']
+        else:
+            # Convert default list to comma-separated string
+            untangle_values_str = ','.join(map(str, default_untangle_values))
+        
+        self.text_fields["GRAPH_UNTANGLE_VALUES"].setText(untangle_values_str)
 
     def _show_restart_warning(self):
         msg_box = QMessageBox(self) # Re-add parent
@@ -131,10 +170,21 @@ class OtherSettingsDialog(QDialog):
     def _save_settings_to_config(self):
         for key in self.settings_map.keys():
             self.config_manager.set_int_setting(key, self.sliders[key].value())
+        
+        # Save untangle values
+        config = self.config_manager._get_config_parser()
+        if 'DEFAULT' not in config:
+            config['DEFAULT'] = {}
+        
+        untangle_values_str = self.text_fields["GRAPH_UNTANGLE_VALUES"].text().strip()
+        config['DEFAULT']['GRAPH_UNTANGLE_VALUES'] = untangle_values_str
+        
+        self.config_manager._write_config(config)
         # The warning is now shown by _handle_button_click for Apply/Default
 
     def _reset_to_defaults(self):
         keys_to_clear = list(self.settings_map.keys())
+        keys_to_clear.append("GRAPH_UNTANGLE_VALUES")  # Add the untangle values key
         self.config_manager.clear_settings(keys_to_clear)
         self._load_settings_from_config() # Reload from app_config defaults
 
@@ -143,7 +193,8 @@ class OtherSettingsDialog(QDialog):
             self._save_settings_to_config()
             self._show_restart_warning() # Show warning on Apply
         elif self.sender().buttonRole(button) == QDialogButtonBox.ButtonRole.AcceptRole: # OK button
-            self.reject()  # Close dialog without saving changes, same as Cancel
+            self._save_settings_to_config()  # Save settings on OK
+            self.accept()  # Close dialog with accept
         elif self.sender().buttonRole(button) == QDialogButtonBox.ButtonRole.ResetRole: # RestoreDefaults button
             self._reset_to_defaults()
             self._show_restart_warning() # Show warning on Default

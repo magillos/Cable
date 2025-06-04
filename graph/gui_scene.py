@@ -2,6 +2,7 @@
 import jack
 import traceback
 from collections import defaultdict
+import copy
 
 from PyQt6.QtWidgets import QGraphicsScene, QGraphicsPathItem
 from PyQt6.QtGui import QColor, QPen, QPainterPath
@@ -21,6 +22,7 @@ from .graph_interaction_handler import GraphInteractionHandler # Import the new 
 class JackGraphScene(QGraphicsScene):
     """Manages the nodes, ports, and connections. Delegates interactions to GraphInteractionHandler."""
     scene_connections_changed = pyqtSignal() # Signal for when connections are added/removed
+    scene_fully_loaded = pyqtSignal() # Signal emitted when the scene is fully loaded initially
 
     def __init__(self, jack_client: jack.Client, connection_manager: 'JackConnectionManager', connection_history, parent=None):
         super().__init__(parent)
@@ -106,6 +108,13 @@ class JackGraphScene(QGraphicsScene):
 
             # Emit signal that connections may have changed
             self.scene_connections_changed.emit()
+            
+            # Emit scene_fully_loaded signal if this is the first refresh
+            # We use a static variable to track if this is the first refresh
+            if not hasattr(self, '_first_refresh_done'):
+                self._first_refresh_done = True
+                self.scene_fully_loaded.emit()
+                print("Scene fully loaded signal emitted")
 
         except Exception as e:
             print(f"Error during full graph refresh: {e}")
@@ -924,7 +933,7 @@ class JackGraphScene(QGraphicsScene):
             
         # print(f"JackGraphScene: Requesting specific save for node '{client_name_key}'. Zoom: {current_zoom}") # DEBUG
         self.config_manager.save_node_states(nodes_to_save, graph_zoom_level=current_zoom)
- 
+
     def _update_config_for_moved_node(self, node_item: 'NodeItem'):
         """Helper to update the scene's node_configs dict after a node moves.
         Ensures configuration is saved under the original client name for split parts."""
@@ -999,6 +1008,419 @@ class JackGraphScene(QGraphicsScene):
         for connection_item in self.connections.values():
             connection_item.update_path()
         self.update() # Request a general scene update
+        
+    def untangle_graph(self, max_nodes_per_row=6):
+        """
+        Automatically organizes the graph nodes to reduce visual clutter.
+        This method arranges nodes in a logical flow based on their connections:
+        1. Starts with nodes that only have output ports (source nodes)
+        2. Places connected nodes in a pattern that reduces connection crossing
+        3. Groups disconnected nodes separately
+        
+        Args:
+            max_nodes_per_row (int): Maximum number of nodes to place in a row before
+                                     starting a new row. Default is 6.
+        """
+        if not self.nodes:
+            return  # No nodes to untangle
+            
+        # Identify original nodes and their split parts, exclude origins from direct layout
+        layout_nodes = {}
+        original_node_parts = defaultdict(lambda: {'input': None, 'output': None})
+        for client_name, node in self.nodes.items():
+            if node.is_split_origin:
+                if node.split_input_node:
+                    original_node_parts[node.client_name]['input'] = node.split_input_node
+                if node.split_output_node:
+                    original_node_parts[node.client_name]['output'] = node.split_output_node
+                # Exclude split origins from direct layout, their parts will be handled
+                continue
+            layout_nodes[client_name] = node
+
+        if not layout_nodes:
+            return # No visible nodes to untangle
+            
+        # Initialize tracking variables
+        placed_nodes = set()
+        row = 0
+        col = 0
+        node_count = 0
+        
+        # Find all nodes with only output ports (sources) or no connections at all
+        source_nodes = []
+        connected_nodes = set()
+        
+        # First, identify all nodes that participate in connections
+        for connection_key in self.connections:
+            out_port, in_port = connection_key
+            out_node_candidate_name = out_port.split(':')[0]
+            in_node_candidate_name = in_port.split(':')[0]
+
+            # Resolve to original client name if dealing with a split part's port
+            out_node_item = self.nodes.get(out_node_candidate_name)
+            in_node_item = self.nodes.get(in_node_candidate_name)
+
+            if out_node_item:
+                actual_out_client = out_node_item.original_client_name if out_node_item.is_split_part else out_node_item.client_name
+                if actual_out_client:
+                    connected_nodes.add(actual_out_client)
+            
+            if in_node_item:
+                actual_in_client = in_node_item.original_client_name if in_node_item.is_split_part else in_node_item.client_name
+                if actual_in_client:
+                    connected_nodes.add(actual_in_client)
+        
+        # Find nodes with only output ports or ones that are starting points
+        for client_name, node in layout_nodes.items(): # Use layout_nodes
+            # Consider the original client for connection checks if it's a split part
+            effective_client_name = node.original_client_name if node.is_split_part else client_name
+
+            has_inputs = False
+            if node.is_split_part:
+                # A split input part inherently has inputs. An output part has no inputs.
+                if node.client_name.endswith(constants.SPLIT_INPUT_SUFFIX) or (not node.output_ports and node.input_ports): # it's an input part
+                    has_inputs = any(port for port in node.input_ports.values() if port.connections)
+                # else it's an output part, so has_inputs remains False
+            else: # Normal node
+                has_inputs = any(port for port in node.input_ports.values() if port.connections)
+
+            has_outputs = False
+            if node.is_split_part:
+                # A split output part inherently has outputs. An input part has no outputs.
+                if node.client_name.endswith(constants.SPLIT_OUTPUT_SUFFIX) or (not node.input_ports and node.output_ports): # it's an output part
+                    has_outputs = any(port for port in node.output_ports.values() if port.connections)
+                # else it's an input part, so has_outputs remains False
+            else: # Normal node
+                has_outputs = any(port for port in node.output_ports.values() if port.connections)
+            
+            if (has_outputs and not has_inputs) or (not has_inputs and not has_outputs and effective_client_name in connected_nodes):
+                source_nodes.append(node)
+                
+        # If no source nodes found, just use any connected node as starting point
+        if not source_nodes and connected_nodes:
+            for client_name in connected_nodes: # Iterate over original names
+                # Find corresponding visible node (could be a part or a full node)
+                found_node_for_source = None
+                if client_name in layout_nodes: # It's a non-split node
+                    found_node_for_source = layout_nodes[client_name]
+                elif client_name in original_node_parts: # It's a split node, prefer output part as source
+                    if original_node_parts[client_name]['output']:
+                        found_node_for_source = original_node_parts[client_name]['output']
+                    elif original_node_parts[client_name]['input']:
+                         found_node_for_source = original_node_parts[client_name]['input'] # Fallback
+                
+                if found_node_for_source and found_node_for_source.client_name not in [sn.client_name for sn in source_nodes]:
+                    source_nodes.append(found_node_for_source)
+                    break
+        
+        # Define a minimum spacing based on node bounding rectangles
+        min_horizontal_spacing = 30  # Minimum gap between nodes horizontally
+        min_vertical_spacing = 30    # Minimum gap between nodes vertically
+        
+        # Function to get node size including margins
+        def get_node_size(node):
+            rect = node.boundingRect()
+            return rect.width(), rect.height()
+            
+        # Function to check if a position would cause overlap
+        def position_causes_overlap(node, x, y, existing_positions):
+            node_width, node_height = get_node_size(node)
+            # Create a rectangle for this node at the proposed position
+            node_rect = (x, y, x + node_width, y + node_height)
+            
+            # Check against all existing node positions
+            for pos_node, pos_rect in existing_positions:
+                # Skip checking against itself
+                if pos_node == node:
+                    continue
+                    
+                # Check if the rectangles overlap
+                if (node_rect[0] < pos_rect[2] and node_rect[2] > pos_rect[0] and
+                    node_rect[1] < pos_rect[3] and node_rect[3] > pos_rect[1]):
+                    return True
+                    
+            return False
+            
+        # Track positions and sizes of placed nodes
+        node_positions = []  # List of (node, rect) tuples
+        
+        # Calculate a reasonable starting point
+        start_x = 50
+        start_y = 50
+        current_row_height = 0
+        
+        # Place source nodes first
+        x = start_x
+        y = start_y
+        row_nodes = []
+        
+        for node in source_nodes:
+            if node.client_name in placed_nodes:
+                continue
+            # If node is a split part, try to place its sibling if not already placed and it's a better source
+            if node.is_split_part and node.split_origin_node:
+                origin = node.split_origin_node
+                is_current_node_input_part = (node == origin.split_input_node) or node.client_name.endswith(constants.SPLIT_INPUT_SUFFIX)
+                is_current_node_output_part = (node == origin.split_output_node) or node.client_name.endswith(constants.SPLIT_OUTPUT_SUFFIX)
+
+                sibling_part = None
+                if is_current_node_input_part and origin.split_output_node:
+                    sibling_part = origin.split_output_node
+                elif is_current_node_output_part and origin.split_input_node:
+                    sibling_part = origin.split_input_node
+
+                # If the current node is an input part, but its output sibling is a better source (has outputs, no inputs)
+                # and hasn't been placed, prioritize the output sibling.
+                if is_current_node_input_part and sibling_part and sibling_part.client_name not in placed_nodes:
+                    # Check if sibling is a "truer" source
+                    sib_has_inputs = any(p for p in sibling_part.input_ports.values() if p.connections)
+                    sib_has_outputs = any(p for p in sibling_part.output_ports.values() if p.connections)
+                    if sib_has_outputs and not sib_has_inputs:
+                        # This sibling is a better source, skip current node for now, it will be picked up via connections
+                        if sibling_part not in source_nodes: # Add if not already (e.g. if initial scan missed it)
+                             source_nodes.insert(0, sibling_part) # Process it soon
+                        # continue # This might skip the input part entirely if it has no connections later.
+                        # Instead of skipping, we just ensure the output part is prioritized in source_nodes.
+
+            # Get node dimensions
+            node_width, node_height = get_node_size(node)
+            current_row_height = max(current_row_height, node_height)
+            
+            # If this would exceed max_nodes_per_row or cause horizontal overflow, move to next row
+            if len(row_nodes) >= max_nodes_per_row:
+                # Move to next row
+                x = start_x
+                y += current_row_height + min_vertical_spacing
+                row_nodes = []
+                current_row_height = node_height
+            
+            # Check if the node would overlap with any placed node
+            attempt_count = 0
+            original_x, original_y = x, y
+            
+            while position_causes_overlap(node, x, y, node_positions) and attempt_count < 10:
+                # Try adjusting position slightly
+                x += min_horizontal_spacing
+                attempt_count += 1
+                
+                # If we've tried several times horizontally, try moving vertically
+                if attempt_count >= 5:
+                    x = original_x
+                    y += min_vertical_spacing
+            
+            # Set node position
+            node.setPos(x, y)
+            placed_nodes.add(node.client_name)
+            node_positions.append((node, (x, y, x + node_width, y + node_height)))
+            row_nodes.append(node)
+            
+            # Update position for next node
+            x += node_width + min_horizontal_spacing
+            
+            # Update node configuration for persistence
+            if node.client_name in self.node_configs:
+                self.node_configs[node.client_name]['pos'] = (x, y)
+                
+            node_count += 1
+        
+        # Function to get connected nodes that haven't been placed yet
+        def get_next_nodes(current_node_obj): # Takes NodeItem object
+            next_nodes_list = []
+            current_client_name = current_node_obj.client_name # Name of the part or full node
+            
+            # Look for nodes that receive input from this node
+            for connection_key in self.connections:
+                out_port, in_port = connection_key
+                out_client_part_name = out_port.split(':')[0]
+                in_client_part_name = in_port.split(':')[0]
+                
+                if out_client_part_name == current_client_name and in_client_part_name not in placed_nodes:
+                    # in_client_part_name is the name of the node item in self.nodes (which is layout_nodes + origins)
+                    # We need to fetch from layout_nodes as those are the ones we are placing
+                    if in_client_part_name in layout_nodes:
+                        node_to_add = layout_nodes[in_client_part_name]
+                        if node_to_add not in next_nodes_list:
+                            next_nodes_list.append(node_to_add)
+            
+            # If current_node_obj is an input part of a split node, its "next" nodes could also be its output sibling
+            if current_node_obj.is_split_part and current_node_obj.split_origin_node:
+                origin = current_node_obj.split_origin_node
+                is_input_part = (current_node_obj == origin.split_input_node) or current_node_obj.client_name.endswith(constants.SPLIT_INPUT_SUFFIX)
+                if is_input_part and origin.split_output_node:
+                    output_sibling = origin.split_output_node
+                    if output_sibling.client_name not in placed_nodes and output_sibling not in next_nodes_list:
+                        # Add sibling to be processed, typically right after the input part.
+                        # This helps keep them together if there are no direct connections from input part to external nodes.
+                        next_nodes_list.insert(0, output_sibling) # Prioritize sibling
+                        
+            return next_nodes_list
+        
+        # Now place connected nodes in sequence
+        wave_direction = 1  # Always left to right now
+        
+        # Process all already placed nodes to find their connections
+        processed = set()
+        to_process = list(placed_nodes)
+        
+        # Move to next row for connected nodes
+        y += current_row_height + min_vertical_spacing * 2
+        x = start_x  # Always start from the left
+        row_nodes = []
+        current_row_height = 0
+        
+        while to_process:
+            current_client_name_in_placed = to_process.pop(0)
+            if current_client_name_in_placed in processed:
+                continue
+            processed.add(current_client_name_in_placed)
+
+            # current_client_name_in_placed is the name of the NodeItem (part or full)
+            current_node_object = layout_nodes.get(current_client_name_in_placed)
+            if not current_node_object: # Should not happen if placed_nodes used client_name from layout_nodes
+                print(f"Warning: Untangle could not find node object for {current_client_name_in_placed}")
+                continue
+            
+            # Get nodes connected to this one
+            next_nodes_to_place = get_next_nodes(current_node_object)
+            
+            # Try to place sibling part next if it hasn't been placed
+            if current_node_object.is_split_part and current_node_object.split_origin_node:
+                origin = current_node_object.split_origin_node
+                sibling_to_place_next = None
+                is_current_input = origin.split_input_node == current_node_object
+                
+                if is_current_input and origin.split_output_node and origin.split_output_node.client_name not in placed_nodes:
+                    sibling_to_place_next = origin.split_output_node
+                elif not is_current_input and origin.split_input_node and origin.split_input_node.client_name not in placed_nodes: # current is output
+                    sibling_to_place_next = origin.split_input_node
+                
+                if sibling_to_place_next and sibling_to_place_next not in next_nodes_to_place:
+                    is_sibling_pending = any(item == sibling_to_place_next.client_name for item in to_process)
+                    if not is_sibling_pending:
+                         next_nodes_to_place.insert(0, sibling_to_place_next) # Prioritize sibling
+
+            for node in next_nodes_to_place:
+                if node.client_name in placed_nodes:
+                    continue
+                    
+                # Get node dimensions
+                node_width, node_height = get_node_size(node)
+                current_row_height = max(current_row_height, node_height)
+                
+                # If this would exceed max_nodes_per_row or cause overflow, move to next row
+                if len(row_nodes) >= max_nodes_per_row:
+                    # No longer changing direction for snake pattern
+                    
+                    # Move to next row
+                    y += current_row_height + min_vertical_spacing
+                    # Reset x to align with the start of the row above
+                    x = start_x
+                    
+                    row_nodes = []
+                    current_row_height = node_height # Reset for new row with current node
+                
+                # Check if the node would overlap with any placed node
+                attempt_count = 0
+                original_x_attempt, original_y_attempt = x, y # Save before overlap adjustment
+                
+                temp_x, temp_y = x, y # Use temporary for overlap checks
+
+                while position_causes_overlap(node, temp_x, temp_y, node_positions) and attempt_count < 10:
+                    # Try adjusting position slightly - always move right now
+                    temp_x += min_horizontal_spacing
+                    attempt_count += 1
+                    
+                    if attempt_count >= 5: # If we've tried several times horizontally
+                        temp_x = original_x_attempt # Reset x for this attempt
+                        temp_y += min_vertical_spacing # Try moving vertically
+
+                # Update main x, y with the non-overlapping position
+                x, y = temp_x, temp_y
+                
+                # Set node position
+                node.setPos(x, y)
+                placed_nodes.add(node.client_name)
+                if node.client_name not in processed and node.client_name not in to_process:
+                    to_process.append(node.client_name)
+                node_positions.append((node, (x, y, x + node_width, y + node_height)))
+                row_nodes.append(node)
+                
+                # Update position for next node in the current row - always left to right
+                x += node_width + min_horizontal_spacing
+                
+                # Update node configuration
+                if node.client_name in self.node_configs: # Should be original_client_name if part? No, config saves part pos.
+                    # Config keys are 'pos' for unsplit, 'split_input_pos', 'split_output_pos' for split parts
+                    # The node.client_name is the key for layout_nodes, which are parts or unsplit nodes.
+                    # The save_node_states will handle mapping this to the correct config structure.
+                    # So direct self.node_configs update might be tricky here if it expects original names.
+                    # Let's assume node.client_name is what's expected for the 'pos' of a visible item.
+                    # The main self.save_node_states() at the end should reconcile everything.
+                     if node.is_split_part and node.split_origin_node:
+                         origin_name = node.split_origin_node.client_name
+                         if origin_name not in self.node_configs: self.node_configs[origin_name] = {}
+                         pos_key = "split_input_pos" if (node == node.split_origin_node.split_input_node or node.client_name.endswith(constants.SPLIT_INPUT_SUFFIX)) else "split_output_pos"
+                         self.node_configs[origin_name][pos_key] = (x,y) # Store tuple
+                     elif not node.is_split_origin : # Normal non-split node (is_split_origin is already filtered)
+                         if node.client_name not in self.node_configs: self.node_configs[node.client_name] = {}
+                         self.node_configs[node.client_name]['pos'] = (x,y) # Store tuple
+
+                node_count += 1
+        
+        # Finally, place any remaining unconnected nodes
+        # Move to next row with extra spacing
+        y += current_row_height + min_vertical_spacing * 3
+        x = start_x
+        row_nodes = []
+        current_row_height = 0
+        
+        for client_name, node in layout_nodes.items(): # Use layout_nodes
+            if client_name in placed_nodes:
+                continue
+                
+            # Get node dimensions
+            node_width, node_height = get_node_size(node)
+            current_row_height = max(current_row_height, node_height)
+            
+            # If this would exceed max_nodes_per_row or cause overflow, move to next row
+            if len(row_nodes) >= max_nodes_per_row:
+                # Move to next row
+                x = start_x
+                y += current_row_height + min_vertical_spacing
+                row_nodes = []
+                current_row_height = node_height
+            
+            # Check if the node would overlap with any placed node
+            attempt_count = 0
+            original_x, original_y = x, y
+            
+            while position_causes_overlap(node, x, y, node_positions) and attempt_count < 10:
+                # Try adjusting position slightly
+                x += min_horizontal_spacing
+                attempt_count += 1
+                
+                # If we've tried several times horizontally, try moving vertically
+                if attempt_count >= 5:
+                    x = original_x
+                    y += min_vertical_spacing
+            
+            # Set node position
+            node.setPos(x, y)
+            node_positions.append((node, (x, y, x + node_width, y + node_height)))
+            row_nodes.append(node)
+            
+            # Update position for next node
+            x += node_width + min_horizontal_spacing
+            
+            # Update node configuration
+            if client_name in self.node_configs:
+                self.node_configs[client_name]['pos'] = (x, y)
+        
+        # Update all connection paths
+        self.update_all_connection_paths()
+        
+        # Save the new node positions to config
+        self.save_node_states()
 
     def set_node_visibility_manager(self, node_visibility_manager):
         """Set the NodeVisibilityManager instance for this scene."""
@@ -1069,3 +1491,138 @@ class JackGraphScene(QGraphicsScene):
             
             # Update the connection visibility
             conn.setVisible(should_be_visible)
+
+    def get_node_states(self):
+        """
+        Gets the current node states (positions, split states, fold states) for all nodes.
+        Returns a deep copy of the node_configs dictionary.
+        
+        Returns:
+            dict: A dictionary of node configurations
+        """
+        # Ensure the node_configs dictionary is up to date
+        current_configs = {}
+        
+        # For each node, get its current configuration
+        for client_name, node in self.nodes.items():
+            if node.is_split_origin:
+                # For split nodes, store configuration for all parts
+                current_configs[client_name] = {
+                    'is_split': True,
+                    'manual_split': True  # Assume it's a manual split
+                }
+                
+                # Store positions for input and output parts if they exist
+                if node.split_input_node:
+                    current_configs[client_name]['split_input_pos'] = node.split_input_node.scenePos()
+                
+                if node.split_output_node:
+                    current_configs[client_name]['split_output_pos'] = node.split_output_node.scenePos()
+            else:
+                # For non-split nodes, store position and other attributes
+                current_configs[client_name] = {
+                    'pos': node.scenePos(),
+                    'is_split': False
+                }
+                
+                # Store fold state if available
+                if hasattr(node, 'is_folded'):
+                    current_configs[client_name]['is_folded'] = node.is_folded
+                if hasattr(node, 'input_part_folded'):
+                    current_configs[client_name]['input_part_folded'] = node.input_part_folded
+                if hasattr(node, 'output_part_folded'):
+                    current_configs[client_name]['output_part_folded'] = node.output_part_folded
+        
+        return copy.deepcopy(current_configs)
+    
+    def restore_node_states(self, node_states):
+        """
+        Restores node positions and states from the provided configuration.
+        
+        Args:
+            node_states (dict): A dictionary of node configurations
+        """
+        if not node_states:
+            return
+            
+        # For each node in the configuration
+        for client_name, config in node_states.items():
+            node = self.get_node_item_by_name(client_name)
+            if not node:
+                continue
+                
+            # If the node should be split
+            if config.get('is_split', False):
+                # If the node is not already split, split it
+                if not node.is_split_origin:
+                    node.split_handler.split_node(save_state=False)
+                
+                # Set positions for input and output parts
+                if 'split_input_pos' in config and node.split_input_node:
+                    node.split_input_node.setPos(config['split_input_pos'])
+                
+                if 'split_output_pos' in config and node.split_output_node:
+                    node.split_output_node.setPos(config['split_output_pos'])
+            else:
+                # If the node is split but shouldn't be, unsplit it
+                if node.is_split_origin:
+                    node.split_handler.unsplit_node(save_state=False)
+                
+                # Set position for non-split node
+                if 'pos' in config:
+                    node.setPos(config['pos'])
+                
+                # Set fold state if available - using the correct methods
+                if 'is_folded' in config and hasattr(node, 'is_folded'):
+                    # Check if current state is different from desired state
+                    if node.is_folded != config['is_folded']:
+                        # Toggle the state directly or use toggle_main_fold_state
+                        node.fold_handler.toggle_main_fold_state()
+                
+                if 'input_part_folded' in config and hasattr(node, 'input_part_folded'):
+                    # Use toggle_input_part_fold with explicit fold state
+                    node.fold_handler.toggle_input_part_fold(fold_state=config['input_part_folded'])
+                
+                if 'output_part_folded' in config and hasattr(node, 'output_part_folded'):
+                    # Use toggle_output_part_fold with explicit fold state
+                    node.fold_handler.toggle_output_part_fold(fold_state=config['output_part_folded'])
+        
+        # Update all connection paths to reflect the new node positions
+        self.update_all_connection_paths()
+        
+        # Force a scene update
+        self.update()
+
+    def keyPressEvent(self, event):
+        """Handle keyboard shortcuts for graph operations."""
+        key = event.key()
+        
+        # Get selected nodes
+        selected_nodes = [item for item in self.selectedItems() if isinstance(item, NodeItem)]
+        
+        if selected_nodes:
+            if key == Qt.Key.Key_H:  # Hide selected nodes
+                for node in selected_nodes:
+                    node._hide_node()
+                event.accept()
+                return
+            elif key == Qt.Key.Key_S:  # Split selected nodes
+                for node in selected_nodes:
+                    # Only split if node is not already split and has both inputs and outputs
+                    if not node.is_split_origin and not node.is_split_part and node.input_ports and node.output_ports:
+                        node.split_handler.split_node(save_state=True)
+                event.accept()
+                return
+            elif key == Qt.Key.Key_U:  # Unsplit selected nodes
+                for node in selected_nodes:
+                    # For split parts, unsplit their origin node
+                    if node.is_split_part and node.split_origin_node:
+                        node.split_origin_node.split_handler.unsplit_node(save_state=True)
+                    # For split origins, unsplit directly
+                    elif node.is_split_origin:
+                        node.split_handler.unsplit_node(save_state=True)
+                event.accept()
+                return
+        
+        # If we get here, we didn't handle the key
+        super().keyPressEvent(event)

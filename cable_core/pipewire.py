@@ -337,7 +337,7 @@ class PipewireManager:
 
             if config_modified:
                 # Use the app's config_manager's helper method to write the config
-                self.app.config_manager._write_config(config, config_path)
+                self.app.config_manager._write_config(config)
                 print(f"Removed {config_key} setting from config")
 
             # Reload current settings but don't save them

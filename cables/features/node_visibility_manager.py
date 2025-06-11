@@ -423,6 +423,30 @@ class NodeVisibilityDialog(QDialog):
             node_name: The name of the node
             is_midi: Whether this is a MIDI node
         """
+        # Determine which directions this client actually exposes
+        has_input = False
+        has_output = False
+        try:
+            ports = jack_utils.get_all_jack_ports(
+                self.connection_manager.client,
+                name_pattern=f"{node_name}:",
+                is_midi=is_midi,
+                is_audio=not is_midi
+            )
+            for port in ports:
+                if port.is_input:
+                    has_input = True
+                if port.is_output:
+                    has_output = True
+                if has_input and has_output:
+                    break
+        except Exception as e:
+            print(f"Error checking port directions for {node_name}: {e}")
+        
+        # If no ports are found, skip adding this node entirely
+        if not has_input and not has_output:
+            return
+        
         # Create node container and checkbox
         node_widget = QWidget()
         node_layout = QVBoxLayout(node_widget)
@@ -430,7 +454,6 @@ class NodeVisibilityDialog(QDialog):
         
         # Main node checkbox with name
         node_checkbox = QCheckBox(node_name)
-        # Use the system font but make it bold for node names
         font = node_checkbox.font()
         font.setBold(True)
         node_checkbox.setFont(font)
@@ -439,111 +462,109 @@ class NodeVisibilityDialog(QDialog):
         # Add indented container for input/output checkboxes
         io_widget = QWidget()
         io_layout = QHBoxLayout(io_widget)
-        io_layout.setContentsMargins(20, 0, 0, 0)  # Indent from the left
+        io_layout.setContentsMargins(20, 0, 0, 0)
         
-        # Create input checkbox
-        input_checkbox = QCheckBox("Input")
-        if is_midi:
-            input_checkbox.setChecked(self.midi_input_visibility.get(node_name, True))
-            input_checkbox.stateChanged.connect(lambda state, n=node_name: self._on_midi_input_checkbox_changed(n, state))
-        else:
-            input_checkbox.setChecked(self.audio_input_visibility.get(node_name, True))
-            input_checkbox.stateChanged.connect(lambda state, n=node_name: self._on_audio_input_checkbox_changed(n, state))
+        # Create input checkbox if the client has input ports
+        input_checkbox = None
+        if has_input:
+            input_checkbox = QCheckBox("Input")
+            if is_midi:
+                input_checkbox.setChecked(self.midi_input_visibility.get(node_name, True))
+                input_checkbox.stateChanged.connect(lambda state, n=node_name: self._on_midi_input_checkbox_changed(n, state))
+            else:
+                input_checkbox.setChecked(self.audio_input_visibility.get(node_name, True))
+                input_checkbox.stateChanged.connect(lambda state, n=node_name: self._on_audio_input_checkbox_changed(n, state))
+            io_layout.addWidget(input_checkbox)
         
-        # Create output checkbox
-        output_checkbox = QCheckBox("Output")
-        if is_midi:
-            output_checkbox.setChecked(self.midi_output_visibility.get(node_name, True))
-            output_checkbox.stateChanged.connect(lambda state, n=node_name: self._on_midi_output_checkbox_changed(n, state))
-        else:
-            output_checkbox.setChecked(self.audio_output_visibility.get(node_name, True))
-            output_checkbox.stateChanged.connect(lambda state, n=node_name: self._on_audio_output_checkbox_changed(n, state))
+        # Create output checkbox if the client has output ports
+        output_checkbox = None
+        if has_output:
+            output_checkbox = QCheckBox("Output")
+            if is_midi:
+                output_checkbox.setChecked(self.midi_output_visibility.get(node_name, True))
+                output_checkbox.stateChanged.connect(lambda state, n=node_name: self._on_midi_output_checkbox_changed(n, state))
+            else:
+                output_checkbox.setChecked(self.audio_output_visibility.get(node_name, True))
+                output_checkbox.stateChanged.connect(lambda state, n=node_name: self._on_audio_output_checkbox_changed(n, state))
+            io_layout.addWidget(output_checkbox)
         
-        # Add checkboxes to layout
-        io_layout.addWidget(input_checkbox)
-        io_layout.addWidget(output_checkbox)
         io_layout.addStretch()
-        
-        # Add IO widget to node layout
         node_layout.addWidget(io_widget)
         
-        # Connect node checkbox to control both input and output
+        # Connect node checkbox to control existing child checkboxes
         node_checkbox.stateChanged.connect(
             lambda state, i=input_checkbox, o=output_checkbox: self._on_node_checkbox_changed(state, i, o)
         )
         
-        # Update node checkbox state based on input/output
+        # Update node checkbox initial state
         self._update_node_checkbox_state(node_checkbox, input_checkbox, output_checkbox)
         
-        # Connect input/output checkboxes to update parent node checkbox
-        input_checkbox.stateChanged.connect(
-            lambda state, n=node_checkbox, i=input_checkbox, o=output_checkbox: self._update_node_checkbox_state(n, i, o)
-        )
-        output_checkbox.stateChanged.connect(
-            lambda state, n=node_checkbox, i=input_checkbox, o=output_checkbox: self._update_node_checkbox_state(n, i, o)
-        )
+        # Connect child checkbox state changes to update the parent node checkbox
+        if input_checkbox:
+            input_checkbox.stateChanged.connect(
+                lambda _state, n=node_checkbox, i=input_checkbox, o=output_checkbox: self._update_node_checkbox_state(n, i, o)
+            )
+        if output_checkbox:
+            output_checkbox.stateChanged.connect(
+                lambda _state, n=node_checkbox, i=input_checkbox, o=output_checkbox: self._update_node_checkbox_state(n, i, o)
+            )
         
-        # Add to appropriate section
+        # Add to appropriate section and tracking dictionaries
         if is_midi:
             self.node_layout.insertWidget(self.node_layout.count(), node_widget)
-            self.midi_nodes[node_name] = {'node': node_checkbox, 'input': input_checkbox, 'output': output_checkbox, 'widget': node_widget}
+            self.midi_nodes[node_name] = {
+                'node': node_checkbox,
+                'input': input_checkbox,
+                'output': output_checkbox,
+                'widget': node_widget
+            }
         else:
             self.node_layout.insertWidget(self.node_layout.indexOf(self.midi_label), node_widget)
-            self.audio_nodes[node_name] = {'node': node_checkbox, 'input': input_checkbox, 'output': output_checkbox, 'widget': node_widget}
+            self.audio_nodes[node_name] = {
+                'node': node_checkbox,
+                'input': input_checkbox,
+                'output': output_checkbox,
+                'widget': node_widget
+            }
     
     def _on_node_checkbox_changed(self, state, input_checkbox, output_checkbox):
-        """
-        Handle changes to the node checkbox by updating both input and output checkboxes.
-        
-        Args:
-            state: The checkbox state
-            input_checkbox: The input checkbox to update
-            output_checkbox: The output checkbox to update
-        """
-        # Prevent recursion by blocking signals
-        input_checkbox.blockSignals(True)
-        output_checkbox.blockSignals(True)
-        
-        # Set both checkboxes to match the node checkbox
+        """Handle changes to the node checkbox by updating child checkboxes."""
         checked = (state == Qt.CheckState.Checked.value)
-        input_checkbox.setChecked(checked)
-        output_checkbox.setChecked(checked)
         
-        # Re-enable signals
-        input_checkbox.blockSignals(False)
-        output_checkbox.blockSignals(False)
+        if input_checkbox:
+            input_checkbox.blockSignals(True)
+            input_checkbox.setChecked(checked)
+            input_checkbox.blockSignals(False)
+            if not input_checkbox.signalsBlocked():
+                input_checkbox.stateChanged.emit(Qt.CheckState.Checked.value if checked else Qt.CheckState.Unchecked.value)
         
-        # Trigger the individual checkboxes to fire their signals
-        # This ensures the visibility dictionaries are properly updated
-        # when a node checkbox is changed
-        if not input_checkbox.signalsBlocked():
-            input_checkbox.stateChanged.emit(Qt.CheckState.Checked.value if checked else Qt.CheckState.Unchecked.value)
-        if not output_checkbox.signalsBlocked():
-            output_checkbox.stateChanged.emit(Qt.CheckState.Checked.value if checked else Qt.CheckState.Unchecked.value)
+        if output_checkbox:
+            output_checkbox.blockSignals(True)
+            output_checkbox.setChecked(checked)
+            output_checkbox.blockSignals(False)
+            if not output_checkbox.signalsBlocked():
+                output_checkbox.stateChanged.emit(Qt.CheckState.Checked.value if checked else Qt.CheckState.Unchecked.value)
     
     def _update_node_checkbox_state(self, node_checkbox, input_checkbox, output_checkbox):
-        """
-        Update the node checkbox state based on input/output checkbox states.
-        
-        Args:
-            node_checkbox: The node checkbox to update
-            input_checkbox: The input checkbox
-            output_checkbox: The output checkbox
-        """
-        # Prevent recursion
+        """Synchronize node checkbox state with its existing child checkboxes."""
         node_checkbox.blockSignals(True)
         
-        # Both checked -> node checked
-        if input_checkbox.isChecked() and output_checkbox.isChecked():
-            node_checkbox.setCheckState(Qt.CheckState.Checked)
-        # Both unchecked -> node unchecked
-        elif not input_checkbox.isChecked() and not output_checkbox.isChecked():
-            node_checkbox.setCheckState(Qt.CheckState.Unchecked)
-        # One checked, one unchecked -> node partially checked
-        else:
-            node_checkbox.setCheckState(Qt.CheckState.PartiallyChecked)
+        # Gather child states that actually exist
+        child_states = []
+        if input_checkbox:
+            child_states.append(input_checkbox.isChecked())
+        if output_checkbox:
+            child_states.append(output_checkbox.isChecked())
         
-        # Re-enable signals
+        if not child_states:
+            node_checkbox.setCheckState(Qt.CheckState.Unchecked)
+        elif all(child_states):
+            node_checkbox.setCheckState(Qt.CheckState.Checked)
+        elif any(child_states):
+            node_checkbox.setCheckState(Qt.CheckState.PartiallyChecked)
+        else:
+            node_checkbox.setCheckState(Qt.CheckState.Unchecked)
+        
         node_checkbox.blockSignals(False)
     
     def _get_unique_client_names(self, is_midi=False):
@@ -618,41 +639,41 @@ class NodeVisibilityDialog(QDialog):
     def _select_all(self):
         """Select all visible checkboxes."""
         for node_dict in [self.audio_nodes, self.midi_nodes]:
-            for node_name, checkboxes in node_dict.items():
+            for checkboxes in node_dict.values():
                 if not checkboxes['widget'].isHidden():
                     node_cb = checkboxes['node']
-                    input_cb = checkboxes['input']
-                    output_cb = checkboxes['output']
+                    input_cb = checkboxes.get('input')
+                    output_cb = checkboxes.get('output')
                     
-                    # First set the individual checkboxes
-                    input_cb.blockSignals(True)
-                    output_cb.blockSignals(True)
-                    input_cb.setChecked(True)
-                    output_cb.setChecked(True)
-                    input_cb.blockSignals(False)
-                    output_cb.blockSignals(False)
+                    if input_cb:
+                        input_cb.blockSignals(True)
+                        input_cb.setChecked(True)
+                        input_cb.blockSignals(False)
+                    if output_cb:
+                        output_cb.blockSignals(True)
+                        output_cb.setChecked(True)
+                        output_cb.blockSignals(False)
                     
-                    # Then update the node checkbox
                     node_cb.setCheckState(Qt.CheckState.Checked)
     
     def _deselect_all(self):
         """Deselect all visible checkboxes."""
         for node_dict in [self.audio_nodes, self.midi_nodes]:
-            for node_name, checkboxes in node_dict.items():
+            for checkboxes in node_dict.values():
                 if not checkboxes['widget'].isHidden():
                     node_cb = checkboxes['node']
-                    input_cb = checkboxes['input']
-                    output_cb = checkboxes['output']
+                    input_cb = checkboxes.get('input')
+                    output_cb = checkboxes.get('output')
                     
-                    # First set the individual checkboxes
-                    input_cb.blockSignals(True)
-                    output_cb.blockSignals(True)
-                    input_cb.setChecked(False)
-                    output_cb.setChecked(False)
-                    input_cb.blockSignals(False)
-                    output_cb.blockSignals(False)
+                    if input_cb:
+                        input_cb.blockSignals(True)
+                        input_cb.setChecked(False)
+                        input_cb.blockSignals(False)
+                    if output_cb:
+                        output_cb.blockSignals(True)
+                        output_cb.setChecked(False)
+                        output_cb.blockSignals(False)
                     
-                    # Then update the node checkbox
                     node_cb.setCheckState(Qt.CheckState.Unchecked)
     
     def _apply_filter(self, filter_text):

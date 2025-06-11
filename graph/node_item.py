@@ -19,6 +19,10 @@ from . import constants # Import the new constants module
 from .port_item import PortItem # Import PortItem
 from .bulk_area_item import BulkAreaItem # Import BulkAreaItem
 from .config_utils import ConfigManager # Import ConfigManager
+from typing import TYPE_CHECKING, Optional, Dict, List, Tuple, Any, Union, Callable
+
+if TYPE_CHECKING:
+    from .layout import GraphLayouter  # For type hints only
 # Note: ConnectionItem is needed for creating new connections during split/unsplit
 # from .connection_item import ConnectionItem # Avoid circular import here, use string literal
 
@@ -230,7 +234,9 @@ class NodeItem(QGraphicsItem):
 
             port_item = PortItem(self, port_name, port_obj, is_input_flag)
             port_map[port_name] = port_item
-            self.layout_ports() # Recalculate layout
+            # Only try to lay out ports if we're already in a scene
+            if self.scene():
+                self.layout_ports() # Recalculate layout
             return True
         return False
 
@@ -270,164 +276,108 @@ class NodeItem(QGraphicsItem):
                     self.scene().removeItem(self.output_area_item)
                  self.output_area_item = None
 
-            self.layout_ports() # Recalculate layout
+            # Only try to lay out ports if we're in a scene
+            if self.scene():
+                self.layout_ports() # Recalculate layout
             return True
         return False
-
-    # --- Layout Helper Methods ---
+        
     def _calculate_and_set_title_geometry(self, node_width: float) -> float:
-        """Calculates and sets the title item's geometry and returns the calculated title height."""
-        title_width = node_width - 2 * constants.NODE_PADDING
-        self.title_item.setTextWidth(title_width)
-        self.title_item.setPos(constants.NODE_PADDING, constants.NODE_PADDING)
-        doc_height = self.title_item.document().size().height()
-        calculated_title_height = max(constants.NODE_TITLE_HEIGHT, doc_height + constants.NODE_PADDING * 2)
-        self._calculated_title_height = calculated_title_height
-        self._header_rect = QRectF(0, 0, self._bounding_rect.width(), calculated_title_height)
-        return calculated_title_height
+        """
+        Calculate and set the title geometry using the scene's GraphLayouter.
+        
+        Args:
+            node_width: The width of the node
+            
+        Returns:
+            float: The calculated title height
+            
+        Raises:
+            RuntimeError: If no layouter is available
+        """
+        if not self.scene() or not hasattr(self.scene(), 'layouter') or not self.scene().layouter:
+            raise RuntimeError("Cannot calculate title geometry: No GraphLayouter available")
+            
+        return self.scene().layouter._calculate_and_set_title_geometry(self, node_width)
 
     def _hide_all_ports_and_bulk_areas(self):
-        """Hides all port items and bulk area items."""
-        for port in list(self.input_ports.values()) + list(self.output_ports.values()):
-            if port.isVisible(): port.hide()
-        if self.input_area_item and self.input_area_item.isVisible(): self.input_area_item.hide()
-        if self.output_area_item and self.output_area_item.isVisible(): self.output_area_item.hide()
+        """
+        Hide all port items and bulk area items using the scene's GraphLayouter.
+        
+        Raises:
+            RuntimeError: If no layouter is available
+        """
+        if not self.scene() or not hasattr(self.scene(), 'layouter') or not self.scene().layouter:
+            raise RuntimeError("Cannot hide ports and bulk areas: No GraphLayouter available")
+            
+        self.scene().layouter._hide_all_ports_and_bulk_areas(self)
 
     def _show_all_ports_and_bulk_areas(self):
-        """Shows all port items and bulk area items."""
-        for port in list(self.input_ports.values()) + list(self.output_ports.values()):
-            if not port.isVisible(): port.show()
-        if self.input_area_item and not self.input_area_item.isVisible(): self.input_area_item.show()
-        if self.output_area_item and not self.output_area_item.isVisible(): self.output_area_item.show()
-
-    def _layout_bulk_areas(self, current_node_width: float, max_in_width: float, max_out_width: float, y_start_bulk: float):
-        """Positions the bulk area items."""
-        pad = constants.NODE_BULK_AREA_HPADDING
-        if self.input_area_item:
-            bulk_in_width = max_in_width - 2 * pad
-            self.input_area_item._bounding_rect.setWidth(bulk_in_width)
-            self.input_area_item.setPos(pad, y_start_bulk)
+        """
+        Show all port items and bulk area items using the scene's GraphLayouter.
         
-        if self.output_area_item:
-            bulk_out_width = max_out_width - 2 * pad
-            self.output_area_item._bounding_rect.setWidth(bulk_out_width)
-            out_x = pad if (self.is_split_part and self.input_ports) else (current_node_width - max_out_width + pad)
-            self.output_area_item.setPos(out_x, y_start_bulk)
-
-    def _layout_individual_ports(self, current_node_width: float, y_start_ports: float) -> tuple[float, float]:
-        """Positions individual port items and returns the final y-offsets for inputs and outputs."""
-        # Separate and sort audio ports first, then MIDI ports
-        input_audio_ports = [p for p in self.input_ports.values() if not p.port_obj.is_midi]
-        input_midi_ports = [p for p in self.input_ports.values() if p.port_obj.is_midi]
-        output_audio_ports = [p for p in self.output_ports.values() if not p.port_obj.is_midi]
-        output_midi_ports = [p for p in self.output_ports.values() if p.port_obj.is_midi]
-
-        y_in = y_start_ports
-        # Layout audio input ports first
-        for port_item in sorted(input_audio_ports, key=natural_sort_key):
-            port_item.calculated_width = port_item._calculate_required_width()
-            port_item.setPos(0, y_in)
-            port_item._bounding_rect = QRectF(0, 0, port_item.calculated_width, constants.PORT_HEIGHT)
-            y_in += constants.PORT_HEIGHT + constants.NODE_VMARGIN
-        # Then MIDI input ports
-        for port_item in sorted(input_midi_ports, key=natural_sort_key):
-            port_item.calculated_width = port_item._calculate_required_width()
-            port_item.setPos(0, y_in)
-            port_item._bounding_rect = QRectF(0, 0, port_item.calculated_width, constants.PORT_HEIGHT)
-            y_in += constants.PORT_HEIGHT + constants.NODE_VMARGIN
-
-        y_out = y_start_ports
-        # Layout audio output ports first
-        for port_item in sorted(output_audio_ports, key=natural_sort_key):
-            port_item.calculated_width = port_item._calculate_required_width()
-            x_pos = current_node_width - port_item.calculated_width
-            port_item.setPos(x_pos, y_out)
-            port_item._bounding_rect = QRectF(0, 0, port_item.calculated_width, constants.PORT_HEIGHT)
-            y_out += constants.PORT_HEIGHT + constants.NODE_VMARGIN
-        # Then MIDI output ports
-        for port_item in sorted(output_midi_ports, key=natural_sort_key):
-            port_item.calculated_width = port_item._calculate_required_width()
-            x_pos = current_node_width - port_item.calculated_width
-            port_item.setPos(x_pos, y_out)
-            port_item._bounding_rect = QRectF(0, 0, port_item.calculated_width, constants.PORT_HEIGHT)
-            y_out += constants.PORT_HEIGHT + constants.NODE_VMARGIN
-        return y_in, y_out
-
-    def layout_ports(self):
-        """Positions port items vertically and updates node height and width."""
-        self.prepareGeometryChange()
-
-        max_in_width = max((port.calculated_width for port in self.input_ports.values()), default=constants.PORT_WIDTH_MIN)
-        max_out_width = max((port.calculated_width for port in self.output_ports.values()), default=constants.PORT_WIDTH_MIN)
-
-        if self.is_split_origin:
-            node_width = max(constants.NODE_WIDTH, max_in_width + max_out_width + 2 * constants.NODE_PADDING)
-        elif self.is_split_part:
-            if self.input_ports and not self.output_ports: # Input part
-                node_width = max(constants.NODE_WIDTH, max_in_width + 2 * constants.NODE_PADDING)
-            elif self.output_ports and not self.input_ports: # Output part
-                node_width = max(constants.NODE_WIDTH, max_out_width + 2 * constants.NODE_PADDING)
-            else: # Fallback for unexpected split part state
-                node_width = max(constants.NODE_WIDTH, max_in_width + max_out_width + 2 * constants.NODE_PADDING)
-        else: # Normal node
-            node_width = max(constants.NODE_WIDTH, max_in_width + max_out_width + 2 * constants.NODE_PADDING)
-        
-        self._bounding_rect.setWidth(node_width)
-        title_height = self._calculate_and_set_title_geometry(node_width) # self._calculated_title_height is updated here
-
-        if self.is_split_origin:
-            self._bounding_rect.setHeight(title_height)
-            self._hide_all_ports_and_bulk_areas()
-            self.update()
-            return
-
-        if self._is_effectively_folded():
-            self._bounding_rect.setHeight(title_height)
-            self._hide_all_ports_and_bulk_areas()
-            for port_list in [self.input_ports, self.output_ports]:
-                for port_item in port_list.values():
-                    for conn in port_item.connections: conn.update_path()
-            self.update()
-            return
-
-        self._show_all_ports_and_bulk_areas()
-
-        y_current = title_height + constants.NODE_VMARGIN
-        self._layout_bulk_areas(node_width, max_in_width, max_out_width, y_current)
-
-        if self.input_area_item or self.output_area_item:
-            y_current += constants.NODE_BULK_AREA_HEIGHT + constants.NODE_VMARGIN
-        
-        y_in_final, y_out_final = self._layout_individual_ports(node_width, y_current)
-
-        # Calculate the height based on the maximum extent of ports or bulk areas
-        max_y_ports = 0
-        if self.input_ports or self.output_ports:
-            max_y_ports = max(y_in_final, y_out_final) - constants.NODE_VMARGIN # Remove last margin
-        else: # No ports, height is determined by bulk areas or just title
-            max_y_ports = y_current # This is the y_start_offset for ports
-
-        max_y_bulk = 0
-        if self.input_area_item or self.output_area_item:
-            max_y_bulk = title_height + constants.NODE_VMARGIN + constants.NODE_BULK_AREA_HEIGHT
-        else: # No bulk areas
-            max_y_bulk = title_height
+        Raises:
+            RuntimeError: If no layouter is available
+        """
+        if not self.scene() or not hasattr(self.scene(), 'layouter') or not self.scene().layouter:
+            raise RuntimeError("Cannot show ports and bulk areas: No GraphLayouter available")
             
-        content_bottom_y = max(max_y_ports, max_y_bulk)
-        
-        # If there's no content below the title (e.g. only title, or title + empty bulk area space)
-        # ensure a minimum content height for padding.
-        # If content_bottom_y is just title_height, it means no ports and no bulk areas.
-        # If content_bottom_y is title_height + NODE_VMARGIN + NODE_BULK_AREA_HEIGHT, but no ports,
-        # then that's the content height.
-        if not (self.input_ports or self.output_ports or self.input_area_item or self.output_area_item):
-             # Only title is visible, or node is empty after title
-             final_node_height = title_height + constants.NODE_PADDING # Minimal padding below title
-        else:
-             final_node_height = content_bottom_y + constants.NODE_PADDING
+        self.scene().layouter._show_all_ports_and_bulk_areas(self)
 
-        self._bounding_rect.setHeight(final_node_height)
-        self.update()
+    def _layout_bulk_areas(self, current_node_width: float, max_in_width: float, 
+                         max_out_width: float, y_start_bulk: float):
+        """
+        Position the bulk area items using the scene's GraphLayouter.
+        
+        Args:
+            current_node_width: Current width of the node
+            max_in_width: Maximum width of input ports
+            max_out_width: Maximum width of output ports
+            y_start_bulk: Y-coordinate to start placing bulk areas
+            
+        Raises:
+            RuntimeError: If no layouter is available
+        """
+        if not self.scene() or not hasattr(self.scene(), 'layouter') or not self.scene().layouter:
+            raise RuntimeError("Cannot layout bulk areas: No GraphLayouter available")
+            
+        self.scene().layouter._layout_bulk_areas(
+            self, current_node_width, max_in_width, max_out_width, y_start_bulk
+        )
+
+    def _layout_individual_ports(self, current_node_width: float, 
+                              y_start_ports: float) -> tuple[float, float]:
+        """
+        Position individual port items using the scene's GraphLayouter.
+        
+        Args:
+            current_node_width: Current width of the node
+            y_start_ports: Y-coordinate to start placing ports
+            
+        Returns:
+            Tuple[float, float]: Final y-offsets for input and output ports
+            
+        Raises:
+            RuntimeError: If no layouter is available
+        """
+        if not self.scene() or not hasattr(self.scene(), 'layouter') or not self.scene().layouter:
+            raise RuntimeError("Cannot layout individual ports: No GraphLayouter available")
+            
+        return self.scene().layouter._layout_individual_ports(
+            self, current_node_width, y_start_ports
+        )
+        
+    def layout_ports(self):
+        """Positions port items vertically and updates node height and width.
+        
+        Requires the scene to have a GraphLayouter instance set as 'layouter'.
+        """
+        if not self.scene():
+            raise RuntimeError("Cannot layout ports: Node is not in a scene")
+        if not hasattr(self.scene(), 'layouter') or not self.scene().layouter:
+            raise RuntimeError("Cannot layout ports: Scene has no GraphLayouter")
+            
+        self.scene().layouter.layout_node_ports(self)
 
     def get_bulk_connection_point(self, is_input: bool):
         area_item = self.input_area_item if is_input else self.output_area_item

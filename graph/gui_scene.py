@@ -587,6 +587,10 @@ class JackGraphScene(QGraphicsScene):
             node = NodeItem(client_name, self.graph_jack_handler, self.config_manager, ports_to_add=client_ports)
             self.addItem(node)
             
+            # IMPORTANT: Layout ports AFTER the node has been added to the scene
+            # This prevents "Cannot layout ports: Node is not in a scene" errors.
+            node.layout_ports()
+
             # Position the node intelligently if not loading from config
             if client_name not in self.node_configs:
                 # Try to find a good position for the new node

@@ -20,6 +20,7 @@ from cable_core.process import ProcessManager
 from cable_core.updates import UpdateManager # Added import
 from cable_core.app_config import APP_VERSION # Import APP_VERSION
 from cable_core import app_config
+from cables.config.preset_manager import PresetManager
 from PyQt6.QtCore import Qt, QTimer, QFile, QMargins, QProcess, QEvent
 from PyQt6.QtGui import QFont, QIcon, QGuiApplication, QActionGroup, QAction
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
@@ -437,7 +438,7 @@ class PipeWireSettingsApp(QWidget):
 
     def closeEvent(self, event):
         # If tray is enabled, hide the window instead of closing
-        if self.tray_enabled and self.tray_manager.tray_icon: # Check manager's icon
+        if self.tray_enabled and self.tray_manager.tray_icon and self.tray_manager.tray_icon.isVisible():
             event.ignore()
             self.hide()
         else:
@@ -608,6 +609,15 @@ class PipeWireSettingsApp(QWidget):
         finally:
             # Ensure signals are unblocked
             self.sample_rate_combo.blockSignals(False)
+
+    def cleanup_and_quit(self):
+        """Clean up resources and quit the application."""
+        print("Performing cleanup before quitting...")
+        # Stop the daemon directly
+        preset_manager = PresetManager() # Create an instance to access the stop method
+        preset_manager.stop_daemon_mode()
+        # Quit the application
+        QApplication.quit()
 
 def main():
     # Parse command line arguments

@@ -3,162 +3,124 @@ PresetManager - Manages connection presets
 """
 
 import os
-import json
+import subprocess
+import signal
+import sys
+from subprocess import DEVNULL
 from PyQt6.QtWidgets import QMessageBox
 
 class PresetManager:
     """
     Manages connection presets for the Cables application.
-    
-    This class handles saving, loading, and deleting presets, which store
-    connection configurations that users can quickly apply.
     """
     
     def __init__(self):
         """Initialize the PresetManager."""
         self.config_dir = os.path.expanduser('~/.config/cable')
         self.presets_dir = os.path.join(self.config_dir, 'presets')
+        self.pid_file = os.path.join(self.config_dir, 'aj-snapshot.pid')
         
-        # Ensure presets directory exists
         if not os.path.exists(self.presets_dir):
             try:
-                # Create parent config dir first if it doesn't exist
                 if not os.path.exists(self.config_dir):
                     os.makedirs(self.config_dir)
-                os.makedirs(self.presets_dir)  # Then create presets dir
+                os.makedirs(self.presets_dir)
             except OSError as e:
                 print(f"Error creating presets directory {self.presets_dir}: {e}")
     
     def load_presets(self):
-        """
-        Loads all presets from individual files in the presets directory.
-        
-        Returns:
-            dict: A dictionary mapping preset names to their connection lists
-        """
         presets = {}
         if not os.path.exists(self.presets_dir):
-            return presets  # Return empty if directory doesn't exist
+            return presets
         
         for filename in os.listdir(self.presets_dir):
-            if filename.endswith(".json"):
-                preset_name = filename[:-5]  # Remove .json extension
-                filepath = os.path.join(self.presets_dir, filename)
-                try:
-                    with open(filepath, 'r') as f:
-                        preset_data = json.load(f)
-                        # Add basic validation if needed (e.g., check if it's a list)
-                        if isinstance(preset_data, list):
-                            presets[preset_name] = preset_data
-                        else:
-                            print(f"Warning: Preset file {filename} does not contain a valid list. Skipping.")
-                except json.JSONDecodeError:
-                    print(f"Error decoding JSON from {filepath}. Skipping preset '{preset_name}'.")
-                except Exception as e:
-                    print(f"Error loading preset '{preset_name}' from {filepath}: {e}")
+            if filename.endswith(".snap"):
+                preset_name = filename[:-5]
+                presets[preset_name] = {}
         return presets
     
     def get_preset_names(self):
-        """
-        Returns a sorted list of preset names by scanning the presets directory.
-        
-        Returns:
-            list: A sorted list of preset names
-        """
         names = []
         if not os.path.exists(self.presets_dir):
             return names
         for filename in os.listdir(self.presets_dir):
-            if filename.endswith(".json"):
-                names.append(filename[:-5])  # Remove .json extension
+            if filename.endswith(".snap"):
+                names.append(filename[:-5])
         return sorted(names)
     
-    def get_preset(self, name):
-        """
-        Loads and returns the connection list for a specific preset name from its file.
-        
-        Args:
-            name: The name of the preset to load
-            
-        Returns:
-            list: The connection list for the preset, or None if not found
-        """
-        preset_file = os.path.join(self.presets_dir, f"{name}.json")
+    def load_and_apply_preset(self, name, strict_mode=False, daemon_mode=False):
+        preset_file = os.path.join(self.presets_dir, f"{name}.snap")
         if not os.path.exists(preset_file):
             print(f"Preset file not found: {preset_file}")
-            return None
-        try:
-            with open(preset_file, 'r') as f:
-                preset_data = json.load(f)
-                # Add validation if needed
-                if isinstance(preset_data, list):
-                    return preset_data
-                else:
-                    print(f"Warning: Preset file {preset_file} does not contain a valid list.")
-                    return None
-        except json.JSONDecodeError:
-            print(f"Error decoding JSON from {preset_file}.")
-            return None
-        except Exception as e:
-            print(f"Error loading preset '{name}' from {preset_file}: {e}")
-            return None
-    
-    def save_preset(self, name, connection_list, parent_widget=None, confirm_overwrite=True):
-        """
-        Saves a specific preset to its own JSON file, asking for overwrite confirmation.
+            return False
         
-        Args:
-            name: The name of the preset to save
-            connection_list: The list of connections to save
-            parent_widget: The parent widget for dialog boxes
-            confirm_overwrite: Whether to confirm before overwriting an existing preset
+        if daemon_mode:
+            return self.start_daemon_mode(name, strict_mode)
+
+        try:
+            command = ["aj-snapshot", "-r"]
+            if strict_mode:
+                command.append("-x")
+            command.append(preset_file)
             
-        Returns:
-            bool: True if the preset was saved successfully, False otherwise
-        """
-        if not name:  # Prevent saving with empty names
+            print(f"Executing: {' '.join(command)}")
+            result = subprocess.run(command, capture_output=True, text=True, check=True)
+            print(f"aj-snapshot stdout:\n{result.stdout}")
+            if result.stderr:
+                print(f"aj-snapshot stderr:\n{result.stderr}")
+            return True
+        except subprocess.CalledProcessError as e:
+            print(f"Error applying preset '{name}' with aj-snapshot: {e}")
+            print(f"aj-snapshot stdout:\n{e.stdout}")
+            print(f"aj-snapshot stderr:\n{e.stderr}")
+            return False
+        except Exception as e:
+            print(f"Unexpected error applying preset '{name}': {e}")
+            return False
+    
+    def save_preset(self, name, parent_widget=None, confirm_overwrite=True):
+        if not name:
             QMessageBox.warning(parent_widget, "Save Error", "Preset name cannot be empty.")
             return False
-        if not isinstance(connection_list, list):
-            QMessageBox.warning(parent_widget, "Save Error", 
-                               f"Invalid data type for connection_list for preset '{name}'. Must be a list.")
-            return False
         
-        preset_file = os.path.join(self.presets_dir, f"{name}.json")
+        preset_file = os.path.join(self.presets_dir, f"{name}.snap")
         
-        # --- Overwrite Check ---
         if confirm_overwrite and os.path.exists(preset_file):
             reply = QMessageBox.question(parent_widget, 'Confirm Overwrite',
                                         f"A preset named '{name}' already exists.\nDo you want to overwrite it?",
                                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                                        QMessageBox.StandardButton.No)  # Default to No
+                                        QMessageBox.StandardButton.No)
             if reply == QMessageBox.StandardButton.No:
                 print(f"Overwrite cancelled for preset '{name}'.")
-                return False  # User chose not to overwrite
-        # --- End Overwrite Check ---
+                return False
         
         try:
-            with open(preset_file, 'w') as f:
-                json.dump(connection_list, f, indent=4)  # Save only the list
+            command = ["aj-snapshot"]
+            if not confirm_overwrite:
+                command.append("-f")
+            command.append(preset_file)
+            
+            print(f"Executing: {' '.join(command)}")
+            result = subprocess.run(command, capture_output=True, text=True, check=True)
+            print(f"aj-snapshot stdout:\n{result.stdout}")
+            if result.stderr:
+                print(f"aj-snapshot stderr:\n{result.stderr}")
             print(f"Preset '{name}' saved to {preset_file}")
             return True
+        except subprocess.CalledProcessError as e:
+            error_message = f"Error saving preset '{name}' with aj-snapshot: {e}\n" \
+                            f"Stdout: {e.stdout}\nStderr: {e.stderr}"
+            print(error_message)
+            QMessageBox.critical(parent_widget, "Save Error", error_message)
+            return False
         except Exception as e:
-            error_message = f"Error saving preset '{name}' to {preset_file}: {e}"
+            error_message = f"Unexpected error saving preset '{name}': {e}"
             print(error_message)
             QMessageBox.critical(parent_widget, "Save Error", error_message)
             return False
     
     def delete_preset(self, name):
-        """
-        Deletes a specific preset file.
-        
-        Args:
-            name: The name of the preset to delete
-            
-        Returns:
-            bool: True if the preset was deleted successfully, False otherwise
-        """
-        preset_file = os.path.join(self.presets_dir, f"{name}.json")
+        preset_file = os.path.join(self.presets_dir, f"{name}.snap")
         if os.path.exists(preset_file):
             try:
                 os.remove(preset_file)
@@ -169,4 +131,60 @@ class PresetManager:
                 return False
         else:
             print(f"Preset file not found for deletion: {preset_file}")
-            return False  # Or True if not finding it is acceptable
+            return False
+
+    def start_daemon_mode(self, preset_name, strict_mode=False):
+        self.stop_daemon_mode()
+
+        preset_file = os.path.join(self.presets_dir, f"{preset_name}.snap")
+        if not os.path.exists(preset_file):
+            print(f"Cannot start daemon: Preset file not found: {preset_file}")
+            return False
+
+        command = ["aj-snapshot", "-d"]
+        if strict_mode:
+            command.append("-x")
+        command.append(preset_file)
+        
+        try:
+            process = subprocess.Popen(command, preexec_fn=os.setsid, stdout=DEVNULL, stderr=DEVNULL)
+            with open(self.pid_file, 'w') as f:
+                f.write(str(process.pid))
+            print(f"aj-snapshot daemon started for '{preset_name}' with PID: {process.pid}")
+            return True
+        except Exception as e:
+            print(f"Error starting aj-snapshot daemon: {e}")
+            return False
+
+    def stop_daemon_mode(self):
+        if not os.path.exists(self.pid_file):
+            print("No aj-snapshot daemon PID file found.")
+            return True
+
+        try:
+            with open(self.pid_file, 'r') as f:
+                pid = int(f.read().strip())
+        except (IOError, ValueError) as e:
+            print(f"Error reading PID file: {e}")
+            os.remove(self.pid_file)
+            return False
+
+        print(f"Attempting to stop aj-snapshot daemon with PID: {pid}")
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGTERM)
+            print(f"Sent SIGTERM to process group of PID {pid}.")
+        except ProcessLookupError:
+            print(f"Process with PID {pid} not found. It may have already been terminated.")
+        except Exception as e:
+            print(f"Error sending SIGTERM to process group {pid}: {e}")
+            try:
+                os.kill(pid, signal.SIGKILL)
+                print(f"Sent SIGKILL to PID {pid} as a fallback.")
+            except Exception as e2:
+                print(f"Failed to kill process with PID {pid}: {e2}")
+                
+        finally:
+            if os.path.exists(self.pid_file):
+                os.remove(self.pid_file)
+        
+        return True

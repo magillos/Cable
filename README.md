@@ -7,7 +7,7 @@ If you wonder what Latency Offset option does, look [here](https://pipewire.page
 
 
 
-To run, clone repository and start with `python Cable.py`. You will need python jack client, see [here](https://pypi.org/project/JACK-Client/0.5.1/), python PyQT6, jack_delay (or jack-example-tools) and pyalsaaudio installed.
+To run, clone repository and start with `python Cable.py`. You will need python jack client, see [here](https://pypi.org/project/JACK-Client/0.5.1/), python PyQT6, jack_delay (or jack-example-tools), pyalsaaudio and aj-snapshot installed.
 
 Various packages are also available in [releases](https://github.com/magillos/Cable/releases).
 

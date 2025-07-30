@@ -198,6 +198,15 @@ class JackConnectionManager(QMainWindow):
         if hasattr(self.action_manager, 'save_preset_action') and self.action_manager.save_preset_action:
             self.action_manager.save_preset_action.setEnabled(bool(self.preset_handler.current_preset_name))
 
+        # Load startup preset if configured
+        if self.preset_handler.startup_preset_name and self.preset_handler.startup_preset_name != 'None':
+            startup_preset = self.preset_handler.startup_preset_name
+            print(f"Loading startup preset '{startup_preset}'...")
+            # Load the preset without showing a success message (is_startup=True)
+            self.preset_handler._load_selected_preset(startup_preset, is_startup=True)
+        
+        
+
         self.interaction_manager = InteractionManager(
             highlight_manager=self.highlight_manager,
             update_connection_buttons_func=self.update_connection_buttons,
@@ -1126,31 +1135,9 @@ class JackConnectionManager(QMainWindow):
         for port_name in ports_to_disconnect:
             self.jack_handler.disconnect_node(port_name)
 
-    def closeEvent(self, event):
-        event.accept()
-        QApplication.quit()
-        
-        if hasattr(self, 'ui_state_manager'):
-            self.ui_state_manager.cleanup()
+    
 
-        if hasattr(self, 'client'):
-            self.client.deactivate()
-            self.client.close()
-        
-        if hasattr(self.connection_view, 'refresh_timer'):
-            self.connection_view.refresh_timer.stop()
-        if hasattr(self.midi_connection_view, 'refresh_timer'):
-            self.midi_connection_view.refresh_timer.stop()
-        
-        if hasattr(self, 'pwtop_monitor') and self.pwtop_monitor is not None:
-            self.pwtop_monitor.stop()
-
-        if hasattr(self, 'graph_jack_handler') and self.graph_jack_handler:
-            print("Stopping Graph JackHandler on close...")
-            self.graph_jack_handler.stop()
-        
-        if hasattr(self, 'latency_tester') and self.latency_tester is not None:
-            self.latency_tester.stop_latency_test()
+    
 
     def _get_current_connections(self):
         return self.jack_handler._get_current_connections()

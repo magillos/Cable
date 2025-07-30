@@ -53,7 +53,9 @@ class ConfigManager:
             'collapse_all_enabled': 'False',
             'port_list_font_size': '10',
             'untangle_mode': '0',
-            'last_active_tab': '0'
+            'last_active_tab': '0',
+            'load_preset_strict_mode': 'False', # New setting for strict mode
+            'load_preset_daemon_mode': 'False' # New setting for daemon mode
         }
         
         for key, value in defaults.items():

@@ -231,7 +231,8 @@ class TrayManager:
     def quit_app(self):
         if self.tray_icon:
             self.tray_icon.hide()
-        QApplication.quit() # Static method
+        # Call the main app's cleanup method
+        self.app.cleanup_and_quit()
 
     def show_version_context_menu(self, pos):
         """Shows the context menu for the version label."""

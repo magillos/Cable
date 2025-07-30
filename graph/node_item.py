@@ -107,15 +107,10 @@ class NodeItem(QGraphicsItem):
             # Store the original name if this is potentially a split part
             # The caller of __init__ should handle setting this correctly.
  
-            # Ensure layout is calculated at least once if ports are added manually
-            ports_added = False
+            # Ports will be added via add_port, which calls layout_ports if in a scene.
+            # If no ports are added, layout will be handled by the scene after adding the node.
             for port_name, port_obj in ports_to_add.items():
-                if self.add_port(port_name, port_obj):
-                    ports_added = True
-            # add_port calls layout_ports.
-            # Ensure layout runs if no ports were provided (e.g., empty input/output node after init)
-            if not ports_added:
-                 self.layout_ports() # Calculate initial size
+                self.add_port(port_name, port_obj)
 
         # Store the configuration object
         self.config = {}

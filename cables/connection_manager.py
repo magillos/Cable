@@ -18,7 +18,7 @@ from PyQt6.QtGui import QGuiApplication, QColor, QPalette, QFont, QKeySequence, 
 # Import our modules
 from cables import jack_utils # Import the new jack_utils module
 from cables.config.config_manager import ConfigManager
-from cables.config.preset_manager import PresetManager
+from cables.config.enhanced_preset_manager import EnhancedPresetManager
 from cables.features.connection_history import ConnectionHistory
 from cables.features.preset_handler import PresetHandler
 from cables.ui.tab_ui_manager import TabUIManager
@@ -66,7 +66,12 @@ class JackConnectionManager(QMainWindow):
         
         # Initialize configuration and preset managers
         self.config_manager = ConfigManager()
-        self.preset_manager = PresetManager()
+        self.preset_manager = EnhancedPresetManager()
+        
+        # Auto-migrate existing presets to enhanced format if needed
+        from cables.utils.preset_migration import auto_migrate_if_needed
+        auto_migrate_if_needed()
+        
         self.preset_handler = PresetHandler(self)
         
         # Read last active tab from config

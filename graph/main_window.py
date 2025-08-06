@@ -373,7 +373,7 @@ class MainWindow(QMainWindow):
         
         # If the current setting is the special value for original layout
         if self.current_untangle_setting == ORIGINAL_LAYOUT:
-            # Restore the original node positions
+            # Restore the original node positions (preserves split state from original layout)
             if self.initial_node_positions:
                 self.scene.restore_node_states(self.initial_node_positions)
                 # Display a status message
@@ -386,7 +386,11 @@ class MainWindow(QMainWindow):
                 if hasattr(self, 'statusBar') and self.statusBar():
                     self.statusBar().showMessage("Original layout not available, using default untangle.", 3000)
         else:
-            # Otherwise use the regular untangle with the current setting
+            # For untangle layouts, unsplit all nodes first to improve organization
+            print(f"Untangling with {self.current_untangle_setting} nodes per row - unsplitting all nodes first")
+            self.scene.unsplit_all_nodes(save_state=False)
+            
+            # Then apply the regular untangle with the current setting
             self.scene.untangle_graph(max_nodes_per_row=self.current_untangle_setting)
             # Display a status message with the current setting
             if hasattr(self, 'statusBar') and self.statusBar():

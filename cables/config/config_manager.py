@@ -55,7 +55,8 @@ class ConfigManager:
             'untangle_mode': '0',
             'last_active_tab': '0',
             'load_preset_strict_mode': 'False', # New setting for strict mode
-            'load_preset_daemon_mode': 'False' # New setting for daemon mode
+            'load_preset_daemon_mode': 'False', # New setting for daemon mode
+            'load_preset_restore_layout': 'True' # New setting for restore layout (default on)
         }
         
         for key, value in defaults.items():

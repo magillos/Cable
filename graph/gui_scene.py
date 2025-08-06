@@ -17,7 +17,7 @@ from .node_item import NodeItem
 # from cables.connection_manager import JackConnectionManager # For signals and client access - REMOVED to break cycle
 from .connection_item import ConnectionItem
 from .bulk_area_item import BulkAreaItem
-from .config_utils import ConfigManager # Import the config manager
+from .config_utils import ConfigManager # Import the config managermanager
 from .graph_interaction_handler import GraphInteractionHandler # Import the new handler
 
 class JackGraphScene(QGraphicsScene):
@@ -1028,6 +1028,39 @@ class JackGraphScene(QGraphicsScene):
         """
         self.layouter.untangle_graph(max_nodes_per_row)
 
+    def unsplit_all_nodes(self, save_state=True):
+        """
+        Unsplits all currently split nodes in the scene.
+        
+        Args:
+            save_state (bool): If True, saves the node states after unsplitting.
+        """
+        split_origins = []
+        
+        # Find all split origin nodes
+        for client_name, node in self.nodes.items():
+            if node.is_split_origin:
+                split_origins.append(node)
+        
+        if not split_origins:
+            return  # No split nodes to unsplit
+        
+        # Unsplit each split origin node
+        unsplit_count = 0
+        for node in split_origins:
+            try:
+                node.split_handler.unsplit_node(save_state=False)  # Don't save state for each individual unsplit
+                unsplit_count += 1
+            except Exception as e:
+                print(f"Error unsplitting node {node.client_name}: {e}")
+        
+        # Save state once at the end if requested
+        if save_state and unsplit_count > 0:
+            self.save_node_states()
+        
+        if unsplit_count > 0:
+            print(f"Unsplit {unsplit_count} nodes for untangle operation")
+
     def set_node_visibility_manager(self, node_visibility_manager):
         """Set the NodeVisibilityManager instance for this scene."""
         self.node_visibility_manager = node_visibility_manager
@@ -1115,15 +1148,22 @@ class JackGraphScene(QGraphicsScene):
                 # For split nodes, store configuration for all parts
                 current_configs[client_name] = {
                     'is_split': True,
-                    'manual_split': True  # Assume it's a manual split
+                    'pos': node.scenePos(),  # Store the original node position too
+                    'manual_split': getattr(node, 'manual_split', True)  # Get actual manual_split flag
                 }
                 
                 # Store positions for input and output parts if they exist
                 if node.split_input_node:
                     current_configs[client_name]['split_input_pos'] = node.split_input_node.scenePos()
+                    # Store fold state of input part
+                    if hasattr(node.split_input_node, 'input_part_folded'):
+                        current_configs[client_name]['input_part_folded'] = node.split_input_node.input_part_folded
                 
                 if node.split_output_node:
                     current_configs[client_name]['split_output_pos'] = node.split_output_node.scenePos()
+                    # Store fold state of output part
+                    if hasattr(node.split_output_node, 'output_part_folded'):
+                        current_configs[client_name]['output_part_folded'] = node.split_output_node.output_part_folded
             else:
                 # For non-split nodes, store position and other attributes
                 current_configs[client_name] = {
@@ -1134,10 +1174,27 @@ class JackGraphScene(QGraphicsScene):
                 # Store fold state if available
                 if hasattr(node, 'is_folded'):
                     current_configs[client_name]['is_folded'] = node.is_folded
+                
+                # Store split position history if available (for nodes that were split before)
+                if hasattr(node, 'split_input_node') and node.split_input_node:
+                    current_configs[client_name]['split_input_pos'] = node.split_input_node.scenePos()
+                elif hasattr(node, 'config') and node.config and 'split_input_pos' in node.config:
+                    current_configs[client_name]['split_input_pos'] = node.config['split_input_pos']
+                    
+                if hasattr(node, 'split_output_node') and node.split_output_node:
+                    current_configs[client_name]['split_output_pos'] = node.split_output_node.scenePos()
+                elif hasattr(node, 'config') and node.config and 'split_output_pos' in node.config:
+                    current_configs[client_name]['split_output_pos'] = node.config['split_output_pos']
+                
+                # Store part fold states if available (for nodes that were split before)
                 if hasattr(node, 'input_part_folded'):
                     current_configs[client_name]['input_part_folded'] = node.input_part_folded
                 if hasattr(node, 'output_part_folded'):
                     current_configs[client_name]['output_part_folded'] = node.output_part_folded
+                
+                # Store manual split flag if available
+                if hasattr(node, 'config') and node.config and 'manual_split' in node.config:
+                    current_configs[client_name]['manual_split'] = node.config['manual_split']
         
         return copy.deepcopy(current_configs)
     
@@ -1163,12 +1220,36 @@ class JackGraphScene(QGraphicsScene):
                 if not node.is_split_origin:
                     node.split_handler.split_node(save_state=False)
                 
+                # Set the original node position if available
+                if 'pos' in config:
+                    node.setPos(config['pos'])
+                
+                # Set manual_split flag if available
+                if 'manual_split' in config:
+                    if hasattr(node, 'config'):
+                        if not node.config:
+                            node.config = {}
+                        node.config['manual_split'] = config['manual_split']
+                
                 # Set positions for input and output parts
                 if 'split_input_pos' in config and node.split_input_node:
                     node.split_input_node.setPos(config['split_input_pos'])
                 
                 if 'split_output_pos' in config and node.split_output_node:
                     node.split_output_node.setPos(config['split_output_pos'])
+                
+                # Set fold states for split parts
+                if 'input_part_folded' in config and node.split_input_node:
+                    # Set fold state for input part
+                    if hasattr(node.split_input_node, 'input_part_folded'):
+                        if node.split_input_node.input_part_folded != config['input_part_folded']:
+                            node.split_input_node.fold_handler.toggle_input_part_fold(fold_state=config['input_part_folded'])
+                
+                if 'output_part_folded' in config and node.split_output_node:
+                    # Set fold state for output part
+                    if hasattr(node.split_output_node, 'output_part_folded'):
+                        if node.split_output_node.output_part_folded != config['output_part_folded']:
+                            node.split_output_node.fold_handler.toggle_output_part_fold(fold_state=config['output_part_folded'])
             else:
                 # If the node is split but shouldn't be, unsplit it
                 if node.is_split_origin:
@@ -1178,20 +1259,29 @@ class JackGraphScene(QGraphicsScene):
                 if 'pos' in config:
                     node.setPos(config['pos'])
                 
+                # Preserve split position history for potential future splits
+                if hasattr(node, 'config'):
+                    if not node.config:
+                        node.config = {}
+                    if 'split_input_pos' in config:
+                        node.config['split_input_pos'] = config['split_input_pos']
+                    if 'split_output_pos' in config:
+                        node.config['split_output_pos'] = config['split_output_pos']
+                    if 'manual_split' in config:
+                        node.config['manual_split'] = config['manual_split']
+                
+                # Preserve part fold states for potential future splits
+                if 'input_part_folded' in config:
+                    node.input_part_folded = config['input_part_folded']
+                if 'output_part_folded' in config:
+                    node.output_part_folded = config['output_part_folded']
+                
                 # Set fold state if available - using the correct methods
                 if 'is_folded' in config and hasattr(node, 'is_folded'):
                     # Check if current state is different from desired state
                     if node.is_folded != config['is_folded']:
                         # Toggle the state directly or use toggle_main_fold_state
                         node.fold_handler.toggle_main_fold_state()
-                
-                if 'input_part_folded' in config and hasattr(node, 'input_part_folded'):
-                    # Use toggle_input_part_fold with explicit fold state
-                    node.fold_handler.toggle_input_part_fold(fold_state=config['input_part_folded'])
-                
-                if 'output_part_folded' in config and hasattr(node, 'output_part_folded'):
-                    # Use toggle_output_part_fold with explicit fold state
-                    node.fold_handler.toggle_output_part_fold(fold_state=config['output_part_folded'])
         
         # Update all connection paths to reflect the new node positions
         self.update_all_connection_paths()

@@ -79,19 +79,40 @@ class PresetManager:
             return False
     
     def save_preset(self, name, parent_widget=None, confirm_overwrite=True):
+        print(f"PresetManager.save_preset called with name='{name}', confirm_overwrite={confirm_overwrite}")
+        
         if not name:
             QMessageBox.warning(parent_widget, "Save Error", "Preset name cannot be empty.")
             return False
         
         preset_file = os.path.join(self.presets_dir, f"{name}.snap")
+        print(f"Preset file path: {preset_file}")
         
         if confirm_overwrite and os.path.exists(preset_file):
-            reply = QMessageBox.question(parent_widget, 'Confirm Overwrite',
-                                        f"A preset named '{name}' already exists.\nDo you want to overwrite it?",
-                                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                                        QMessageBox.StandardButton.No)
-            if reply == QMessageBox.StandardButton.No:
-                print(f"Overwrite cancelled for preset '{name}'.")
+            print(f"Preset file exists, showing overwrite confirmation dialog")
+            try:
+                # Create the message box explicitly to have more control
+                msgBox = QMessageBox(parent_widget)
+                msgBox.setIcon(QMessageBox.Icon.Question)
+                msgBox.setWindowTitle('Confirm Overwrite')
+                msgBox.setText(f"A preset named '{name}' already exists.\nDo you want to overwrite it?")
+                msgBox.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+                msgBox.setDefaultButton(QMessageBox.StandardButton.No)
+                
+                # Ensure the dialog is modal and properly handled
+                msgBox.setModal(True)
+                print("About to show overwrite confirmation dialog")
+                reply = msgBox.exec()
+                print(f"Dialog reply: {reply}")
+                
+                if reply == QMessageBox.StandardButton.No:
+                    print(f"Overwrite cancelled for preset '{name}'.")
+                    return False
+            except Exception as e:
+                print(f"Error showing overwrite confirmation dialog: {e}")
+                import traceback
+                traceback.print_exc()
+                # If dialog fails, assume user wants to cancel
                 return False
         
         try:
@@ -101,12 +122,18 @@ class PresetManager:
             command.append(preset_file)
             
             print(f"Executing: {' '.join(command)}")
-            result = subprocess.run(command, capture_output=True, text=True, check=True)
+            # Add timeout to prevent hanging
+            result = subprocess.run(command, capture_output=True, text=True, check=True, timeout=30)
             print(f"aj-snapshot stdout:\n{result.stdout}")
             if result.stderr:
                 print(f"aj-snapshot stderr:\n{result.stderr}")
             print(f"Preset '{name}' saved to {preset_file}")
             return True
+        except subprocess.TimeoutExpired as e:
+            error_message = f"Timeout saving preset '{name}' with aj-snapshot (30s limit exceeded)"
+            print(error_message)
+            QMessageBox.critical(parent_widget, "Save Error", error_message)
+            return False
         except subprocess.CalledProcessError as e:
             error_message = f"Error saving preset '{name}' with aj-snapshot: {e}\n" \
                             f"Stdout: {e.stdout}\nStderr: {e.stderr}"

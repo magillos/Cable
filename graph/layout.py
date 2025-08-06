@@ -14,6 +14,7 @@ from PyQt6.QtGui import QFont, QPainter, QColor
 import math
 import logging
 from functools import singledispatchmethod
+from . import constants
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -198,13 +199,14 @@ class GraphLayouter:
         if node.is_split_origin:
             return False  # Split origins are always collapsed/hidden
         if node.is_split_part:
-            # If this is a split part, check if its corresponding part is folded
-            if node.split_origin_node:
-                if node == node.split_origin_node.split_input_node:
-                    return node.split_origin_node.input_part_folded
-                elif node == node.split_origin_node.split_output_node:
-                    return node.split_origin_node.output_part_folded
-        # For normal nodes or if we can't determine the split state, use the node's fold state
+            # For split parts, check their own fold state
+            if node.input_ports and not node.output_ports:  # This is an input part
+                return node.input_part_folded
+            elif node.output_ports and not node.input_ports:  # This is an output part
+                return node.output_part_folded
+            # Fallback for unexpected split part with both input/output, or neither
+            return False
+        # For normal nodes, use the node's fold state
         return node.is_folded
     
     def _calculate_and_set_title_geometry(self, node: 'NodeItem', node_width: float) -> float:

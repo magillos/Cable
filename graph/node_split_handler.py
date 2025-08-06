@@ -117,9 +117,14 @@ class NodeSplitHandler:
         ni.split_input_node = input_node
         ni.split_output_node = output_node
 
-        if ni.is_folded: # Original node was folded
-            input_node.input_part_folded = True
-            output_node.output_part_folded = True
+        # Initialize fold state for split parts
+        # Split parts start unfolded by default, regardless of original node state
+        input_node.input_part_folded = False
+        output_node.output_part_folded = False
+        
+        # If the original node was folded, we could inherit that state, but it's better
+        # to start unfolded so users can see the ports after splitting
+        if ni.is_folded:
             ni.is_folded = False # Origin itself is not "folded" in the same way
 
         input_node.layout_ports() # Update layout for potential fold

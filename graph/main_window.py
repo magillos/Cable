@@ -2,6 +2,10 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPu
                              QLineEdit, QSpacerItem, QSizePolicy, QMessageBox, QToolButton, QMenu)
 from PyQt6.QtCore import pyqtSlot, QSize # Added QSize
 from PyQt6.QtGui import QAction, QKeySequence, QIcon # Added for shortcuts and icons
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from cables.connection_manager import JackConnectionManager
 
 from cables.ui.shared_widgets import create_action_button
 import jack # For jack.Client type hint
@@ -58,6 +62,8 @@ class MainWindow(QMainWindow):
         
         # Store initial node positions after the scene is fully loaded
         self.scene.scene_fully_loaded.connect(self._store_initial_node_positions)
+        # Update the stored original layout whenever user changes node states
+        self.scene.node_states_changed.connect(self._update_original_layout_baseline)
 
         # Main widget and layout
         main_widget = QWidget()
@@ -250,6 +256,19 @@ class MainWindow(QMainWindow):
             if node_states:
                 self.initial_node_positions = copy.deepcopy(node_states)
                 print("Initial node positions stored")
+
+    def _update_original_layout_baseline(self):
+        """Refresh the 'original layout' snapshot to reflect current user adjustments."""
+        node_states = self.scene.get_node_states()
+        if node_states:
+            self.initial_node_positions = copy.deepcopy(node_states)
+            # Also update tooltip to indicate saved original
+            next_value = self._get_next_untangle_value()
+            current_display = (
+                "original layout (saved)" if self.current_untangle_setting == ORIGINAL_LAYOUT
+                else f"{self.current_untangle_setting} nodes per row"
+            )
+            self.untangle_button.setToolTip(f"Reorganize graph ({current_display}, next: {next_value})")
 
     def _get_next_untangle_value(self):
         """Get the next untangle value in the cycle."""

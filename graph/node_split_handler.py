@@ -200,6 +200,9 @@ class NodeSplitHandler:
         ni._internal_state_change_in_progress = False
         if save_state and scene and hasattr(scene, 'request_specific_node_save'):
             scene.request_specific_node_save(ni) # Save state of the original node
+        # Notify listeners that node states changed
+        if save_state and scene and hasattr(scene, 'node_states_changed'):
+            scene.node_states_changed.emit()
 
     def unsplit_node(self, save_state: bool = True):
         """
@@ -338,6 +341,9 @@ class NodeSplitHandler:
         ni._internal_state_change_in_progress = False
         if save_state and scene and hasattr(scene, 'request_specific_node_save'):
             scene.request_specific_node_save(ni)
+        # Notify listeners that node states changed
+        if save_state and scene and hasattr(scene, 'node_states_changed'):
+            scene.node_states_changed.emit()
 
     def apply_split_config(self, config: dict):
         """

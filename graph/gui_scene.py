@@ -19,11 +19,16 @@ from .connection_item import ConnectionItem
 from .bulk_area_item import BulkAreaItem
 from .config_utils import ConfigManager # Import the config managermanager
 from .graph_interaction_handler import GraphInteractionHandler # Import the new handler
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from cables.connection_manager import JackConnectionManager
 
 class JackGraphScene(QGraphicsScene):
     """Manages the nodes, ports, and connections. Delegates interactions to GraphInteractionHandler."""
     scene_connections_changed = pyqtSignal() # Signal for when connections are added/removed
     scene_fully_loaded = pyqtSignal() # Signal emitted when the scene is fully loaded initially
+    node_states_changed = pyqtSignal() # Signal emitted when node positions/split/fold states change due to user action
 
     def __init__(self, jack_client: jack.Client, connection_manager: 'JackConnectionManager', connection_history, parent=None):
         super().__init__(parent)
@@ -910,6 +915,9 @@ class JackGraphScene(QGraphicsScene):
         for item in self.selectedItems():
              if isinstance(item, NodeItem) and item != node_that_moved: # Avoid double update
                  self._update_config_for_moved_node(item)
+
+        # Emit that node states changed (manual move complete)
+        self.node_states_changed.emit()
 
 
     # --- Selection Linking Logic (Moved to Handler) ---

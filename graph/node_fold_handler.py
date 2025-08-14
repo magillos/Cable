@@ -121,6 +121,10 @@ class NodeFoldHandler:
            hasattr(node_to_trigger_save_on.scene(), 'request_specific_node_save'):
             # The scene's method will get all relevant state from node_to_trigger_save_on
             node_to_trigger_save_on.scene().request_specific_node_save(node_to_trigger_save_on)
+        # Emit node state change for baseline updates
+        if node_to_trigger_save_on.scene() and \
+           hasattr(node_to_trigger_save_on.scene(), 'node_states_changed'):
+            node_to_trigger_save_on.scene().node_states_changed.emit()
 
     def apply_fold_config(self, config: dict, is_currently_split_origin: bool, is_currently_split_part: bool):
         """

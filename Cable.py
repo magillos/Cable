@@ -224,7 +224,7 @@ class PipeWireSettingsApp(QWidget):
                 config['DEFAULT'][config_key] = ','.join(new_value_parts)
 
                 # Write the updated config back using the manager's helper
-                self.config_manager._write_config(config, config_path)
+                self.config_manager._write_config(config)
                 print(f"Updated '{config_key}' in {config_path}")
 
                 # Refresh the UI to reflect changes

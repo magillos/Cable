@@ -32,8 +32,24 @@ from .node_split_handler import NodeSplitHandler
 
 def natural_sort_key(port_item: PortItem):
     """
-    Creates a natural sort key that properly handles numeric values in port names.
-    Uses the same sorting logic as cables/port_manager.py.
+    Creates an enhanced sort key that groups ports by base name.
+    Uses the same enhanced sorting logic as cables/port_manager.py.
+    
+    For example, ports like:
+    - input_FL
+    - input_FL-448
+    - input_FL-458
+    - input_FR
+    - input_FR-449
+    - input_FR-459
+    
+    Will be sorted as:
+    - input_FL
+    - input_FR
+    - input_FL-448
+    - input_FR-449
+    - input_FL-458
+    - input_FR-459
     """
     text = port_item.short_name.lower()
     
@@ -43,7 +59,30 @@ def natural_sort_key(port_item: PortItem):
         except ValueError:
             return text.lower()
 
-    return [tryint(part) for part in re.split(r'(\d+)', text)]
+    # Extract base name and suffix from port name
+    # Look for patterns like "input_FL-448" or "output_1-mono"
+    base_name = text
+    suffix = ''
+    
+    # Try to find a suffix pattern (dash followed by numbers/text)
+    suffix_match = re.search(r'[-_](\d+.*?)$', text)
+    if suffix_match:
+        suffix = suffix_match.group(1)
+        base_name = text[:suffix_match.start()]
+    
+    # Create sort key components
+    base_name_key = [tryint(part) for part in re.split(r'(\d+)', base_name)]
+    
+    # For the desired sorting behavior:
+    # 1. First show all base ports (no suffix) sorted by base name
+    # 2. Then show suffixed ports, grouped by suffix value, with base names sorted within each suffix group
+    if suffix:
+        suffix_key = [tryint(part) for part in re.split(r'(\d+)', suffix)]
+        # For suffixed ports: sort by (suffix, base_name)
+        return ([1], suffix_key, base_name_key)  # [1] puts suffixed ports after base ports
+    else:
+        # For base ports: sort by (base_name)
+        return ([0], base_name_key, [])  # [0] puts base ports first
 
 
 # --- Modified Node Item ---

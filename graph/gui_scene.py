@@ -94,11 +94,12 @@ class JackGraphScene(QGraphicsScene):
         """
         Perform a full refresh of the graph based on current JACK state.
         This includes updating visibility based on NodeVisibilityManager settings.
+        Only shows audio and MIDI clients, filtering out video clients and other non-audio/MIDI clients.
         """
         print("Performing full graph refresh...")
 
         try:
-            # Get all ports from JACK
+            # Get only audio and MIDI ports from JACK (filters out video clients, aj-snapshot, etc.)
             all_ports = []
             midi_ports = jack_utils.get_all_jack_ports(self.jack_client, is_midi=True)
             audio_ports = jack_utils.get_all_jack_ports(self.jack_client, is_audio=True)
@@ -662,14 +663,37 @@ class JackGraphScene(QGraphicsScene):
     def _handle_port_added(self, port_name: str, client_name: str, flags: int, type_str: str, is_input: bool):
         """Handles the port_added signal from JackConnectionManager."""
         print(f"GraphScene: Port added - Name: {port_name}, Client: {client_name}, Input: {is_input}, Type: {type_str}, Flags: {flags}")
+        
+        # Only process audio and MIDI ports, skip video ports and others
+        # Check if the port is actually audio or MIDI by querying JACK
+        port_obj = self.graph_jack_handler.get_port_by_name(port_name)
+        if port_obj:
+            if not (port_obj.is_audio or port_obj.is_midi):
+                print(f"GraphScene: Skipping non-audio/MIDI port '{port_name}' of type '{type_str}'")
+                return
+        else:
+            # Fallback to type string check if we can't get the port object
+            if type_str not in ['32 bit float mono audio', 'MIDI', '8 bit raw midi']:
+                print(f"GraphScene: Skipping non-audio/MIDI port '{port_name}' of type '{type_str}'")
+                return
+            
         node = self.nodes.get(client_name)
         if not node:
             print(f"GraphScene: Node '{client_name}' not found for adding port '{port_name}'. Adding node first.")
             
-            # Fetch all ports for this client to ensure we get a complete picture
+            # Fetch only audio and MIDI ports for this client (filters out video ports, etc.)
             try:
                 client_ports = {}
-                all_ports = jack_utils.get_all_jack_ports(self.jack_client, name_pattern=f"{client_name}:*")
+                # Get audio ports for this client
+                audio_ports = jack_utils.get_all_jack_ports(self.jack_client, name_pattern=f"{client_name}:*", is_audio=True)
+                # Get MIDI ports for this client  
+                midi_ports = jack_utils.get_all_jack_ports(self.jack_client, name_pattern=f"{client_name}:*", is_midi=True)
+                
+                all_ports = []
+                if audio_ports:
+                    all_ports.extend(audio_ports)
+                if midi_ports:
+                    all_ports.extend(midi_ports)
                 
                 for port in all_ports:
                     client_ports[port.name] = port
@@ -716,11 +740,24 @@ class JackGraphScene(QGraphicsScene):
         """Handles the client_added signal from JackConnectionManager."""
         print(f"GraphScene: Client added - Name: {client_name}")
         if client_name not in self.nodes:
-            # Fetch all ports for this client
+            # Fetch only audio and MIDI ports for this client (filters out video ports, etc.)
             try:
                 client_ports = {}
-                # Get all audio and MIDI ports for this client
-                all_ports = jack_utils.get_all_jack_ports(self.jack_client, name_pattern=f"{client_name}:*")
+                # Get audio ports for this client
+                audio_ports = jack_utils.get_all_jack_ports(self.jack_client, name_pattern=f"{client_name}:*", is_audio=True)
+                # Get MIDI ports for this client
+                midi_ports = jack_utils.get_all_jack_ports(self.jack_client, name_pattern=f"{client_name}:*", is_midi=True)
+                
+                all_ports = []
+                if audio_ports:
+                    all_ports.extend(audio_ports)
+                if midi_ports:
+                    all_ports.extend(midi_ports)
+                
+                # If this client has no audio or MIDI ports, don't add it to the graph
+                if not all_ports:
+                    print(f"GraphScene: Client '{client_name}' has no audio or MIDI ports, skipping.")
+                    return
                 
                 # Organize ports by name
                 for port in all_ports:

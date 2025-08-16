@@ -80,7 +80,23 @@ class PortTreeWidget(QTreeWidget):
     
     def _sort_items_naturally(self, items):
         """
-        Sorts a list of strings using natural sorting (handles numbers).
+        Sorts a list of strings using enhanced natural sorting that groups ports logically.
+        
+        For example, ports like:
+        - Client:input_FL
+        - Client:input_FL-448
+        - Client:input_FL-458
+        - Client:input_FR
+        - Client:input_FR-449
+        - Client:input_FR-459
+        
+        Will be sorted as:
+        - Client:input_FL
+        - Client:input_FR
+        - Client:input_FL-448
+        - Client:input_FR-449
+        - Client:input_FL-458
+        - Client:input_FR-459
         
         Args:
             items: The list of strings to sort
@@ -88,20 +104,51 @@ class PortTreeWidget(QTreeWidget):
         Returns:
             list: The sorted list
         """
-        def get_sort_key(item_name):
+        def get_enhanced_sort_key(item_name):
             # Treat None or non-string items gracefully if they somehow appear
             if not isinstance(item_name, str):
                 return []  # Or handle as appropriate
-            parts = re.split(r'(\d+)', item_name)
-            key = []
-            for part in parts:
-                if part.isdigit():
-                    key.append(int(part))
-                else:
-                    key.append(part.lower())
-            return key
+                
+            def tryint(text):
+                try:
+                    return int(text)
+                except ValueError:
+                    return text.lower()
+
+            # Split the port name into client and port parts
+            if ':' in item_name:
+                client_part, port_part = item_name.split(':', 1)
+            else:
+                client_part, port_part = '', item_name
+            
+            # Extract base name and suffix from port part
+            # Look for patterns like "input_FL-448" or "output_1-mono"
+            base_name = port_part
+            suffix = ''
+            
+            # Try to find a suffix pattern (dash followed by numbers/text)
+            suffix_match = re.search(r'[-_](\d+.*?)$', port_part)
+            if suffix_match:
+                suffix = suffix_match.group(1)
+                base_name = port_part[:suffix_match.start()]
+            
+            # Create sort key components
+            client_key = [tryint(part) for part in re.split(r'(\d+)', client_part.lower())]
+            base_name_key = [tryint(part) for part in re.split(r'(\d+)', base_name.lower())]
+            
+            # For the desired sorting behavior:
+            # 1. First show all base ports (no suffix) sorted by base name
+            # 2. Then show suffixed ports, grouped by suffix value, with base names sorted within each suffix group
+            if suffix:
+                suffix_key = [tryint(part) for part in re.split(r'(\d+)', suffix.lower())]
+                # For suffixed ports: sort by (client, suffix, base_name)
+                return (client_key, [1], suffix_key, base_name_key)  # [1] puts suffixed ports after base ports
+            else:
+                # For base ports: sort by (client, base_name)
+                return (client_key, [0], base_name_key, [])  # [0] puts base ports first
+        
         # Filter out None before sorting if necessary, though item_name should always be str here
-        return sorted([item for item in items if isinstance(item, str)], key=get_sort_key)
+        return sorted([item for item in items if isinstance(item, str)], key=get_enhanced_sort_key)
 
     def _calculate_untangled_order(self, all_ports, current_groups, ports_by_group, untangle_mode):
         """Calculates the group order based on connections.

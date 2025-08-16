@@ -151,7 +151,23 @@ class PortManager:
 
     def _sort_ports(self, port_names):
         """
-        Sort port names in a natural order.
+        Sort port names in a logical order, grouping by base name.
+        
+        For example, ports like:
+        - Equalizer:input_FL
+        - Equalizer:input_FL-448
+        - Equalizer:input_FL-458
+        - Equalizer:input_FR
+        - Equalizer:input_FR-449
+        - Equalizer:input_FR-459
+        
+        Will be sorted as:
+        - Equalizer:input_FL
+        - Equalizer:input_FR
+        - Equalizer:input_FL-448
+        - Equalizer:input_FR-449
+        - Equalizer:input_FL-458
+        - Equalizer:input_FR-459
 
         Args:
             port_names: The port names to sort
@@ -159,17 +175,47 @@ class PortManager:
         Returns:
             list: The sorted port names
         """
-        def get_sort_key(port_name):
-            """Natural sort key function with proper numeric handling"""
+        def get_enhanced_sort_key(port_name):
+            """Enhanced sort key that groups ports logically"""
             def tryint(text):
                 try:
                     return int(text)
                 except ValueError:
                     return text.lower()
 
-            return [tryint(part) for part in re.split(r'(\d+)', port_name)]
+            # Split the port name into client and port parts
+            if ':' in port_name:
+                client_part, port_part = port_name.split(':', 1)
+            else:
+                client_part, port_part = '', port_name
+            
+            # Extract base name and suffix from port part
+            # Look for patterns like "input_FL-448" or "output_1-mono"
+            base_name = port_part
+            suffix = ''
+            
+            # Try to find a suffix pattern (dash followed by numbers/text)
+            suffix_match = re.search(r'[-_](\d+.*?)$', port_part)
+            if suffix_match:
+                suffix = suffix_match.group(1)
+                base_name = port_part[:suffix_match.start()]
+            
+            # Create sort key components
+            client_key = [tryint(part) for part in re.split(r'(\d+)', client_part.lower())]
+            base_name_key = [tryint(part) for part in re.split(r'(\d+)', base_name.lower())]
+            
+            # For the desired sorting behavior:
+            # 1. First show all base ports (no suffix) sorted by base name
+            # 2. Then show suffixed ports, grouped by suffix value, with base names sorted within each suffix group
+            if suffix:
+                suffix_key = [tryint(part) for part in re.split(r'(\d+)', suffix.lower())]
+                # For suffixed ports: sort by (client, suffix, base_name)
+                return (client_key, [1], suffix_key, base_name_key)  # [1] puts suffixed ports after base ports
+            else:
+                # For base ports: sort by (client, base_name)
+                return (client_key, [0], base_name_key, [])  # [0] puts base ports first
 
-        return sorted(port_names, key=get_sort_key)
+        return sorted(port_names, key=get_enhanced_sort_key)
 
     def filter_ports(self, tree_widget, filter_text):
         """

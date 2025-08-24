@@ -60,13 +60,15 @@ class PipeWireSettingsApp(QWidget):
         super().__init__()
         self.is_minimized_startup = is_minimized_startup # Store the flag
         self.flatpak_env = os.path.exists('/.flatpak-info')
+        self.appimage_path = self._detect_appimage_path()  # Detect AppImage path
         self.tray_icon = None  # Initialize tray_icon here
         self.tray_enabled = False
         self.connection_manager_process = None
         self.tray_click_opens_cables = True
         self.profile_index_map = {}
         self.cables_executable_path = None  # Will be set during init
-        self.autostart_manager = AutostartManager(self.flatpak_env)
+        # Initialize autostart manager (will be updated after config is loaded)
+        self.autostart_manager = AutostartManager(self.flatpak_env, self.appimage_path)
         # Instantiate ConfigManager *after* UI elements and AutostartManager are initialized
         self.config_manager = ConfigManager(self)
         self.system_manager = SystemManager(self) # Instantiate SystemManager
@@ -117,11 +119,26 @@ class PipeWireSettingsApp(QWidget):
         # Mark values as initialized
         self.values_initialized = True
 
+        # Update autostart manager with configured AppImage path
+        appimage_path_to_use = self.appimage_path if self.appimage_path else self._detect_appimage_path()
+        if appimage_path_to_use:
+            # Use configured path if available, otherwise use detected path
+            self.autostart_manager = AutostartManager(self.flatpak_env, appimage_path_to_use)
+
         # Update latency display after everything is loaded
         self.update_latency_display()
 
         # Conditionally check for updates shortly after startup
         QTimer.singleShot(2000, self.update_manager._initial_update_check) # Check after 2 seconds if enabled (using UpdateManager)
+
+    def _detect_appimage_path(self):
+        """Detect if the application is running from an AppImage and return the path."""
+        # Check for APPIMAGE environment variable (set by AppImage runtime)
+        appimage_path = os.environ.get('APPIMAGE')
+        if appimage_path and os.path.exists(appimage_path):
+            print(f"Detected AppImage path: {appimage_path}")
+            return appimage_path
+        return None
 
     # --- Method moved to PipewireManager ---
     # get_metadata_value (Removed)

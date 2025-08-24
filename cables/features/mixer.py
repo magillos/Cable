@@ -35,6 +35,9 @@ class AlsMixerApp(QWidget):
     def __init__(self, config_manager=None):
         super().__init__()
         
+        # Initialize debug_mode early to prevent AttributeError when pyalsaaudio is not available
+        self.debug_mode = False
+        
         if alsaaudio is None:
             self.init_error_ui("ALSA wrappers for Python not available")
             return
@@ -576,26 +579,33 @@ class AlsMixerApp(QWidget):
         self._is_updating_ui = False
 
     def refresh_all_mixer_states(self):
+        if not alsaaudio:
+            return
         if self._is_updating_ui: return; print("Refreshing all mixer states...") if self.debug_mode else None; self._is_updating_ui = True
         for key in list(self.mixer_controls_data.keys()): self.refresh_specific_mixer_state(key)
         self._is_updating_ui = False
  
     def start_updates(self):
         """Starts the ALSA mixer update mechanisms (timer or notifiers)."""
+        if not alsaaudio:
+            return
         print("ALSA Mixer: Starting updates...") if self.debug_mode else None
         # Re-populate cards to ensure correct state and setup notifiers/timer
         self.populate_cards()
  
     def stop_updates(self):
         """Stops the ALSA mixer update mechanisms (timer and notifiers)."""
+        if not alsaaudio:
+            return
         print("ALSA Mixer: Stopping updates...") if self.debug_mode else None
         self.update_timer.stop()
         self._cleanup_notifiers()
         self.clear_mixer_controls_ui() # Clear UI when stopping updates
  
     def closeEvent(self, event):
-        self._cleanup_notifiers()
-        self.clear_mixer_controls_ui()
+        if alsaaudio:
+            self._cleanup_notifiers()
+            self.clear_mixer_controls_ui()
         event.accept()
 
     def _setup_mixer_notifiers(self, mixer_name, mixer_obj):
@@ -662,6 +672,8 @@ class AlsMixerApp(QWidget):
                 print(f"Notifier for {mixer_name} (fd: {fd}) re-enabled.")
  
     def _cleanup_notifiers(self):
+        if not alsaaudio:
+            return
         for mixer_name, notifiers in self.mixer_notifiers.items():
             for notifier in notifiers:
                 notifier.setEnabled(False)

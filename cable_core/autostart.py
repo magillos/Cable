@@ -2,12 +2,19 @@ import os
 
 class AutostartManager:
     """Manages autostart functionality using XDG autostart"""
-    def __init__(self, flatpak_env=False):
+    def __init__(self, flatpak_env=False, appimage_path=None):
         self.autostart_dir = os.path.expanduser("~/.config/autostart")
         self.desktop_file = os.path.join(self.autostart_dir, "cable-autostart.desktop")
+        self.appimage_path = appimage_path
 
         # Set the appropriate Exec line based on environment
-        exec_line = "/usr/bin/flatpak run com.github.magillos.cable --minimized" if flatpak_env else "pw-jack cable --minimized"
+        if appimage_path:
+            # For AppImage, use the full path to the AppImage with --minimized
+            exec_line = f"{appimage_path} --minimized"
+        elif flatpak_env:
+            exec_line = "/usr/bin/flatpak run com.github.magillos.cable --minimized"
+        else:
+            exec_line = "pw-jack cable --minimized"
 
         self.desktop_content = f"""[Desktop Entry]
 Type=Application

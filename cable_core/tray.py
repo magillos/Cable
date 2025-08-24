@@ -5,6 +5,7 @@ from PyQt6.QtGui import QIcon, QAction, QActionGroup
 from PyQt6.QtCore import Qt, QProcess
 
 from cable_core.other_settings_dialog import OtherSettingsDialog # Import the new dialog
+from cable_core.dialogs import AppImagePathDialog # Import AppImage dialog
 
 class TrayManager:
     def __init__(self, app):
@@ -316,6 +317,29 @@ class TrayManager:
         """Toggle autostart setting and sync menu actions."""
         try:
             if checked:
+                # Check if running from AppImage and need to configure path
+                if self.app.appimage_path and not self.app.appimage_path:
+                    # Running from AppImage but no path configured, prompt user
+                    dialog = AppImagePathDialog(self.app.appimage_path, self.app)
+                    if dialog.exec() == dialog.DialogCode.Accepted:
+                        appimage_path = dialog.get_appimage_path()
+                        if appimage_path and os.path.exists(appimage_path):
+                            self.app.config_manager.save_appimage_path(appimage_path)
+                        else:
+                            QMessageBox.warning(self.app, "Invalid Path",
+                                              "The selected AppImage file does not exist or is not accessible.\n"
+                                              "Please select a valid Cable AppImage file.")
+                            # Revert checkbox if failed - Use internal references
+                            if self.autostart_action: self.autostart_action.setChecked(False)
+                            if self.autostart_version_action: self.autostart_version_action.setChecked(False)
+                            return
+                    else:
+                        # User cancelled the dialog
+                        # Revert checkbox if cancelled - Use internal references
+                        if self.autostart_action: self.autostart_action.setChecked(False)
+                        if self.autostart_version_action: self.autostart_version_action.setChecked(False)
+                        return
+
                 if self.app.autostart_manager.enable_autostart():
                     self.app.autostart_enabled = True # Update app state
                     # Also enable the tray icon when enabling autostart

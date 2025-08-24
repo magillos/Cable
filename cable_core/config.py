@@ -77,6 +77,7 @@ class ConfigManager:
         self.app.autostart_enabled = False
         self.app.check_updates_at_start = False # Default value
         self.app.restore_only_minimized = False # Default value for the new setting
+        self.app.appimage_path = None # Default value for AppImage path
 
         if os.path.exists(self.config_path):
             try:
@@ -111,11 +112,18 @@ class ConfigManager:
                 # Load startup update check setting
                 self.app.check_updates_at_start = config.getboolean('DEFAULT', 'check_updates_at_start', fallback=False)
 
+                # Load AppImage path setting
+                self.app.appimage_path = config.get('DEFAULT', 'appimage_path', fallback=None)
+                if self.app.appimage_path and not os.path.exists(self.app.appimage_path):
+                    print(f"Warning: Configured AppImage path does not exist: {self.app.appimage_path}")
+                    self.app.appimage_path = None
+
                 print(f"Loaded tray_click_opens_cables from config: {tray_click_opens_cables}")
                 print(f"Loaded remember_settings: {self.app.remember_settings}")
                 print(f"Loaded autostart_enabled: {self.app.autostart_enabled}")
                 print(f"Loaded check_updates_at_start: {self.app.check_updates_at_start}")
                 print(f"Loaded restore_only_minimized: {self.app.restore_only_minimized}") # Print loaded value
+                print(f"Loaded appimage_path: {self.app.appimage_path}")
 
                 # Sync autostart file with config
                 if self.app.autostart_enabled != self.app.autostart_manager.is_autostart_enabled():
@@ -244,7 +252,8 @@ class ConfigManager:
             'remember_settings': str(self.app.remember_settings),
             'restore_only_minimized': str(self.app.restore_only_minimized), # Save the new setting
             'autostart_enabled': str(self.app.autostart_enabled),
-            'check_updates_at_start': str(self.app.check_updates_at_start) # Save the new setting
+            'check_updates_at_start': str(self.app.check_updates_at_start), # Save the new setting
+            'appimage_path': str(self.app.appimage_path) if self.app.appimage_path else '' # Save AppImage path
         })
 
         # Use the helper method to write the config
@@ -424,3 +433,12 @@ class ConfigManager:
         self.app.check_updates_at_start = checked
         print(f"Set check_updates_at_start to: {self.app.check_updates_at_start}")
         self.save_settings() # Call ConfigManager's save_settings
+
+    def save_appimage_path(self, appimage_path):
+        """Save the AppImage path to config and update autostart manager."""
+        self.app.appimage_path = appimage_path
+        if appimage_path:
+            # Update autostart manager with new AppImage path
+            self.app.autostart_manager = AutostartManager(self.app.flatpak_env, appimage_path)
+        self.save_settings()
+        print(f"Saved AppImage path: {appimage_path}")

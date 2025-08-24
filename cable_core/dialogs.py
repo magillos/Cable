@@ -1,5 +1,8 @@
+import os
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QScrollArea, QWidget,
-                             QCheckBox, QDialogButtonBox)
+                              QCheckBox, QDialogButtonBox, QLineEdit, QLabel,
+                              QPushButton, QFileDialog, QHBoxLayout)
+from PyQt6.QtCore import Qt
 
 # --- New Dialog for Value Selection ---
 class ValueSelectorDialog(QDialog):
@@ -47,4 +50,66 @@ class ValueSelectorDialog(QDialog):
                 except ValueError:
                     print(f"Warning: Could not convert checkbox text '{checkbox.text()}' to int.")
         return selected
+
+# --- AppImage Path Dialog ---
+class AppImagePathDialog(QDialog):
+    """Dialog to configure AppImage path for autostart functionality."""
+    def __init__(self, current_path=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Configure AppImage Path")
+        self.setMinimumWidth(400)
+        self.current_path = current_path
+
+        layout = QVBoxLayout(self)
+
+        # Instructions
+        instruction_label = QLabel(
+            "To enable autostart with AppImage, please select your Cable AppImage file:\n\n"
+            "This is the .AppImage file you downloaded and made executable."
+        )
+        instruction_label.setWordWrap(True)
+        layout.addWidget(instruction_label)
+
+        # Path input layout
+        path_layout = QHBoxLayout()
+        self.path_input = QLineEdit()
+        if current_path:
+            self.path_input.setText(current_path)
+        self.path_input.setPlaceholderText("Select your Cable AppImage file...")
+        path_layout.addWidget(self.path_input)
+
+        # Browse button
+        browse_button = QPushButton("Browse...")
+        browse_button.clicked.connect(self.browse_appimage)
+        path_layout.addWidget(browse_button)
+
+        layout.addLayout(path_layout)
+
+        # OK and Cancel buttons
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+        self.setLayout(layout)
+
+    def browse_appimage(self):
+        """Open file dialog to select AppImage file."""
+        file_dialog = QFileDialog(self)
+        file_dialog.setNameFilter("AppImage files (*.AppImage);;All files (*)")
+        file_dialog.setFileMode(QFileDialog.FileMode.ExistingFile)
+
+        if self.current_path:
+            file_dialog.setDirectory(os.path.dirname(self.current_path))
+
+        if file_dialog.exec() == QDialog.DialogCode.Accepted:
+            selected_files = file_dialog.selectedFiles()
+            if selected_files:
+                self.path_input.setText(selected_files[0])
+
+    def get_appimage_path(self):
+        """Returns the entered AppImage path."""
+        return self.path_input.text().strip()
 # ------------------------------------

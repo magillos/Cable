@@ -345,7 +345,7 @@ class PortItem(QGraphicsItem):
             action.setEnabled(False)
         else:
             for out_port_name, in_port_name in connections:
-                other_port_name = in_port_name if self.is_input else out_port_name
+                other_port_name = out_port_name if self.is_input else in_port_name
                 other_short_name = other_port_name.split(':')[-1]
                 client_name = other_port_name.split(':')[0]
 

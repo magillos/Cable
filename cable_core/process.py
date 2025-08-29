@@ -35,12 +35,8 @@ class ProcessManager:
             if stop_daemon:
                 arguments.append('--stop-daemon')
 
-            if self.app.flatpak_env:
-                self.connection_manager_process.setProgram('flatpak-spawn')
-                self.connection_manager_process.setArguments(['--host', 'python3'] + arguments)
-            else:
-                self.connection_manager_process.setProgram('python3')
-                self.connection_manager_process.setArguments(arguments)
+            self.connection_manager_process.setProgram('python3')
+            self.connection_manager_process.setArguments(arguments)
 
             self.connection_manager_process.start()
             print(f"Started connection manager with args: {arguments}")

@@ -9,7 +9,7 @@ To run, clone repository and start with `python Cable.py`. You will need python 
 Various packages are also available in [releases](https://github.com/magillos/Cable/releases).
 On Arch Linux, install using PKGBUILD or with Arch package. App is also available on AUR.
 
-~~For auto-start to work with AppImage, enable Autostart in tray menu and edit Exec entry in ~/.config/autostart/cable-autostart.desktop to point to your AppImage executable (e.g. Exec=/location/on/disk/./Cable-0.9.4.AppImage --minimized).~~
+~~~For auto-start to work with AppImage, enable Autostart in tray menu and edit Exec entry in ~/.config/autostart/cable-autostart.desktop to point to your AppImage executable (e.g. Exec=/location/on/disk/./Cable-0.9.4.AppImage --minimized).~~~
 
 From version 0.9.16, auto-start should work with AppImage (toggle Autostart option off/on to recreate .desktop file).
 

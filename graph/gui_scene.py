@@ -917,6 +917,10 @@ class JackGraphScene(QGraphicsScene):
 
     def mouseReleaseEvent(self, event):
         """Delegate release event to the interaction handler."""
+        if self.interaction_handler._is_double_click:
+            self.interaction_handler._is_double_click = False
+            return
+
         # Let handler process first (e.g., end drag, handle node drop)
         moved_node, consumed = self.interaction_handler.mouseReleaseEvent(event)
 

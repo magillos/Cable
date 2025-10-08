@@ -493,6 +493,9 @@ class JackConnectionManager(QMainWindow):
             self.show_bottom_controls(True)
         elif index == 2: # Graph tab (index 2)
             self.show_bottom_controls(False)
+            # Disable global Alt+U shortcut when Graph tab is active to allow Graph-specific Alt+U handling
+            if hasattr(self, 'action_manager') and hasattr(self.action_manager, 'untangle_shortcut_action'):
+                self.action_manager.untangle_shortcut_action.setEnabled(False)
             if hasattr(self, 'graph_main_window') and self.graph_main_window:
                 if hasattr(self.graph_main_window, 'scene') and self.graph_main_window.scene:
                     self.graph_main_window.scene.full_graph_refresh()
@@ -512,6 +515,11 @@ class JackConnectionManager(QMainWindow):
         # Stop ALSA mixer updates when switching away from the tab
         if self.last_active_tab == 4 and hasattr(self, 'alsa_mixer_app') and self.alsa_mixer_app:
             self.alsa_mixer_app.stop_updates()
+
+        # Re-enable global Alt+U shortcut when switching away from Graph tab
+        if self.last_active_tab == 2:  # Was previously on Graph tab
+            if hasattr(self, 'action_manager') and hasattr(self.action_manager, 'untangle_shortcut_action'):
+                self.action_manager.untangle_shortcut_action.setEnabled(True)
 
         self.last_active_tab = index
         self.config_manager.set_int('last_active_tab', index)

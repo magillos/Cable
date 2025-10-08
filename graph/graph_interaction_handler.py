@@ -59,11 +59,24 @@ class GraphInteractionHandler:
         self._processing_selection = False
         self._last_mouse_pos = None
         self._is_in_auto_selection_cascade = False
+        self._is_double_click = False
+
+    def clear_all_connection_highlights(self):
+        """Clear connection highlighting from all PortItems and BulkAreaItems in the scene."""
+        if not self.scene:
+            return
+
+        for item in self.scene.items():
+            if hasattr(item, 'set_connection_highlighted'):
+                item.set_connection_highlighted(False)
 
     def _select_items(self, items_to_select: list[QGraphicsItem]):
         """Adds the given items to the scene's current selection."""
         if not items_to_select or not self.scene:
             return
+
+        # Clear any existing connection highlights before making new selections
+        self.clear_all_connection_highlights()
 
         # If already processing, let the current operation complete to avoid nested issues.
         if self._processing_selection:

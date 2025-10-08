@@ -390,6 +390,9 @@ class TabUIManager:
                 graph_view_widget.addAction(manager.graph_main_window.zoom_in_action)
             if hasattr(manager.graph_main_window, 'zoom_out_action') and manager.graph_main_window.zoom_out_action:
                 graph_view_widget.addAction(manager.graph_main_window.zoom_out_action)
+            # Add untangle shortcut action to the view widget
+            if hasattr(manager.graph_main_window, 'untangle_shortcut_action') and manager.graph_main_window.untangle_shortcut_action:
+                graph_view_widget.addAction(manager.graph_main_window.untangle_shortcut_action)
                 
             # Create Node Visibility button and add it to the main window's top toolbar layout
             if hasattr(manager.graph_main_window, 'preset_button') and manager.graph_main_window.preset_button:
@@ -456,6 +459,9 @@ class TabUIManager:
             tab_widget.addAction(manager.graph_main_window.zoom_in_action)
         if hasattr(manager.graph_main_window, 'zoom_out_action') and manager.graph_main_window.zoom_out_action:
             tab_widget.addAction(manager.graph_main_window.zoom_out_action)
+        # Add untangle shortcut action to the tab_widget
+        if hasattr(manager.graph_main_window, 'untangle_shortcut_action') and manager.graph_main_window.untangle_shortcut_action:
+            tab_widget.addAction(manager.graph_main_window.untangle_shortcut_action)
 
         # Store a reference to the graph tab's preset button on the connection manager
         # so PresetHandler can find it.

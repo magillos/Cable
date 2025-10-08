@@ -1,10 +1,12 @@
-from PyQt6.QtWidgets import QGraphicsView, QMenu
-from PyQt6.QtGui import QPainter, QCursor, QMouseEvent # Import QMouseEvent
+import os
+from PyQt6.QtWidgets import QGraphicsView, QMenu, QDialog, QVBoxLayout, QDialogButtonBox, QLabel, QCheckBox, QFileDialog, QHBoxLayout, QPushButton, QButtonGroup, QRadioButton
+from PyQt6.QtGui import QPainter, QCursor, QMouseEvent, QPixmap, QBrush, QFont # Import QMouseEvent
 from PyQt6.QtCore import Qt, pyqtSignal
 
 # Import JackGraphScene for type hinting
 from .gui_scene import JackGraphScene
 from . import constants # Import constants
+from cable_core.dialogs import CombinedSinkSourceDialog
 
 class JackGraphView(QGraphicsView):
     """The view widget for the JACK graph scene."""
@@ -24,16 +26,24 @@ class JackGraphView(QGraphicsView):
         self._is_panning = False
         self._last_pan_pos = None
 
+        # Wallpaper reload throttling
+        self._last_scene_size = None
+        self._wallpaper_loaded = False
+
         # Connect scene changes to scrollbar update
         if self.scene():
             self.scene().changed.connect(self._update_scrollbar_visibility)
+            self.scene().changed.connect(self._reload_wallpaper_if_needed)
 
         # Set the initial cursor to the standard arrow
         self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
 
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
-        
+
+        # Load wallpaper if set
+        self._load_wallpaper()
+
         # Reduced zoom factor for more precise control
         self.zoom_factor_base = 1.05  # Changed from 1.15 for slower, more controlled zooming
         self.min_zoom_scale = 0.1  # Minimum zoom level (e.g., 10%)
@@ -245,7 +255,14 @@ class JackGraphView(QGraphicsView):
         self.zoom_changed.emit(self.get_zoom_level()) # Emit signal
  
     def keyPressEvent(self, event):
-        if event.key() == Qt.Key.Key_F:
+        if event.key() == Qt.Key.Key_U and (event.modifiers() & Qt.KeyboardModifier.AltModifier):
+            graph_mw = self.scene().parent()
+            if graph_mw and hasattr(graph_mw, 'untangle_action'):
+                graph_mw.untangle_action.trigger()
+                event.accept()
+            else:
+                super().keyPressEvent(event)
+        elif event.key() == Qt.Key.Key_F:
             self.fullscreen_request_signal.emit()
             event.accept() # Indicate event was handled
         elif event.key() == Qt.Key.Key_Escape:
@@ -261,21 +278,465 @@ class JackGraphView(QGraphicsView):
         """Show a context menu when right-clicking on empty areas of the canvas."""
         # First, let's check if there's an item under the cursor
         item_under_cursor = self.itemAt(event.pos())
-        
+
         # Only show our custom context menu if there's no item under the cursor
         if item_under_cursor is None:
             menu = QMenu(self)
+            create_combined_action = menu.addAction("Create virtual sink/source")
+            unload_all_sinks_action = menu.addAction("Unload all sinks")
             save_layout_action = menu.addAction("Save current layout")
-            
-            # Connect to a signal that will be handled by the main window
+            wallpaper_action = menu.addAction("Wallpaper")
+
+            # Connect to handlers
+            create_combined_action.triggered.connect(self._show_combined_sink_dialog)
+            unload_all_sinks_action.triggered.connect(self._unload_all_sinks)
             save_layout_action.triggered.connect(self._request_save_layout)
-            
+            wallpaper_action.triggered.connect(self._show_wallpaper_dialog)
+
             menu.exec(event.globalPos())
             event.accept()
         else:
             # If there's an item, pass the event to the parent implementation
             super().contextMenuEvent(event)
             
+    def _show_combined_sink_dialog(self):
+        """Show the dialog for creating a combined virtual sink/source."""
+        dialog = CombinedSinkSourceDialog(self)
+        result = dialog.exec()
+
+        if result == QDialog.DialogCode.Accepted:
+            sink_name, channel_map = dialog.get_values()
+            self._create_combined_sink_source(sink_name, channel_map)
+
+    def _show_wallpaper_dialog(self):
+        """Show a dialog to select wallpaper image and set it as background."""
+        # Create wallpaper dialog
+        dialog = QDialog(self.window())
+        dialog.setWindowTitle("Select Wallpaper")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(500)
+
+        layout = QVBoxLayout(dialog)
+
+        # Get current settings using cable_core ConfigManager
+        cable_core_config = None
+        current_scaling = "scaled"
+        try:
+            from cable_core.config import ConfigManager
+            cable_core_config = ConfigManager()
+            current_scaling = cable_core_config.get_str_setting("_graph_wallpaper_scaling", "scaled")
+        except Exception as e:
+            print(f"Warning: Could not read wallpaper config: {e}")
+
+        # Scaling options
+        scaling_group = QButtonGroup(dialog)
+        scaling_layout = QVBoxLayout()
+        scaling_label = QLabel("Scaling mode:")
+        scaling_layout.addWidget(scaling_label)
+
+        scale_radio = QRadioButton("Scaled - Fill canvas (may distort)")
+        scale_radio.setChecked(current_scaling == "scaled")
+        scaling_group.addButton(scale_radio, 0)
+        scaling_layout.addWidget(scale_radio)
+
+        center_radio = QRadioButton("Centered - Original size, centered")
+        center_radio.setChecked(current_scaling == "centered")
+        scaling_group.addButton(center_radio, 1)
+        scaling_layout.addWidget(center_radio)
+
+        layout.addLayout(scaling_layout)
+
+        # Instructions
+        instructions = QLabel("Choose a JPG or PNG image file to use as graph background wallpaper.")
+        instructions.setWordWrap(True)
+        layout.addWidget(instructions)
+
+        layout.addStretch()
+
+        # Buttons
+        button_layout = QHBoxLayout()
+
+        select_button = QPushButton("Select Image...")
+        select_button.clicked.connect(lambda: self._select_wallpaper_file(dialog, scaling_group))
+        button_layout.addWidget(select_button)
+
+        clear_button = QPushButton("Clear Wallpaper")
+        clear_button.clicked.connect(lambda: self._clear_wallpaper(dialog))
+        button_layout.addWidget(clear_button)
+
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(lambda: self._save_wallpaper_settings(dialog, scaling_group))
+        button_box.rejected.connect(dialog.reject)
+        button_layout.addWidget(button_box)
+
+        layout.addLayout(button_layout)
+
+        dialog.exec()
+
+    def _select_wallpaper_file(self, parent_dialog, scaling_group):
+        """Open file dialog to select wallpaper image."""
+        file_dialog = QFileDialog(self)
+        file_dialog.setWindowTitle("Select Wallpaper Image")
+        file_dialog.setNameFilter("Image files (*.jpg *.jpeg *.png);;All files (*)")
+        file_dialog.setFileMode(QFileDialog.FileMode.ExistingFile)
+
+        # Try to start from the last wallpaper directory
+        try:
+            from cable_core.config import ConfigManager
+            cable_core_config = ConfigManager()
+            last_dir = cable_core_config.get_str_setting("_graph_wallpaper_last_dir", "")
+            if last_dir and os.path.exists(last_dir):
+                file_dialog.setDirectory(last_dir)
+        except Exception as e:
+            print(f"Warning: Could not set last wallpaper directory: {e}")
+
+        if file_dialog.exec() == QDialog.DialogCode.Accepted:
+            selected_files = file_dialog.selectedFiles()
+            if selected_files:
+                image_path = selected_files[0]
+
+                # Save the directory for next time
+                try:
+                    from cable_core.config import ConfigManager
+                    cable_core_config = ConfigManager()
+                    image_dir = os.path.dirname(image_path)
+                    cable_core_config.set_str_setting("_graph_wallpaper_last_dir", image_dir)
+                except Exception as e:
+                    print(f"Warning: Could not save last wallpaper directory: {e}")
+
+                # Get scaling mode
+                scaling_mode = "scaled"
+                checked_button = scaling_group.checkedButton()
+                if checked_button and "Centered" in checked_button.text():
+                    scaling_mode = "centered"
+                # else default to "scaled"
+
+                self._set_wallpaper(image_path, scaling_mode)
+                parent_dialog.accept()
+
+    def _set_wallpaper(self, image_path, scaling_mode="scaled"):
+        """Set the wallpaper image as background."""
+        try:
+            from cable_core.config import ConfigManager
+            cable_core_config = ConfigManager()
+            cable_core_config.set_str_setting('_graph_wallpaper_path', image_path)
+            cable_core_config.set_str_setting('_graph_wallpaper_scaling', scaling_mode)
+            self._load_wallpaper()
+            print(f"Set wallpaper to: {image_path}, mode: {scaling_mode}")
+        except Exception as e:
+            print(f"Error setting wallpaper: {e}")
+
+    def _clear_wallpaper(self, parent_dialog=None):
+        """Clear the wallpaper (no background image)."""
+        try:
+            from cable_core.config import ConfigManager
+            cable_core_config = ConfigManager()
+            cable_core_config.set_str_setting('_graph_wallpaper_path', '')
+            cable_core_config.set_str_setting('_graph_wallpaper_scaling', 'scaled')
+            self._load_wallpaper()
+            print("Cleared wallpaper")
+            if parent_dialog:
+                parent_dialog.accept()
+        except Exception as e:
+            print(f"Error clearing wallpaper: {e}")
+
+    def _save_wallpaper_settings(self, parent_dialog, scaling_group):
+        """Save the wallpaper settings when dialog is accepted."""
+        try:
+            from cable_core.config import ConfigManager
+            cable_core_config = ConfigManager()
+            current_wallpaper = cable_core_config.get_str_setting('_graph_wallpaper_path', '')
+            current_scaling = cable_core_config.get_str_setting('_graph_wallpaper_scaling', 'scaled')
+
+            # Update scaling if changed
+            scaling_mode = "scaled"
+            checked_button = scaling_group.checkedButton()
+            if checked_button and "Centered" in checked_button.text():
+                scaling_mode = "centered"
+
+            if scaling_mode != current_scaling:
+                cable_core_config.set_str_setting('_graph_wallpaper_scaling', scaling_mode)
+                if current_wallpaper:
+                    self._load_wallpaper()  # Reload with new scaling
+
+            parent_dialog.accept()
+        except Exception as e:
+            print(f"Error saving wallpaper settings: {e}")
+
+    def _load_wallpaper(self):
+        """Load and set the wallpaper image as background."""
+        try:
+            # Always use cable_core ConfigManager for wallpaper settings
+            from cable_core.config import ConfigManager
+            cable_core_config = ConfigManager()
+
+            # Try to migrate old wallpaper setting if it exists but new ones don't
+            wallpaper_path = cable_core_config.get_str_setting('_graph_wallpaper_path', '')
+            if not wallpaper_path:
+                # Check for old wallpaper setting to migrate
+                old_wallpaper = cable_core_config.get_str_setting('graph_wallpaper', '')
+                if old_wallpaper and os.path.exists(old_wallpaper):
+                    wallpaper_path = old_wallpaper
+                    cable_core_config.set_str_setting('_graph_wallpaper_path', wallpaper_path)
+                    # Clean up old setting
+                    cable_core_config.set_str_setting('graph_wallpaper', '')
+                    print(f"Migrated old wallpaper setting: {wallpaper_path}")
+
+            scaling_mode = cable_core_config.get_str_setting('_graph_wallpaper_scaling', 'scaled')
+
+            if wallpaper_path and os.path.exists(wallpaper_path):
+                # Load the image
+                original_pixmap = QPixmap(wallpaper_path)
+                if not original_pixmap.isNull():
+                    pixmap = self._scale_pixmap_for_mode(original_pixmap, scaling_mode)
+                    # Set the pixmap as background brush for the scene
+                    brush = QBrush(pixmap)
+                    self.scene().setBackgroundBrush(brush)
+                    print(f"Loaded wallpaper: {wallpaper_path}, mode: {scaling_mode}")
+                else:
+                    print(f"Invalid image file: {wallpaper_path}")
+                    self.scene().setBackgroundBrush(QBrush())
+            else:
+                # Clear background
+                self.scene().setBackgroundBrush(QBrush())
+
+        except Exception as e:
+            print(f"Error loading wallpaper: {e}")
+            self.scene().setBackgroundBrush(QBrush())
+
+    def _reload_wallpaper_if_needed(self):
+        """Reload wallpaper when scene size changes significantly (throttled to prevent spam)."""
+        try:
+            scene_rect = self.scene().sceneRect()
+            current_size = (int(scene_rect.width()), int(scene_rect.height()))
+
+            # Only reload if scene size changed significantly and wallpaper wasn't recently loaded
+            if self._last_scene_size != current_size and current_size[0] > 100 and current_size[1] > 100:
+                from cable_core.config import ConfigManager
+                cable_core_config = ConfigManager()
+                wallpaper_path = cable_core_config.get_str_setting('_graph_wallpaper_path', '')
+
+                if wallpaper_path and os.path.exists(wallpaper_path) and not self._wallpaper_loaded:
+                    self._last_scene_size = current_size
+                    self._wallpaper_loaded = True
+                    self._load_wallpaper()
+
+        except Exception as e:
+            print(f"Error checking wallpaper reload: {e}")
+
+    def _scale_pixmap_for_mode(self, original_pixmap, scaling_mode):
+        """Scale the pixmap according to the selected scaling mode."""
+        # Get scene rect for scaling calculations
+        scene_rect = self.scene().sceneRect()
+
+        if scaling_mode == "centered":
+            # Return original pixmap, it will be centered automatically
+            return original_pixmap
+
+        else:  # "scaled" - default
+            # Scale to fill canvas, may distort
+            canvas_width = int(scene_rect.width())
+            canvas_height = int(scene_rect.height())
+
+            if canvas_width > 0 and canvas_height > 0:
+                return original_pixmap.scaled(canvas_width, canvas_height,
+                                             Qt.AspectRatioMode.IgnoreAspectRatio,
+                                             Qt.TransformationMode.SmoothTransformation)
+            else:
+                return original_pixmap
+
+    def _show_unload_all_sinks_confirmation_dialog(self):
+        """
+        Show a confirmation dialog for unloading all sinks with 'don't show again' checkbox.
+
+        Returns:
+            tuple: (confirmed, dont_show_again) where confirmed is True if user accepted,
+                   and dont_show_again is True if the checkbox was checked
+        """
+        # Create a custom dialog
+        dialog = QDialog(self.window())
+        dialog.setWindowTitle("Unload All Sinks")
+        dialog.setModal(True)
+
+        # Create layout
+        layout = QVBoxLayout(dialog)
+
+        # Add message
+        message = "This will unload ALL virtual sink modules from PulseAudio/PipeWire.\n\n"
+        message += "This action cannot be undone and may affect active audio connections.\n\n"
+        message += "Are you sure you want to continue?"
+        label = QLabel(message)
+        layout.addWidget(label)
+
+        # Add checkbox
+        checkbox = QCheckBox("Don't show this confirmation again")
+        layout.addWidget(checkbox)
+
+        # Add buttons
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Yes | QDialogButtonBox.StandardButton.No
+        )
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+
+        # Execute dialog
+        result = dialog.exec() == QDialog.DialogCode.Accepted
+
+        return result, checkbox.isChecked()
+
+    def _create_combined_sink_source(self, sink_name: str, channel_map: str):
+        """Execute the pactl command to create the combined virtual sink/source."""
+        import subprocess
+        import json
+
+        command = ["pactl", "load-module", "module-null-sink"]
+        channel_map_param = "stereo"
+
+        if channel_map == "Mono":
+            channel_map_param = "mono"
+            command.extend(["media.class=Audio/Sink", f"sink_name={sink_name}", f"channel_map={channel_map_param}"])
+        else:
+            if channel_map == "5.1":
+                channel_map_param = "surround-51"
+            elif channel_map == "7.1":
+                channel_map_param = "surround-71"
+
+            command.extend([f"sink_name={sink_name}", f"channel_map={channel_map_param}"])
+
+        try:
+            result = subprocess.run(command, check=True, capture_output=True, text=True)
+            module_id = result.stdout.strip()
+
+            # Save the module ID to config
+            self._save_module_id(sink_name, module_id)
+
+            print(f"Created combined virtual sink/source: {sink_name} with channel map {channel_map}")
+            print(f"Module ID: {module_id}")
+        except subprocess.CalledProcessError as e:
+            print(f"Error creating combined virtual sink/source: {e}")
+
+    def _save_module_id(self, sink_name: str, module_id: str):
+        """Save the module ID to config file for later unloading."""
+        try:
+            import json
+            from cable_core.config import ConfigManager
+            config_manager = ConfigManager()
+
+            # Get existing module IDs, or initialize empty dict
+            module_ids_json = config_manager.get_str_setting('virtual_sink_module_ids', '{}')
+            try:
+                module_ids = json.loads(module_ids_json) if module_ids_json else {}
+            except json.JSONDecodeError:
+                module_ids = {}
+
+            # Add/update the module ID
+            module_ids[sink_name] = module_id
+
+            # Save back to config
+            config_manager.set_str_setting('virtual_sink_module_ids', json.dumps(module_ids))
+
+        except Exception as e:
+            print(f"Error saving module ID for {sink_name}: {e}")
+
+    def _unload_all_sinks(self):
+        """Unload all virtual sinks in the system."""
+        import subprocess
+
+        try:
+            # Check if we should show the confirmation dialog
+            show_confirmation = True
+            try:
+                # Try to get config manager from the main window
+                config_manager = None
+                main_window = self.window()
+                if main_window and hasattr(main_window, 'config_manager'):
+                    config_manager = main_window.config_manager
+                else:
+                    # Fallback to creating one (but this might cause issues)
+                    try:
+                        from cables.config.config_manager import ConfigManager
+                        config_manager = ConfigManager()
+                    except ImportError:
+                        # Try cable_core as last resort
+                        try:
+                            from cable_core.config import ConfigManager as CoreConfigManager
+                            config_manager = CoreConfigManager()
+                            if hasattr(config_manager, 'set_bool_setting'):
+                                # This is the cable_core version, alias for compatibility
+                                config_manager.set_bool = config_manager.set_bool_setting
+                        except ImportError:
+                            print("Warning: Could not import ConfigManager")
+
+                show_confirmation = True
+                if config_manager:
+                    show_confirmation = config_manager.get_bool('show_unload_all_sinks_confirmation', default=True)
+            except Exception as e:
+                print(f"Warning: Could not read config for unload confirmation: {e}")
+
+            if show_confirmation:
+                confirmed, dont_show_again = self._show_unload_all_sinks_confirmation_dialog()
+                if not confirmed:
+                    return
+
+                # Save the "don't show again" preference if checked
+                if dont_show_again and config_manager:
+                    try:
+                        if hasattr(config_manager, 'set_bool'):
+                            config_manager.set_bool('show_unload_all_sinks_confirmation', False)
+                        else:
+                            print("Warning: ConfigManager does not have set_bool method")
+                    except Exception as e:
+                        print(f"Warning: Could not save config: {e}")
+
+            # Get all modules to find null-sink modules
+            list_command = ["pactl", "list", "modules"]
+            list_result = subprocess.run(list_command, check=True, capture_output=True, text=True)
+            output_lines = list_result.stdout.split('\n')
+
+            # Parse the output to find null-sink modules
+            # Output format is: Module #<id>\n\tName: <name>\n\t...\n\n
+            null_sink_modules = []
+            current_module_id = None
+            for line in output_lines:
+                line = line.strip()
+                if line.startswith('Module #'):
+                    current_module_id = line.split('#')[1].strip()
+                elif line.startswith('Name: ') and 'module-null-sink' in line:
+                    null_sink_modules.append(current_module_id)
+                    current_module_id = None
+
+            if not null_sink_modules:
+                print("No virtual sinks to unload")
+                return
+
+            # Unload each null-sink module
+            unloaded_count = 0
+            for module_id in null_sink_modules:
+                try:
+                    command = ["pactl", "unload-module", str(module_id)]
+                    subprocess.run(command, check=True, capture_output=True, text=True)
+                    print(f"Unloaded virtual sink module {module_id}")
+                    unloaded_count += 1
+                except subprocess.CalledProcessError as e:
+                    print(f"Error unloading module {module_id}: {e}")
+
+            # Clear the module IDs from config if any were unloaded (preserves backward compatibility)
+            if unloaded_count > 0:
+                try:
+                    from cable_core.config import ConfigManager
+                    config_manager = ConfigManager()
+                    config_manager.set_str_setting('virtual_sink_module_ids', '{}')
+                except Exception as e:
+                    print(f"Warning: Could not clear config: {e}")
+
+                print(f"Successfully unloaded {unloaded_count} virtual sink(s)")
+
+        except Exception as e:
+            print(f"Error unloading virtual sinks: {e}")
+
     def _request_save_layout(self):
         """Signal to the main window to save the current layout."""
         # We'll emit a signal that can be connected to a method in MainWindow

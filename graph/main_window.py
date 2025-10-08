@@ -110,9 +110,13 @@ class MainWindow(QMainWindow):
         self.untangle_button = create_action_button(
             self,
             self.untangle_action,
-            tooltip=f"Reorganize graph (next: {next_value})",
+            tooltip=f"Reorganize graph (next: {next_value}) <span style='color:grey'>Alt+U</span>",
             min_width=100
         )
+
+
+
+
 
         self.zoom_in_action = action_manager.zoom_in_action # Assuming generic zoom actions
         self.zoom_in_button = create_action_button(
@@ -268,7 +272,7 @@ class MainWindow(QMainWindow):
                 "original layout (saved)" if self.current_untangle_setting == ORIGINAL_LAYOUT
                 else f"{self.current_untangle_setting} nodes per row"
             )
-            self.untangle_button.setToolTip(f"Reorganize graph ({current_display}, next: {next_value})")
+            self.untangle_button.setToolTip(f"Reorganize graph ({current_display}, next: {next_value}) <span style='color:grey'>Alt+U</span>")
 
     def _get_next_untangle_value(self):
         """Get the next untangle value in the cycle."""

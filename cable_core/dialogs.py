@@ -1,8 +1,10 @@
 import os
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QScrollArea, QWidget,
                               QCheckBox, QDialogButtonBox, QLineEdit, QLabel,
-                              QPushButton, QFileDialog, QHBoxLayout)
+                              QPushButton, QFileDialog, QHBoxLayout, QRadioButton,
+                              QButtonGroup)
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QShowEvent
 
 # --- New Dialog for Value Selection ---
 class ValueSelectorDialog(QDialog):
@@ -112,4 +114,85 @@ class AppImagePathDialog(QDialog):
     def get_appimage_path(self):
         """Returns the entered AppImage path."""
         return self.path_input.text().strip()
+# ------------------------------------
+
+# --- Combined Virtual Sink/Source Dialog ---
+class CombinedSinkSourceDialog(QDialog):
+    """Dialog to configure and create a combined virtual sink/source."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Create Combined Virtual Sink/Source")
+        self.setMinimumWidth(400)
+
+        layout = QVBoxLayout(self)
+
+        # Sink name label and input
+        name_layout = QVBoxLayout()
+        name_label = QLabel("Name:")
+        self.name_input = QLineEdit()
+        self.name_input.setText("my-combined-sink")
+        name_layout.addWidget(name_label)
+        name_layout.addWidget(self.name_input)
+        layout.addLayout(name_layout)
+
+        # Channel map label and radio buttons
+        channel_label = QLabel("Channel Map:")
+        layout.addWidget(channel_label)
+
+        # Create radio button group for exclusive selection
+        self.channel_group = QButtonGroup(self)
+        self.channel_group.setExclusive(True)
+
+        # Mono radio button (top option, default)
+        self.mono_radio = QRadioButton("Mono")
+        self.mono_radio.setChecked(True)
+        self.channel_group.addButton(self.mono_radio, 0)
+        layout.addWidget(self.mono_radio)
+
+        # Stereo radio button
+        self.stereo_radio = QRadioButton("Stereo")
+        self.channel_group.addButton(self.stereo_radio, 1)
+        layout.addWidget(self.stereo_radio)
+
+        # 5.1 radio button
+        self.surround51_radio = QRadioButton("5.1")
+        self.channel_group.addButton(self.surround51_radio, 2)
+        layout.addWidget(self.surround51_radio)
+
+        # 7.1 radio button
+        self.surround71_radio = QRadioButton("7.1")
+        self.channel_group.addButton(self.surround71_radio, 3)
+        layout.addWidget(self.surround71_radio)
+
+        # Spacer
+        layout.addStretch()
+
+        # Create and Cancel buttons
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+        self.setLayout(layout)
+
+    def get_values(self):
+        """Returns the entered sink name and selected channel map."""
+        sink_name = self.name_input.text().strip()
+
+        channel_map = "Mono"
+        if self.stereo_radio.isChecked():
+            channel_map = "Stereo"
+        elif self.surround51_radio.isChecked():
+            channel_map = "5.1"
+        elif self.surround71_radio.isChecked():
+            channel_map = "7.1"
+
+        return sink_name, channel_map
+
+    def showEvent(self, event: QShowEvent):
+        """Override show event to select the default sink name text."""
+        super().showEvent(event)
+        self.name_input.selectAll()
 # ------------------------------------

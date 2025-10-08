@@ -1,58 +1,144 @@
 import os
 import configparser
+import json
+from pathlib import Path
+from typing import Optional, Dict, Any
 from PyQt6.QtCore import Qt
 
-# Import the constant from the main module using relative import
-# Assuming Cable.py is in the parent directory relative to config.py
-try:
-    from ..Cable import EDIT_LIST_TEXT
-except ImportError:
-    # Fallback if relative import fails (e.g., running config.py directly)
-    EDIT_LIST_TEXT = "Edit List..."
-
 class ConfigManager:
-    def __init__(self, app=None): # Make app optional for standalone use in dialog
-        self.app = app
-        self.config_path = os.path.expanduser("~/.config/cable/config.ini")
+    def __init__(self, parent=None):
+        self.parent = parent
+        self.config_file = os.path.expanduser("~/.config/cable/config.ini")
+        self.ensure_config_exists()
+        # For backward compatibility - some code expects Cable.py as app
+        self.app = parent
 
-    def _get_config_parser(self):
-        """Helper to get a ConfigParser instance, loading existing config."""
+    def ensure_config_exists(self):
+        """Ensure the config file exists with default values."""
+        config_dir = os.path.expanduser("~/.config/cable")
+        os.makedirs(config_dir, exist_ok=True)
+
+        config = configparser.ConfigParser(allow_no_value=True)
+        config.read(self.config_file, encoding='utf-8')
+
+        # Set default values - DEFAULT section is automatically created
+        default_values = {
+            'quantum_values': '16,32,48,64,96,128,144,192,240,256,512,1024,2048,4096,8192',
+            'sample_rate_values': '44100,48000,88200,96000,176400,192000',
+            'quantum': '1024',
+            'sample_rate': '48000',
+            'virtual_sink_module_ids': '{}'
+        }
+
+        # Ensure default values exist
+        for key, value in default_values.items():
+            if not config.has_option('DEFAULT', key):
+                config.set('DEFAULT', key, value)
+
+        self.write_config(config)
+
+    def write_config(self, config):
+        """Write configuration to file."""
+        with open(self.config_file, 'w', encoding='utf-8') as configfile:
+            config.write(configfile)
+
+    def get_list_from_config(self, key, default_list):
+        """Get a list of active values from config (excluding commented out values), with fallback to default."""
         config = configparser.ConfigParser()
-        if os.path.exists(self.config_path):
-            try:
-                config.read(self.config_path)
-            except configparser.ParsingError as e:
-                print(f"Warning: Could not parse existing config file {self.config_path}. Error: {e}")
-        return config
+        config.read(self.config_file, encoding='utf-8')
 
-    def _write_config(self, config):
-        """Helper method to write config."""
+        if config.has_option('DEFAULT', key):
+            value = config.get('DEFAULT', key)
+            if value:
+                parts = [item.strip() for item in value.split(',') if item.strip()]
+                vals = []
+                for p in parts:
+                    if p and not p.startswith('#'): # Ignore commented out values
+                        try:
+                            vals.append(int(p))
+                        except ValueError:
+                            continue
+                if vals:
+                    return vals
+        return default_list
+
+    def get_all_values_from_config(self, key, default_list):
+        """Get all values from config including commented out ones, with fallback to default list."""
+        config = configparser.ConfigParser()
+        config.read(self.config_file, encoding='utf-8')
+
+        if config.has_option('DEFAULT', key):
+            value = config.get('DEFAULT', key)
+            if value:
+                parts = [item.strip() for item in value.split(',') if item.strip()]
+                vals = []
+                for p in parts:
+                    clean_val = p.lstrip('#')  # Remove leading # if present
+                    try:
+                        vals.append(int(clean_val))
+                    except ValueError:
+                        continue
+                if vals:
+                    return vals
+        return default_list
+
+    def get_int_setting(self, key: str, default: int = 0) -> int:
+        """Get integer setting from config."""
         try:
-            os.makedirs(os.path.dirname(self.config_path), exist_ok=True)
-            with open(self.config_path, 'w') as configfile:
-                config.write(configfile)
-        except Exception as e:
-            print(f"Error writing config file {self.config_path}: {e}")
+            config = configparser.ConfigParser()
+            config.read(self.config_file, encoding='utf-8')
+            if config.has_option('DEFAULT', key):
+                return config.getint('DEFAULT', key)
+        except (configparser.Error, ValueError):
+            pass
+        return default
 
-    def get_int_setting(self, key, default_value):
-        """Gets an integer setting from the config file."""
-        config = self._get_config_parser()
+    def get_str_setting(self, key: str, default: str = "") -> str:
+        """Get string setting from config."""
+        config = configparser.ConfigParser()
+        config.read(self.config_file, encoding='utf-8')
+        if config.has_option('DEFAULT', key):
+            return config.get('DEFAULT', key)
+        return default
+
+    def get_bool_setting(self, key: str, default: bool = False) -> bool:
+        """Get boolean setting from config."""
         try:
-            return config.getint('DEFAULT', key, fallback=default_value)
-        except ValueError:
-            print(f"Warning: Invalid integer value for '{key}' in config. Using default: {default_value}")
-            return default_value
-        except Exception as e:
-            print(f"Error reading int setting '{key}' from config: {e}. Using default: {default_value}")
-            return default_value
+            config = configparser.ConfigParser()
+            config.read(self.config_file, encoding='utf-8')
+            if config.has_option('DEFAULT', key):
+                return config.getboolean('DEFAULT', key)
+        except (configparser.Error, ValueError):
+            pass
+        return default
 
-    def set_int_setting(self, key, value):
-        """Sets an integer setting in the config file."""
-        config = self._get_config_parser()
-        if 'DEFAULT' not in config:
-            config['DEFAULT'] = {}
+    def set_int_setting(self, key: str, value: int):
+        """Set integer setting in config."""
+        config = configparser.ConfigParser()
+        config.read(self.config_file, encoding='utf-8')
+
         config['DEFAULT'][key] = str(value)
-        self._write_config(config)
+        self.write_config(config)
+
+    def set_str_setting(self, key: str, value: str):
+        """Set string setting in config."""
+        config = configparser.ConfigParser()
+        config.read(self.config_file, encoding='utf-8')
+
+        # DEFAULT section should already exist, don't try to add it
+        config['DEFAULT'][key] = value
+        self.write_config(config)
+
+    def set_bool_setting(self, key: str, value: bool):
+        """Set boolean setting in config."""
+        config = configparser.ConfigParser()
+        config.read(self.config_file, encoding='utf-8')
+
+        if not config.has_section('DEFAULT'):
+            config.add_section('DEFAULT')
+
+        config['DEFAULT'][key] = '1' if value else '0'
+        self.write_config(config)
 
     def clear_settings(self, keys_to_clear):
         """Removes specific keys from the config file."""
@@ -62,12 +148,40 @@ class ConfigManager:
                 if key in config['DEFAULT']:
                     del config['DEFAULT'][key]
                     print(f"Cleared setting: {key}")
-            self._write_config(config)
+        self._write_config(config)
+
+    # Backward compatibility methods for old code
+
+    # Aliases for backward compatibility
+    get_bool = get_bool_setting
+    set_bool = set_bool_setting
+
+    # Additional backward compatible methods that old code might expect
+    def _get_config_parser(self):
+        """Helper to get a ConfigParser instance, loading existing config."""
+        config = configparser.ConfigParser()
+        if os.path.exists(self.config_file):
+            try:
+                config.read(self.config_file)
+            except configparser.ParsingError as e:
+                print(f"Warning: Could not parse existing config file {self.config_file}. Error: {e}")
+        return config
+
+    def _write_config(self, config):
+        """Helper method to write config."""
+        try:
+            os.makedirs(os.path.dirname(self.config_file), exist_ok=True)
+            with open(self.config_file, 'w') as configfile:
+                config.write(configfile)
+        except Exception as e:
+            print(f"Error writing config file {self.config_file}: {e}")
+
+    # Add DEFAULT_QUANTUM/SAMPLE_RATE_VALUES for compatibility
+    DEFAULT_QUANTUM_VALUES = [16, 32, 48, 64, 96, 128, 144, 192, 240, 256, 512, 1024, 2048, 4096, 8192]
+    DEFAULT_SAMPLE_RATE_VALUES = [44100, 48000, 88200, 96000, 176400, 192000]
 
     def load_settings(self):
         """Load saved settings from config file"""
-        config = self._get_config_parser() # Use the new helper method
-
         # Default settings
         tray_enabled = False
         tray_click_opens_cables = True
@@ -79,9 +193,10 @@ class ConfigManager:
         self.app.restore_only_minimized = False # Default value for the new setting
         self.app.appimage_path = None # Default value for AppImage path
 
-        if os.path.exists(self.config_path):
+        if os.path.exists(self.config_file):
             try:
-                config.read(self.config_path)
+                config = configparser.ConfigParser()
+                config.read(self.config_file, encoding='utf-8')
                 # Load tray enabled state
                 tray_enabled = config.getboolean('DEFAULT', 'tray_enabled', fallback=False)
                 # Load default app setting
@@ -185,8 +300,10 @@ class ConfigManager:
                             self.app.last_valid_quantum_index = edit_item_index
                             print(f"Inserted saved quantum '{quantum_str}' into dropdown.")
                         else:
-                             print(f"Warning: Could not find '{EDIT_LIST_TEXT}' to insert saved quantum '{quantum_str}' before.")
-                    self.app.pipewire_manager.apply_quantum_settings(skip_save=True) # Use pipewire_manager
+                             print(f"Warning: Could not find 'Edit List...' to insert saved quantum '{quantum_str}' before.")
+                    # Skip saving since we're loading
+                    if hasattr(self.app, 'pipewire_manager'):
+                        self.app.pipewire_manager.apply_quantum_settings(skip_save=True)
 
                 if self.app.saved_sample_rate > 0:
                     sample_rate_str = str(self.app.saved_sample_rate)
@@ -203,13 +320,15 @@ class ConfigManager:
                             self.app.last_valid_sample_rate_index = edit_item_index
                             print(f"Inserted saved sample rate '{sample_rate_str}' into dropdown.")
                         else:
-                             print(f"Warning: Could not find '{EDIT_LIST_TEXT}' to insert saved sample rate '{sample_rate_str}' before.")
-                    self.app.pipewire_manager.apply_sample_rate_settings(skip_save=True) # Use pipewire_manager
+                             print(f"Warning: Could not find 'Edit List...' to insert saved sample rate '{sample_rate_str}' before.")
+                    # Skip saving since we're loading
+                    if hasattr(self.app, 'pipewire_manager'):
+                        self.app.pipewire_manager.apply_sample_rate_settings(skip_save=True)
             except Exception as e:
                 print(f"Error applying saved audio settings: {e}")
         else:
              current_quantum_index = self.app.quantum_combo.currentIndex()
-             if current_quantum_index >= 0 and self.app.quantum_combo.itemText(current_quantum_index) != EDIT_LIST_TEXT:
+             if current_quantum_index >= 0 and self.app.quantum_combo.itemText(current_quantum_index) != "Edit List...":
                  self.app.last_valid_quantum_index = current_quantum_index
              elif self.app.quantum_combo.count() > 1:
                  self.app.last_valid_quantum_index = 0
@@ -218,7 +337,7 @@ class ConfigManager:
                  self.app.last_valid_quantum_index = -1
 
              current_sample_rate_index = self.app.sample_rate_combo.currentIndex()
-             if current_sample_rate_index >= 0 and self.app.sample_rate_combo.itemText(current_sample_rate_index) != EDIT_LIST_TEXT: # Use imported constant
+             if current_sample_rate_index >= 0 and self.app.sample_rate_combo.itemText(current_sample_rate_index) != "Edit List...":
                  self.app.last_valid_sample_rate_index = current_sample_rate_index
              elif self.app.sample_rate_combo.count() > 1:
                  self.app.last_valid_sample_rate_index = 0
@@ -233,14 +352,11 @@ class ConfigManager:
         # Manually call update_latency_display after potentially changing indices without signals
         self.app.update_latency_display() # Call app's method
 
-
     def save_settings(self):
         """Save UI settings to config file (does not save audio settings)"""
-        config = self._get_config_parser() # Use the new helper method
-
-        # Load existing config if it exists
-        if os.path.exists(self.config_path):
-            config.read(self.config_path)
+        config = configparser.ConfigParser()
+        if os.path.exists(self.config_file):
+            config.read(self.config_file, encoding='utf-8')
 
         if 'DEFAULT' not in config:
             config['DEFAULT'] = {}
@@ -256,8 +372,7 @@ class ConfigManager:
             'appimage_path': str(self.app.appimage_path) if self.app.appimage_path else '' # Save AppImage path
         })
 
-        # Use the helper method to write the config
-        self._write_config(config) # Internal call uses self
+        self.write_config(config)
 
     def toggle_remember_settings(self, state):
         """Handle remember settings checkbox state changes"""
@@ -268,10 +383,9 @@ class ConfigManager:
         self.app.restore_only_minimized_checkbox.setEnabled(remember)
 
         # Update config
-        config = self._get_config_parser() # Use the new helper method
-
-        if os.path.exists(self.config_path):
-            config.read(self.config_path)
+        config = configparser.ConfigParser()
+        if os.path.exists(self.config_file):
+            config.read(self.config_file, encoding='utf-8')
 
         if 'DEFAULT' not in config:
             config['DEFAULT'] = {}
@@ -312,27 +426,25 @@ class ConfigManager:
         if 'tray_click_opens_cables' in config['DEFAULT']:
             config['DEFAULT']['tray_click_opens_cables'] = str(self.app.tray_click_opens_cables)
 
-        # Use the helper method to write the config
-        self._write_config(config) # Internal call uses self
+        self.write_config(config)
 
     def toggle_restore_only_minimized(self, state):
         """Handle restore only when auto-started checkbox state changes"""
         self.app.restore_only_minimized = bool(state)
         print(f"Set restore_only_minimized to: {self.app.restore_only_minimized}")
-        self.save_settings() # Call ConfigManager's save_settings
+        self.save_settings()
 
     def ensure_config_lists(self):
         """Ensure config.ini contains quantum_values and sample_rate_values keys."""
-        config = self._get_config_parser() # Use the new helper method
-
-        if os.path.exists(self.config_path):
+        config = configparser.ConfigParser(allow_no_value=True)
+        if os.path.exists(self.config_file):
             try:
-                config.read(self.config_path)
+                config.read(self.config_file, encoding='utf-8')
             except configparser.ParsingError as e:
-                print(f"Warning: Could not parse existing config file {self.config_path}. It might be overwritten. Error: {e}")
+                print(f"Warning: Could not parse existing config file {self.config_file}. It might be overwritten. Error: {e}")
                 config = configparser.ConfigParser(allow_no_value=True)
         else:
-            os.makedirs(os.path.dirname(self.config_path), exist_ok=True)
+            os.makedirs(os.path.dirname(self.config_file), exist_ok=True)
 
         if 'DEFAULT' not in config:
             config['DEFAULT'] = {}
@@ -350,95 +462,66 @@ class ConfigManager:
             config_updated = True
 
         if config_updated:
-            self._write_config(config) # Internal call uses self
+            self.write_config(config)
             print("Added missing default list(s) to config.ini")
-
-    def get_list_from_config(self, key, default_values):
-        """Gets a list of integers from a comma-separated config value, ignoring comments."""
-        config = self._get_config_parser() # Use the new helper method
-        try:
-            if os.path.exists(self.config_path):
-                config.read(self.config_path)
-                raw = config['DEFAULT'].get(key, None)
-                if raw is not None:
-                    parts = [x.strip() for x in raw.split(',')]
-                    vals = []
-                    for p in parts:
-                        if p and not p.startswith('#'): # Ignore empty strings and commented out values
-                            try:
-                                vals.append(int(p))
-                            except ValueError:
-                                print(f"Invalid integer '{p}' in config key '{key}'")
-                    if vals:
-                        return vals
-        except Exception as e:
-            print(f"Error reading '{key}' from config: {e}")
-
-        return default_values # Return the passed default_values
-
-    def _save_audio_setting(self, setting_name, config_key, combo_box, was_reset_attr):
-        """Helper method to save quantum or sample rate setting to config file."""
-        was_reset = getattr(self.app, was_reset_attr) # Get attribute from app
-        # Don't save if we've explicitly reset the value and haven't changed it
-        if was_reset:
-            print(f"Skipping save of {setting_name} setting after reset")
-            return
-
-        config = self._get_config_parser() # Use the new helper method
-
-        # Load existing config if it exists
-        if os.path.exists(self.config_path):
-            try:
-                config.read(self.config_path)
-            except configparser.ParsingError as e:
-                 print(f"Warning: Could not parse config file {self.config_path} during save. Error: {e}")
-
-        if 'DEFAULT' not in config:
-            config['DEFAULT'] = {}
-
-        # Save the specific setting
-        current_value = combo_box.currentText() # Use passed combo_box (from app)
-        # Ensure we don't save empty strings or the edit text
-        if current_value and current_value != EDIT_LIST_TEXT: # Use imported constant
-            config['DEFAULT'][config_key] = current_value
-            print(f"Saved {setting_name} setting: {current_value}")
-        elif config_key in config['DEFAULT']:
-            # If the current value is invalid/empty/edit text, remove the key if it exists
-            del config['DEFAULT'][config_key]
-            print(f"Removed invalid/empty {setting_name} setting ({config_key}) from config")
-
-        # Use the helper method to write the config
-        self._write_config(config) # Internal call uses self
-
-    def save_quantum_setting(self):
-        """Save only the quantum setting to config file"""
-        self._save_audio_setting( # Internal call uses self
-            setting_name="quantum",
-            config_key='saved_quantum',
-            combo_box=self.app.quantum_combo, # Pass app's combo box
-            was_reset_attr='quantum_was_reset' # Attribute name on app
-        )
-
-    def save_sample_rate_setting(self):
-        """Save only the sample rate setting to config file"""
-        self._save_audio_setting( # Internal call uses self
-            setting_name="sample rate",
-            config_key='saved_sample_rate',
-            combo_box=self.app.sample_rate_combo, # Pass app's combo box
-            was_reset_attr='sample_rate_was_reset' # Attribute name on app
-        )
 
     def toggle_startup_check(self, checked):
         """Updates the startup check setting and saves it."""
         self.app.check_updates_at_start = checked
         print(f"Set check_updates_at_start to: {self.app.check_updates_at_start}")
-        self.save_settings() # Call ConfigManager's save_settings
+        self.save_settings()
 
     def save_appimage_path(self, appimage_path):
         """Save the AppImage path to config and update autostart manager."""
         self.app.appimage_path = appimage_path
         if appimage_path:
             # Update autostart manager with new AppImage path
-            self.app.autostart_manager = AutostartManager(self.app.flatpak_env, appimage_path)
+            self.app.autostart_manager = self.app.autostart_manager.__class__(self.app.flatpak_env, appimage_path)
         self.save_settings()
         print(f"Saved AppImage path: {appimage_path}")
+
+    def _save_audio_setting(self, setting_name, config_key, combo_box, was_reset_attr):
+        """Helper method to save quantum or sample rate setting to config file."""
+        try:
+            was_reset = getattr(self.app, was_reset_attr)
+            if was_reset:
+                print(f"Skipping save of {setting_name} setting after reset")
+                return
+
+            config = configparser.ConfigParser()
+            config.read(self.config_file, encoding='utf-8')
+
+            if 'DEFAULT' not in config:
+                config['DEFAULT'] = {}
+
+            current_value = combo_box.currentText()
+            if current_value and current_value != "Edit List...":
+                config['DEFAULT'][config_key] = current_value
+                print(f"Saved {setting_name} setting: {current_value}")
+            elif config_key in config['DEFAULT']:
+                del config['DEFAULT'][config_key]
+                print(f"Removed invalid/empty {setting_name} setting ({config_key}) from config")
+
+            self.write_config(config)
+        except Exception as e:
+            print(f"Error saving {setting_name} setting: {e}")
+
+    def save_quantum_setting(self):
+        """Save only the quantum setting to config file"""
+        if hasattr(self.app, 'quantum_combo') and hasattr(self.app, 'quantum_was_reset'):
+            self._save_audio_setting(
+                setting_name="quantum",
+                config_key='saved_quantum',
+                combo_box=self.app.quantum_combo,
+                was_reset_attr='quantum_was_reset'
+            )
+
+    def save_sample_rate_setting(self):
+        """Save only the sample rate setting to config file"""
+        if hasattr(self.app, 'sample_rate_combo') and hasattr(self.app, 'sample_rate_was_reset'):
+            self._save_audio_setting(
+                setting_name="sample rate",
+                config_key='saved_sample_rate',
+                combo_box=self.app.sample_rate_combo,
+                was_reset_attr='sample_rate_was_reset'
+            )

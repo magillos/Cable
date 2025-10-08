@@ -28,6 +28,7 @@ class BulkAreaItem(QGraphicsItem):
         self._bounding_rect = QRectF(0, 0, constants.PORT_WIDTH_MIN - (2 * constants.NODE_BULK_AREA_HPADDING), constants.NODE_BULK_AREA_HEIGHT)
         self._is_hovered = False
         self._is_drag_highlighted = False # For drag hover
+        self._connection_highlighted = False # Flag for connection highlighting
         self._mouse_press_pos = None # Store initial press position for drag threshold
         self._is_handling_selection_change = False # Flag to prevent re-entry during selection cascade
 
@@ -46,7 +47,7 @@ class BulkAreaItem(QGraphicsItem):
 
         # Determine background color
         bg_color = constants.NODE_BULK_AREA_COLOR
-        if is_selected or self._is_hovered or self._is_drag_highlighted:
+        if is_selected or self._is_hovered or self._is_drag_highlighted or self._connection_highlighted:
              bg_color = constants.HOVER_HIGHLIGHT_COLOR # Use hover color for consistency
 
         painter.setBrush(bg_color)
@@ -82,10 +83,33 @@ class BulkAreaItem(QGraphicsItem):
         # Store press position if it's a left click for potential drag start by scene
         if event.button() == Qt.MouseButton.LeftButton:
             self._mouse_press_pos = event.pos()
-            print(f"BulkAreaItem mousePress: Stored press pos {self._mouse_press_pos} for scene. Event accepted by super: {event.isAccepted()}")
         else:
             self._mouse_press_pos = None
         # Do not accept the event here, let it propagate fully
+
+    def mouseDoubleClickEvent(self, event):
+        """Handle double-click to select the bulk area and all ports connected to any port in it."""
+        if event.button() == Qt.MouseButton.LeftButton:
+            items_to_select = [self]  # Include the bulk area itself
+            ports_in_area = self.parent_node.input_ports if self.is_input else self.parent_node.output_ports
+
+            for port in ports_in_area.values():
+                for conn in port.connections:
+                    other_port = conn.source_port if conn.dest_port == port else conn.dest_port
+                    if other_port not in items_to_select:  # Avoid duplicates
+                        items_to_select.append(other_port)
+
+            if self.scene() and hasattr(self.scene(), 'interaction_handler'):
+                self.scene().clearSelection()
+                self.scene().interaction_handler._select_items(items_to_select)
+                self.scene().interaction_handler._is_double_click = True
+
+                # Manually trigger highlighting of connected bulk areas
+                self._highlight_connected_bulk_areas()
+
+            event.accept()
+        else:
+            super().mouseDoubleClickEvent(event)
 
     # Remove mouseMoveEvent and mouseReleaseEvent overrides - scene handles drag initiation
     # def mouseMoveEvent(self, event): ...
@@ -228,13 +252,13 @@ class BulkAreaItem(QGraphicsItem):
                                 for item_in_scene_check in all_items_in_scene:
                                     if not isinstance(item_in_scene_check, typing.cast(type, NodeItem)) or item_in_scene_check == self.parent_node:
                                         continue
-                                    
+
                                     other_node = item_in_scene_check
                                     target_bulk_on_other_node = other_node.input_area_item if not self.is_input else other_node.output_area_item
 
                                     if target_bulk_on_other_node and not target_bulk_on_other_node.isSelected():
                                         if self._is_connected_to_other_bulk(target_bulk_on_other_node):
-                                            target_bulk_on_other_node.setSelected(True) # Triggers itemChange on other bulk
+                                            target_bulk_on_other_node.set_connection_highlighted(True) # Set connection highlighting instead of selecting
                             else: # Current bulk area (self) is being DESELECTED
                                 for item_in_scene_check in all_items_in_scene:
                                     if not isinstance(item_in_scene_check, typing.cast(type, NodeItem)) or item_in_scene_check == self.parent_node:
@@ -242,30 +266,11 @@ class BulkAreaItem(QGraphicsItem):
 
                                     other_node_to_check = item_in_scene_check
                                     bulk_on_other_to_check = other_node_to_check.input_area_item if not self.is_input else other_node_to_check.output_area_item
-                                    
-                                    if bulk_on_other_to_check and bulk_on_other_to_check.isSelected():
-                                        # Check if bulk_on_other_to_check was connected to 'self' (which is now being deselected)
+
+                                    if bulk_on_other_to_check:
+                                        # Clear connection highlighting from connected bulks instead of deselecting them
                                         if self._is_connected_to_other_bulk(bulk_on_other_to_check):
-                                            # It was connected to self. Now check if it has other reasons to stay selected.
-                                            should_other_remain_selected = False
-                                            for third_item_check_loop in all_items_in_scene:
-                                                if not isinstance(third_item_check_loop, typing.cast(type, NodeItem)) or \
-                                                   third_item_check_loop == bulk_on_other_to_check.parent_node or \
-                                                   third_item_check_loop == self.parent_node: # Exclude self, and the node of the item being checked
-                                                    continue
-                                                
-                                                third_node_as_peer_source = third_item_check_loop
-                                                # Peer bulk area on third_node that could connect to bulk_on_other_to_check
-                                                peer_bulk_on_third_node = third_node_as_peer_source.input_area_item if not bulk_on_other_to_check.is_input else third_node_as_peer_source.output_area_item
-                                                
-                                                if peer_bulk_on_third_node and peer_bulk_on_third_node.isSelected():
-                                                    # Check connection from bulk_on_other_to_check to this *selected* peer
-                                                    if bulk_on_other_to_check._is_connected_to_other_bulk(peer_bulk_on_third_node):
-                                                        should_other_remain_selected = True
-                                                        break
-                                            
-                                            if not should_other_remain_selected:
-                                                bulk_on_other_to_check.setSelected(False) # Triggers itemChange on other bulk
+                                            bulk_on_other_to_check.set_connection_highlighted(False)
                         # If not can_propagate_bulk_to_bulk, the above block is skipped.
                     finally:
                         if can_propagate_bulk_to_bulk:
@@ -278,4 +283,29 @@ class BulkAreaItem(QGraphicsItem):
         """Externally set the highlight state for drag hover."""
         if self._is_drag_highlighted != highlighted:
             self._is_drag_highlighted = highlighted
+            self.update()
+
+    def _highlight_connected_bulk_areas(self):
+        """Highlight bulk areas connected to this one via the home bulk area's ports."""
+        from .node_item import NodeItem  # Local import for isinstance
+
+        if not self.scene():
+            return
+
+        all_items_in_scene = list(self.scene().items())
+        for item_in_scene in all_items_in_scene:
+            if not isinstance(item_in_scene, typing.cast(type, NodeItem)) or item_in_scene == self.parent_node:
+                continue
+
+            other_node = item_in_scene
+            target_bulk_on_other_node = other_node.input_area_item if not self.is_input else other_node.output_area_item
+
+            if target_bulk_on_other_node and not target_bulk_on_other_node.isSelected():
+                if self._is_connected_to_other_bulk(target_bulk_on_other_node):
+                    target_bulk_on_other_node.set_connection_highlighted(True)
+
+    def set_connection_highlighted(self, highlighted: bool):
+        """Set the connection highlighting state."""
+        if self._connection_highlighted != highlighted:
+            self._connection_highlighted = highlighted
             self.update()

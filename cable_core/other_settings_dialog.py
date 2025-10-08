@@ -172,20 +172,28 @@ class OtherSettingsDialog(QDialog):
             self.config_manager.set_int_setting(key, self.sliders[key].value())
         
         # Save untangle values
-        config = self.config_manager._get_config_parser()
-        if 'DEFAULT' not in config:
-            config['DEFAULT'] = {}
-        
         untangle_values_str = self.text_fields["GRAPH_UNTANGLE_VALUES"].text().strip()
-        config['DEFAULT']['GRAPH_UNTANGLE_VALUES'] = untangle_values_str
-        
-        self.config_manager._write_config(config)
+        self.config_manager.set_str_setting("GRAPH_UNTANGLE_VALUES", untangle_values_str)
         # The warning is now shown by _handle_button_click for Apply/Default
 
     def _reset_to_defaults(self):
         keys_to_clear = list(self.settings_map.keys())
         keys_to_clear.append("GRAPH_UNTANGLE_VALUES")  # Add the untangle values key
         self.config_manager.clear_settings(keys_to_clear)
+
+        # Also reset "don't show again" confirmation dialog settings to show dialogs by default
+        # These settings are stored in the cables config, not cable_core config
+        try:
+            from cables.config.config_manager import ConfigManager as CablesConfigManager
+            cables_config = CablesConfigManager()
+            # Reset to show dialogs by default (True for show_hide and show_unload, False for preset_skip)
+            cables_config.set_bool('show_hide_node_confirmation', True)  # True = show confirmation
+            cables_config.set_bool('show_unload_all_sinks_confirmation', True)  # True = show confirmation
+            cables_config.set_bool('default_preset_skip_confirmation', False)  # False = show confirmation
+            print("Reset confirmation dialog preferences to show dialogs by default")
+        except Exception as e:
+            print(f"Warning: Could not reset confirmation dialog preferences: {e}")
+
         self._load_settings_from_config() # Reload from app_config defaults
 
     def _handle_button_click(self, button):

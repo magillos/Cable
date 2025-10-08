@@ -198,7 +198,7 @@ class ActionManager:
         
         # Ensure state_manager is available before connecting signals that use it
         if self.state_manager:
-            self.untangle_shortcut_action.triggered.connect(self.state_manager._handle_untangle_shortcut)
+            self.untangle_shortcut_action.triggered.connect(self._handle_global_untangle_shortcut)
         else:
             print("ActionManager: state_manager not available for untangle_shortcut_action connection.")
 
@@ -611,3 +611,19 @@ class ActionManager:
         graph_mw = self.ui.get('graph_main_window')
         if graph_mw and hasattr(graph_mw, '_handle_graph_redo'):
             graph_mw._handle_graph_redo()
+
+    def _handle_global_untangle_shortcut(self):
+        """Handles the global 'Alt+U' key shortcut for untangle."""
+        tab_widget = self.ui.get('tab_widget')
+        if not tab_widget: return
+        current_index = tab_widget.currentIndex()
+
+        if current_index in [0, 1]:  # Audio or MIDI Tab
+            if self.state_manager:
+                self.state_manager._handle_untangle_shortcut()
+        elif current_index == 2:  # Graph Tab
+            graph_mw = self.ui.get('graph_main_window')
+            if graph_mw and hasattr(graph_mw, 'untangle_action'):
+                if hasattr(graph_mw, 'untangle_button'):
+                    self._animate_button_press(graph_mw.untangle_button)
+                graph_mw.untangle_action.trigger()

@@ -41,6 +41,7 @@ class PortItem(QGraphicsItem):
         # Initialize with default rect - will be updated in calculate_layout
         self._bounding_rect = QRectF(0, 0, self.calculated_width, constants.PORT_HEIGHT)
         self._is_drag_highlighted = False # Flag for external highlight during drag
+        self._connection_highlighted = False # Flag for connection highlighting
         self._mouse_press_pos = None # Store initial press position for drag threshold
         self._is_handling_selection_change = False # Flag to prevent re-entry during selection cascade
         self.is_midi = hasattr(port_obj, 'is_midi') and port_obj.is_midi # Store is_midi
@@ -108,7 +109,7 @@ class PortItem(QGraphicsItem):
         is_selected = bool(option.state & QStyle.StateFlag.State_Selected)
 
         # Determine background color
-        if is_selected or is_hovered or self._is_drag_highlighted:
+        if is_selected or is_hovered or self._is_drag_highlighted or self._connection_highlighted:
             bg_color = option.palette.color(QPalette.ColorRole.Highlight) # Use theme's highlight
         else:
             bg_color = self.port_color # Use type-specific color for default state
@@ -230,38 +231,20 @@ class PortItem(QGraphicsItem):
                     
                     try:
                         if can_propagate_port_to_port:
-                            # 1. Port-to-Port selection cascade
+                            # 1. Port-to-Port connection highlighting
                             if value: # Current port (self) is being SELECTED
-                                ports_to_potentially_select = []
+                                # Set connection highlighting on connected ports instead of selecting them
                                 for conn in self.connections:
                                     other_port = conn.source_port if conn.dest_port == self else conn.dest_port
                                     if other_port and not other_port.isSelected():
-                                        ports_to_potentially_select.append(other_port)
-                                for p_to_select in ports_to_potentially_select:
-                                    p_to_select.setSelected(True) # This will trigger itemChange on other_port
+                                        other_port.set_connection_highlighted(True)
 
                             else: # Current port (self) is being DESELECTED
-                                ports_to_potentially_deselect = []
+                                # Clear connection highlighting from connected ports instead of deselecting them
                                 for conn in self.connections:
                                     other_port = conn.source_port if conn.dest_port == self else conn.dest_port
-                                    if other_port and other_port.isSelected():
-                                        should_other_remain_selected = False
-                                        for other_conn in other_port.connections:
-                                            port_at_far_end_of_other_conn = None
-                                            if other_conn.source_port == other_port:
-                                                port_at_far_end_of_other_conn = other_conn.dest_port
-                                            else:
-                                                port_at_far_end_of_other_conn = other_conn.source_port
-                                            
-                                            if port_at_far_end_of_other_conn and \
-                                               port_at_far_end_of_other_conn != self and \
-                                               port_at_far_end_of_other_conn.isSelected():
-                                                should_other_remain_selected = True
-                                                break
-                                        if not should_other_remain_selected:
-                                            ports_to_potentially_deselect.append(other_port)
-                                for p_to_deselect in ports_to_potentially_deselect:
-                                    p_to_deselect.setSelected(False) # This will trigger itemChange on other_port
+                                    if other_port and not other_port.isSelected():
+                                        other_port.set_connection_highlighted(False)
                         # If not can_propagate_port_to_port, the above block is skipped, preventing cascade.
                     finally:
                         # Reset the flag only if this level was the one that set it.
@@ -306,10 +289,26 @@ class PortItem(QGraphicsItem):
         # Store press position if it's a left click for potential drag start by scene
         if event.button() == Qt.MouseButton.LeftButton:
             self._mouse_press_pos = event.pos()
-            print(f"PortItem mousePress: Stored press pos {self._mouse_press_pos} for scene. Event accepted by super: {event.isAccepted()}")
         else:
             self._mouse_press_pos = None
         # Do not accept the event here, let it propagate fully
+
+    def mouseDoubleClickEvent(self, event):
+        """Handle double-click to select connected ports."""
+        if event.button() == Qt.MouseButton.LeftButton:
+            items_to_select = [self]
+            for conn in self.connections:
+                other_port = conn.source_port if conn.dest_port == self else conn.dest_port
+                items_to_select.append(other_port)
+            
+            if self.scene() and hasattr(self.scene(), 'interaction_handler'):
+                self.scene().clearSelection()
+                self.scene().interaction_handler._select_items(items_to_select)
+                self.scene().interaction_handler._is_double_click = True
+            
+            event.accept()
+        else:
+            super().mouseDoubleClickEvent(event)
 
 
     # Remove mouseMoveEvent and mouseReleaseEvent overrides - scene handles drag initiation
@@ -370,4 +369,10 @@ class PortItem(QGraphicsItem):
         """Externally set the highlight state, e.g., during connection drag."""
         if self._is_drag_highlighted != highlighted:
             self._is_drag_highlighted = highlighted
+            self.update() # Trigger repaint
+
+    def set_connection_highlighted(self, highlighted: bool):
+        """Set the connection highlighting state."""
+        if self._connection_highlighted != highlighted:
+            self._connection_highlighted = highlighted
             self.update() # Trigger repaint

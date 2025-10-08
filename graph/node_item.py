@@ -154,6 +154,9 @@ class NodeItem(QGraphicsItem):
         # Store the configuration object
         self.config = {}
 
+        # Check if this is a virtual sink (do this after initialization)
+        self._check_if_virtual_sink(client_name)
+
     # --- Helper Methods ---
     def _is_effectively_folded(self) -> bool:
         """Determines if the node should be treated as folded, considering its split state."""
@@ -707,18 +710,23 @@ class NodeItem(QGraphicsItem):
         disconnect_action = menu.addAction("Disconnect all")
         disconnect_action.setEnabled(disconnect_is_enabled)
         disconnect_action.triggered.connect(self._disconnect_all_connections)
-        
+
         # Add separator after Disconnect
         menu.addSeparator()
-        
+
+        # Add "Unload sink" option for virtual sinks
+        if hasattr(self, 'is_virtual_sink') and self.is_virtual_sink:
+            unload_action = menu.addAction("Unload sink/source")
+            unload_action.triggered.connect(self._unload_sink)
+
         split_action = menu.addAction("Split")
         split_action.setShortcut(Qt.Key.Key_S)
         split_action.setEnabled(bool(self.input_ports) and bool(self.output_ports))
         split_action.triggered.connect(lambda: self.split_handler.split_node(save_state=True))
-        
+
         fold_text = "Unfold" if self.is_folded else "Fold"
         menu.addAction(fold_text).triggered.connect(self.fold_handler.toggle_main_fold_state)
-        
+
         # Add the Hide option
         hide_action = menu.addAction("Hide")
         hide_action.setShortcut(Qt.Key.Key_H)
@@ -908,3 +916,146 @@ class NodeItem(QGraphicsItem):
                         jack_handler.break_connection(conn_item.source_port.port_name, conn_item.dest_port.port_name)
                     except Exception as e:
                         print(f"Error breaking output connection for {port_item.port_name} of {self.client_name}: {e}")
+
+    def _check_if_virtual_sink(self, client_name: str):
+        """Check if this node represents a virtual sink by looking at stored module IDs or detecting pattern."""
+        try:
+            from cable_core.config import ConfigManager
+            config_manager = ConfigManager()
+            module_ids_json = config_manager.get_str_setting('virtual_sink_module_ids', '{}')
+
+            if module_ids_json:
+                import json
+                module_ids = json.loads(module_ids_json)
+                # Check exact match first (full client name in config)
+                if client_name in module_ids:
+                    self.is_virtual_sink = True
+                    self.module_id = module_ids[client_name]
+                else:
+                    # Check if client name starts with any sink name (app-created sinks)
+                    self.is_virtual_sink = False
+                    for sink_name in module_ids.keys():
+                        if client_name.startswith(sink_name + ' '):
+                            self.is_virtual_sink = True
+                            self.module_id = module_ids[sink_name]
+                            break
+
+                    # Fallback: Check for any virtual sink pattern (external sinks)
+                    if not self.is_virtual_sink and client_name.endswith(' Audio/Sink sink'):
+                        self.is_virtual_sink = True
+                        self.module_id = None  # Will find dynamically
+                        self.external_sink = True
+            else:
+                # No config entries, but still check for virtual sink pattern
+                if client_name.endswith(' Audio/Sink sink'):
+                    self.is_virtual_sink = True
+                    self.module_id = None
+                    self.external_sink = True
+
+        except Exception as e:
+            print(f"Error checking if node is virtual sink for {client_name}: {e}")
+            self.is_virtual_sink = False
+            self.module_id = None
+
+    def _find_module_id_for_external_sink(self, sink_name: str):
+        """Find module ID for an external virtual sink using pactl list sinks."""
+        try:
+            import subprocess
+            result = subprocess.run(["pactl", "list", "sinks"],
+                                  capture_output=True, text=True, check=True)
+
+            lines = result.stdout.split('\n')
+            in_target_sink = False
+
+            for line in lines:
+                line = line.strip()
+
+                # Start of target sink - be more precise with matching
+                if not in_target_sink and line == f'Name: {sink_name}':
+                    in_target_sink = True
+
+                # Found Owner Module within target sink
+                elif in_target_sink and 'Owner Module:' in line:
+                    module_id = line.split(':', 1)[1].strip()
+                    # Validate it's a real module ID (not error value)
+                    if module_id.isdigit():
+                        module_id_int = int(module_id)
+                        if module_id_int != 4294967295:
+                            return module_id
+                        else:
+                            print(f"Warning: Invalid module ID {module_id} for sink '{sink_name}' (error value)")
+                            return None
+                    else:
+                        print(f"Warning: Non-numeric module ID '{module_id}' for sink '{sink_name}'")
+                        return None
+
+                # Exit sink block when we hit the next sink
+                elif in_target_sink and line.startswith('Name: ') and line != f'Name: {sink_name}':
+                    break
+
+            print(f"Warning: Could not find valid Owner Module for sink '{sink_name}'")
+            return None
+
+        except subprocess.CalledProcessError as e:
+            print(f"Error running pactl list sinks: {e}")
+            return None
+        except Exception as e:
+            print(f"Error finding module ID for external sink '{sink_name}': {e}")
+            return None
+
+    def _unload_sink(self):
+        """Unload this virtual sink using the stored module ID or finding it dynamically."""
+        if not self.is_virtual_sink:
+            print(f"Cannot unload sink: {self.client_name} is not identified as a virtual sink")
+            return
+
+        # Extract sink name from client name (remove " Audio/Sink sink" suffix)
+        sink_name = self.client_name.replace(' Audio/Sink sink', '')
+
+        # Get module ID - either stored or find dynamically
+        module_id = getattr(self, 'module_id', None)
+        if not module_id:
+            module_id = self._find_module_id_for_external_sink(sink_name)
+
+        if not module_id:
+            print(f"Cannot unload sink: No module ID found for {self.client_name}")
+            return
+
+        import subprocess
+        command = ["pactl", "unload-module", str(module_id)]
+
+        try:
+            subprocess.run(command, check=True, capture_output=True, text=True)
+            sink_type = "external" if getattr(self, 'external_sink', False) else "tracked"
+            print(f"Successfully unloaded {sink_type} virtual sink: {self.client_name} (module ID: {module_id})")
+
+            # For tracked sinks: Remove from stored module IDs
+            if getattr(self, 'external_sink', False) is False:
+                try:
+                    from cable_core.config import ConfigManager
+                    config_manager = ConfigManager()
+                    module_ids_json = config_manager.get_str_setting('virtual_sink_module_ids', '{}')
+
+                    if module_ids_json:
+                        import json
+                        module_ids = json.loads(module_ids_json)
+
+                        # Find the key that matches this client (either exact or partial match)
+                        key_to_remove = None
+                        for stored_sink_name in module_ids.keys():
+                            if self.client_name == stored_sink_name or self.client_name.startswith(stored_sink_name + ' '):
+                                key_to_remove = stored_sink_name
+                                break
+
+                        if key_to_remove:
+                            del module_ids[key_to_remove]
+                            config_manager.set_str_setting('virtual_sink_module_ids', json.dumps(module_ids))
+                            print(f"Removed module ID {module_id} from config for sink '{key_to_remove}' (client: {self.client_name})")
+                        else:
+                            print(f"Warning: Could not find config entry to remove for {self.client_name}")
+
+                except Exception as e:
+                    print(f"Error removing module ID from config for {self.client_name}: {e}")
+
+        except subprocess.CalledProcessError as e:
+            print(f"Error unloading virtual sink {self.client_name}: {e}")

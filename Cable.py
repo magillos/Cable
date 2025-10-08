@@ -213,11 +213,13 @@ class PipeWireSettingsApp(QWidget):
         # Ensure the config file exists and has the keys before reading (handled by ConfigManager now)
         # self.config_manager.ensure_config_lists() # Called during init
 
+        # Get all values from config (including commented ones) to show in dialog
+        all_values = self.config_manager.get_all_values_from_config(config_key, default_values_list)
         # Get currently active values from config using the manager
         active_values = self.config_manager.get_list_from_config(config_key, default_values_list)
 
         # Show the dialog
-        dialog = ValueSelectorDialog(f"Select Active {title} Values", default_values_list, active_values, self)
+        dialog = ValueSelectorDialog(f"Select Active {title} Values", all_values, active_values, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             selected_values = dialog.get_selected_values()
             print(f"Dialog accepted for {title}. Selected values: {selected_values}")
@@ -232,7 +234,7 @@ class PipeWireSettingsApp(QWidget):
 
                 # Construct the new comma-separated string, commenting out unselected values
                 new_value_parts = []
-                for val in default_values_list:
+                for val in all_values:  # Use all_values instead of default_values_list
                     if val in selected_values:
                         new_value_parts.append(str(val))
                     else:

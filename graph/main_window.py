@@ -64,6 +64,8 @@ class MainWindow(QMainWindow):
         self.scene.scene_fully_loaded.connect(self._store_initial_node_positions)
         # Update the stored original layout whenever user changes node states
         self.scene.node_states_changed.connect(self._update_original_layout_baseline)
+        # Update preset save button state when node states change
+        self.scene.node_states_changed.connect(lambda: self.preset_handler._update_save_button_enabled_state() if hasattr(self, 'preset_handler') and self.preset_handler else None)
 
         # Main widget and layout
         main_widget = QWidget()

@@ -68,7 +68,7 @@ class PresetHandler:
     def __init__(self, manager):
         """
         Initialize the PresetHandler.
-        
+
         Args:
             manager: Reference to the JackConnectionManager
         """
@@ -79,6 +79,11 @@ class PresetHandler:
         self.current_preset_name = self.manager.config_manager.get_str('active_preset')
         # Temporary attribute for the save preset name line edit in the menu
         self._preset_menu_name_edit = None
+
+        # Add attributes to track original preset state for change detection
+        self.original_preset_connections = None
+        self.original_preset_layout_data = None
+        self.save_button_initially_enabled = False
 
     def _show_preset_menu(self):
         """Populates the preset management menu. Assumes menu is sender()."""
@@ -343,7 +348,9 @@ class PresetHandler:
                     print(f"Warning: Could not save layout data: {e}")
                     # Don't fail the entire operation for layout issues
             
-            print(f"Preset '{preset_name}' saved successfully.")
+            print(f"Preset '{preset_name}' saved successfully. Loading as active preset.")
+            # Automatically load the newly saved preset to make it active
+            self._load_selected_preset(preset_name, is_startup=True)
             show_timed_messagebox(self.manager, QMessageBox.Icon.Information,
                                  "Preset Saved", f"Preset '{preset_name}' saved successfully.")
                                  
@@ -381,51 +388,66 @@ class PresetHandler:
         is_startup flag prevents showing success message on startup load.
         """
         print(f"Loading preset: {name}")
-        
+
         strict_mode = self.manager.config_manager.get_bool('load_preset_strict_mode', False)
         daemon_mode = self.manager.config_manager.get_bool('load_preset_daemon_mode', False)
         restore_layout = self.manager.config_manager.get_bool('load_preset_restore_layout', True)
-        
+
         # First, stop any existing daemon to avoid multiple instances
         if daemon_mode:
             self.manager.preset_manager.stop_daemon_mode()
-        
+
+        # Capture the original state before loading for change detection
+        self._capture_current_state()
+
         # Use enhanced preset manager if available, otherwise fall back to basic
         if hasattr(self.manager.preset_manager, 'load_and_apply_preset_with_layout'):
             success, layout_data = self.manager.preset_manager.load_and_apply_preset_with_layout(
                 name, strict_mode=strict_mode, daemon_mode=daemon_mode, apply_layout=restore_layout
             )
-            
+
+            # Store the original preset state for change detection
+            self.original_preset_connections = self.manager._get_current_connections()
+            self.original_preset_layout_data = layout_data
+
             # Apply layout data if available and restore_layout is enabled, regardless of connection success
             if layout_data and restore_layout:
                 self._apply_layout_data(layout_data)
-                
+
         else:
             success = self.manager.preset_manager.load_and_apply_preset(name, strict_mode=strict_mode, daemon_mode=daemon_mode)
-        
+            # For basic preset manager, only store connection state
+            self.original_preset_connections = self.manager._get_current_connections()
+            self.original_preset_layout_data = None
+
         if success:
             print("Preset load complete. Refreshing UI.")
             self.current_preset_name = name
             self.manager.config_manager.set_str('active_preset', name)
+            # Initially set save button to disabled since we just loaded the preset (no changes yet)
+            self.save_button_initially_enabled = False
             if hasattr(self.manager, 'save_preset_action'):
-                self.manager.save_preset_action.setEnabled(True)
+                self.manager.save_preset_action.setEnabled(False)
             print(f"Load Success: Set active_preset in config to '{name}'")
             self.manager.refresh_ports()
-            
+
             if not is_startup:
                 show_timed_messagebox(self.manager, QMessageBox.Icon.Information,
                                      "Preset Loaded", f"Preset '{name}' loaded successfully.")
-            
+
             return True
         else:
             if not is_startup:
-                QMessageBox.information(self.manager, "Preset Loaded", f"Preset '{name}' loaded but some connections could not be restored. Missing client?")
+                show_timed_messagebox(self.manager, QMessageBox.Icon.Information,
+                                     "Preset Loaded", f"Preset '{name}' loaded but some connections could not be restored. Missing client?")
             else:
                 print(f"Preset '{name}' loaded but some connections could not be restored (missing client?).")
             self.current_preset_name = name
             self.manager.config_manager.set_str('active_preset', name)
+            # Initially set save button to disabled since we just loaded the preset (no changes yet)
+            self.save_button_initially_enabled = False
             if hasattr(self.manager, 'save_preset_action'):
-                self.manager.save_preset_action.setEnabled(True)
+                self.manager.save_preset_action.setEnabled(False)
             print("Load Success (partial): Set active_preset in config.")
             self.manager.refresh_ports()
             return True
@@ -602,7 +624,16 @@ class PresetHandler:
         
         if success:
             print(f"Preset '{preset_name}' saved.")
-            show_timed_messagebox(self.manager, QMessageBox.Icon.Information, 
+            # Update the original state to reflect the current (saved) state
+            self.original_preset_connections = self.manager._get_current_connections()
+            self.original_preset_layout_data = {
+                'node_states': node_states,
+                'graph_zoom_level': graph_zoom_level,
+                'node_visibility': node_visibility_data
+            }
+            # Update save button state since changes have been saved
+            self._update_save_button_enabled_state()
+            show_timed_messagebox(self.manager, QMessageBox.Icon.Information,
                                  "Preset Saved", f"Preset '{preset_name}' saved successfully.")
 
     def _set_strict_mode(self, checked):
@@ -698,13 +729,13 @@ class PresetHandler:
     def _apply_layout_data(self, layout_data):
         """
         Apply layout data to the graph scene and node visibility settings.
-        
+
         Args:
             layout_data (dict): Layout data containing node_states, graph_zoom_level, and node_visibility
         """
         if not layout_data:
             return
-            
+
         try:
             # Apply node states if available
             if 'node_states' in layout_data and hasattr(self.manager, 'graph_main_window'):
@@ -713,7 +744,7 @@ class PresetHandler:
                     if scene and hasattr(scene, 'restore_node_states'):
                         scene.restore_node_states(layout_data['node_states'])
                         print("Applied node states from preset")
-            
+
             # Apply zoom level if available
             if 'graph_zoom_level' in layout_data and hasattr(self.manager, 'graph_main_window'):
                 if self.manager.graph_main_window and hasattr(self.manager.graph_main_window, 'view'):
@@ -721,12 +752,12 @@ class PresetHandler:
                     if view and hasattr(view, 'set_zoom_level'):
                         view.set_zoom_level(layout_data['graph_zoom_level'])
                         print(f"Applied zoom level {layout_data['graph_zoom_level']} from preset")
-            
+
             # Apply node visibility settings if available
             if 'node_visibility' in layout_data and layout_data['node_visibility']:
                 if hasattr(self.manager, 'node_visibility_manager') and self.manager.node_visibility_manager:
                     visibility_data = layout_data['node_visibility']
-                    
+
                     # Update the node visibility manager's settings
                     if 'audio_input' in visibility_data:
                         self.manager.node_visibility_manager.audio_input_visibility.update(visibility_data['audio_input'])
@@ -736,14 +767,141 @@ class PresetHandler:
                         self.manager.node_visibility_manager.midi_input_visibility.update(visibility_data['midi_input'])
                     if 'midi_output' in visibility_data:
                         self.manager.node_visibility_manager.midi_output_visibility.update(visibility_data['midi_output'])
-                    
+
                     # Save the updated settings to the config file
                     self.manager.node_visibility_manager.save_visibility_settings()
-                    
+
                     # Apply the visibility settings to refresh the UI
                     self.manager.node_visibility_manager.apply_visibility_settings()
-                    
+
                     print("Applied node visibility settings from preset")
-                        
+
         except Exception as e:
             print(f"Error applying layout data: {e}")
+
+    def _capture_current_state(self):
+        """Capture the current state of connections and layout for comparison when preset is loaded."""
+        try:
+            # This method would be called before loading a preset to compare against after loading
+            # For now, we'll capture when preset is actually loaded
+            pass
+        except Exception as e:
+            print(f"Error capturing current state: {e}")
+
+    def _connections_have_changed(self):
+        """
+        Check if the current connections have changed compared to the originally loaded preset.
+
+        Returns:
+            bool: True if connections have changed, False otherwise
+        """
+        if not self.current_preset_name or self.original_preset_connections is None:
+            return False
+
+        try:
+            current_connections = self.manager._get_current_connections()
+            current_set = set()
+            original_set = set()
+
+            # Convert current connections to a comparable set
+            for conn in current_connections:
+                output = conn.get("output", "")
+                input_ = conn.get("input", "")
+                if output and input_:
+                    current_set.add((output, input_))
+
+            # Convert original connections to a comparable set
+            for conn in self.original_preset_connections:
+                output = conn.get("output", "")
+                input_ = conn.get("input", "")
+                if output and input_:
+                    original_set.add((output, input_))
+
+            return current_set != original_set
+
+        except Exception as e:
+            print(f"Error comparing connections: {e}")
+            return False
+
+    def _layout_has_changed(self):
+        """
+        Check if the current layout has changed compared to the originally loaded preset.
+
+        Returns:
+            bool: True if layout has changed, False otherwise
+        """
+        if not self.current_preset_name or not self.original_preset_layout_data:
+            return False
+
+        try:
+            layout_changed = False
+
+            # Check node states
+            if hasattr(self.manager, 'graph_main_window') and self.manager.graph_main_window:
+                if hasattr(self.manager.graph_main_window, 'scene') and self.manager.graph_main_window.scene:
+                    current_node_states = self.manager.graph_main_window.scene.get_node_states()
+                    original_node_states = self.original_preset_layout_data.get('node_states')
+
+                    if current_node_states != original_node_states:
+                        layout_changed = True
+
+                # Check zoom level
+                if hasattr(self.manager.graph_main_window, 'view') and self.manager.graph_main_window.view:
+                    current_zoom = self.manager.graph_main_window.view.get_zoom_level()
+                    original_zoom = self.original_preset_layout_data.get('graph_zoom_level')
+
+                    if current_zoom != original_zoom:
+                        layout_changed = True
+
+            # Check node visibility
+            if hasattr(self.manager, 'node_visibility_manager') and self.manager.node_visibility_manager:
+                current_visibility = {
+                    'audio_input': dict(self.manager.node_visibility_manager.audio_input_visibility),
+                    'audio_output': dict(self.manager.node_visibility_manager.audio_output_visibility),
+                    'midi_input': dict(self.manager.node_visibility_manager.midi_input_visibility),
+                    'midi_output': dict(self.manager.node_visibility_manager.midi_output_visibility)
+                }
+                original_visibility = self.original_preset_layout_data.get('node_visibility')
+
+                if current_visibility != original_visibility:
+                    layout_changed = True
+
+            return layout_changed
+
+        except Exception as e:
+            print(f"Error comparing layout: {e}")
+            return False
+
+    def _preset_has_changes(self):
+        """
+        Check if the currently loaded preset has any changes.
+
+        Returns:
+            bool: True if there are changes, False otherwise
+        """
+        # Check both connections and layout for changes
+        connections_changed = self._connections_have_changed()
+        layout_changed = self._layout_has_changed()
+
+        has_changes = connections_changed or layout_changed
+
+        if has_changes:
+            print(f"Preset '{self.current_preset_name}' has changes: connections={connections_changed}, layout={layout_changed}")
+
+        return has_changes
+
+    def _update_save_button_enabled_state(self):
+        """Update the save button enabled state based on whether the loaded preset has changes."""
+        if not self.current_preset_name:
+            # No preset loaded, disable save button
+            enabled = False
+        else:
+            # Preset loaded, enable save button only if there are changes
+            enabled = self._preset_has_changes()
+
+        # Update the button state if it's different from current state
+        if hasattr(self.manager, 'save_preset_action') and self.manager.save_preset_action:
+            current_enabled = self.manager.save_preset_action.isEnabled()
+            if current_enabled != enabled:
+                self.manager.save_preset_action.setEnabled(enabled)
+                print(f"Save button {'enabled' if enabled else 'disabled'} for preset '{self.current_preset_name}'")

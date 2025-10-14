@@ -83,6 +83,10 @@ class JackConnectionHandler:
             self._manager.update_connection_buttons() # Update audio buttons
             self._manager.update_midi_connection_buttons() # Update midi buttons
 
+            # Update preset save button state if presets are being used
+            if hasattr(self._manager, 'preset_handler') and self._manager.preset_handler:
+                self._manager.preset_handler._update_save_button_enabled_state()
+
         except jack.JackError as e:
             print(f"{operation_type.capitalize()} error: {e}")
             # Don't crash on connection errors, just log them

@@ -622,9 +622,9 @@ class NodeItem(QGraphicsItem):
         
         # Add message
         if custom_message:
-            message = f"{custom_message}\n\nYou can restore it later from the Node Visibility dialog."
+            message = f"{custom_message}\n\nYou can restore it later from the Clients Visibility dialog."
         else:
-            message = f"Hide {client_name} {message_type} node?\n\nYou can restore it later from the Node Visibility dialog."
+            message = f"Hide {client_name} {message_type} node?\n\nYou can restore it later from the Clients Visibility dialog."
         
         label = QLabel(message)
         layout.addWidget(label)

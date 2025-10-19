@@ -112,17 +112,19 @@ class JackGraphScene(QGraphicsScene):
             # Synchronize nodes and connections
             self._synchronize_nodes_with_jack(all_ports)
             self._synchronize_connections_with_jack(all_ports)
-            
+
             # Refresh connection visibility for all connections
             self._refresh_all_connection_visibility()
 
             # Emit signal that connections may have changed
             self.scene_connections_changed.emit()
-            
-            # Emit scene_fully_loaded signal if this is the first refresh
-            # We use a static variable to track if this is the first refresh
-            if not hasattr(self, '_first_refresh_done'):
+
+            # Check if this is the first refresh and emit scene_fully_loaded signal
+            is_first_refresh = not hasattr(self, '_first_refresh_done')
+            if is_first_refresh:
                 self._first_refresh_done = True
+                # Clean up orphaned unified sinks after synchronization, but only on first load
+                self._cleanup_orphaned_unified_sinks(all_ports)
                 self.scene_fully_loaded.emit()
                 print("Scene fully loaded signal emitted")
 
@@ -617,19 +619,24 @@ class JackGraphScene(QGraphicsScene):
         node = self.nodes.pop(client_name, None)
         if node:
             print(f"Removing node: {client_name}")
-            
+
+            # For unified nodes, unload the unified sink before removing the node
+            if hasattr(node, 'is_unified') and node.is_unified:
+                print(f"Unifying sink for node {client_name} before removal")
+                node._unload_unified_sink()
+
             # Check if this is a split origin node - if so, also remove its split parts
             if node.is_split_origin:
                 # Save references to split parts before handling the origin
                 input_part = node.split_input_node
                 output_part = node.split_output_node
-                
+
                 # Clean up the origin node first
                 ports_to_clean = list(node.input_ports.values()) + list(node.output_ports.values())
                 for port in ports_to_clean:
                     node.remove_port(port.port_name)
                 self.removeItem(node)
-                
+
                 # Now clean up the split parts if they exist
                 if input_part:
                     # Clean up connections from the input part
@@ -639,7 +646,7 @@ class JackGraphScene(QGraphicsScene):
                     # Remove the input part from the scene
                     if input_part.scene():
                         self.removeItem(input_part)
-                
+
                 if output_part:
                     # Clean up connections from the output part
                     output_ports_to_clean = list(output_part.input_ports.values()) + list(output_part.output_ports.values())
@@ -772,6 +779,12 @@ class JackGraphScene(QGraphicsScene):
                     node.apply_configuration(config)
                     if not config.get('pos') and not node.is_split_origin and not node.is_split_part:
                         node.setPos(QPointF(20, 20 + len(self.nodes) * 50)) # Simple default
+
+                    # Check if the client should be unified
+                    if hasattr(self.connection_manager, 'preset_handler') and self.connection_manager.preset_handler:
+                        unified_clients = self.connection_manager.preset_handler.unified_clients
+                        if client_name in unified_clients:
+                            node.unify_from_preset(unified_clients[client_name])
             except Exception as e:
                 print(f"Error fetching ports for new client {client_name}: {e}")
                 # Fall back to just adding the node without ports
@@ -1180,6 +1193,31 @@ class JackGraphScene(QGraphicsScene):
             # Update the connection visibility
             conn.setVisible(should_be_visible)
 
+    def _cleanup_orphaned_unified_sinks(self, all_ports: list):
+        """
+        Clean up unified virtual sinks that no longer have corresponding JACK clients.
+        This handles the edge case where the graph app is closed and reopened, but some
+        JACK clients have disappeared while their unified sinks remain active.
+        """
+        if hasattr(self.connection_manager, 'unified_sink_manager'):
+            try:
+                return self.connection_manager.unified_sink_manager.cleanup_orphaned_unified_sinks(all_ports)
+            except Exception as e:
+                print(f"Error during unified sink cleanup: {e}")
+                return 0
+        else:
+            print("UnifiedSinkManager not available for cleanup.")
+            print(f"Available attributes on connection_manager: {[attr for attr in dir(self.connection_manager) if not attr.startswith('_')]}")
+            return 0
+
+    def get_unified_nodes(self):
+        """Returns a list of all unified nodes in the scene."""
+        unified_nodes = []
+        for node in self.nodes.values():
+            if hasattr(node, 'is_unified') and node.is_unified:
+                unified_nodes.append(node)
+        return unified_nodes
+
     def get_node_states(self):
         """
         Gets the current node states (positions, split states, fold states) for all nodes.
@@ -1244,9 +1282,30 @@ class JackGraphScene(QGraphicsScene):
                 # Store manual split flag if available
                 if hasattr(node, 'config') and node.config and 'manual_split' in node.config:
                     current_configs[client_name]['manual_split'] = node.config['manual_split']
+
+                # Store unified state if available
+                if hasattr(node, 'is_unified') and node.is_unified:
+                    current_configs[client_name]['is_unified'] = True
+                    current_configs[client_name]['unified_virtual_sink_name'] = node.unified_virtual_sink_name
+                    current_configs[client_name]['unified_module_id'] = node.unified_module_id
         
         return copy.deepcopy(current_configs)
     
+    def apply_unified_states(self, unified_clients):
+        """
+        Applies unified states to nodes from a preset.
+
+        Args:
+            unified_clients (dict): A dictionary of unified clients from the preset.
+        """
+        if not unified_clients:
+            return
+
+        for client_name, unify_data in unified_clients.items():
+            node = self.get_node_item_by_name(client_name)
+            if node and hasattr(node, 'unify_from_preset'):
+                node.unify_from_preset(unify_data)
+
     def restore_node_states(self, node_states):
         """
         Restores node positions and states from the provided configuration.

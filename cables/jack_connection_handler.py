@@ -157,7 +157,7 @@ class JackConnectionHandler:
             return
 
         # Determine if MIDI or Audio based on the manager's current tab
-        is_midi = self._manager.tab_widget.currentIndex() == 1 # Assuming MIDI is tab index 1
+        is_midi = self._manager.ui_manager.tab_widget.currentIndex() == 1 # Assuming MIDI is tab index 1
         # Use _port_operation directly as it handles history and updates
         operation_type = 'connect'
 
@@ -281,7 +281,7 @@ class JackConnectionHandler:
             # Convert input_ports to a set for faster lookups
             input_ports_set = set(input_ports)
             # Determine if MIDI based on manager's current tab context
-            is_midi = self._manager.tab_widget.currentIndex() == 1
+            is_midi = self._manager.ui_manager.tab_widget.currentIndex() == 1
 
             for out_port in output_ports:
                 # Check connections for this output port

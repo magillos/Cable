@@ -167,14 +167,14 @@ class UIStateManager(QObject):
         if not self._callbacks_enabled: # Only adjust if auto-refresh is on
              return
 
-        if not self.main_window or not hasattr(self.main_window, 'tab_widget'):
-            logger.warning("Cannot update timer interval: main window or tab widget missing.")
+        if not self.main_window or not hasattr(self.main_window.ui_manager, 'tab_widget'):
+            logger.warning("Cannot update timer interval: main window or ui_manager.tab_widget missing.")
             return
 
         # Determine interval based on focus and tab using constants from app_config
         interval = app_config.REFRESH_RATE_UNFOCUSED_MS # Default unfocused
         if self._is_focused:
-            current_index = self.main_window.tab_widget.currentIndex()
+            current_index = self.main_window.ui_manager.tab_widget.currentIndex()
             # Indices for tabs that should use the slower refresh rate when focused
             special_tabs_indices = [2, 3, 4, 5] # Graph, Alsa Mixer, pw-top, Latency Test
             if current_index in [0, 1]: # Audio or MIDI tab

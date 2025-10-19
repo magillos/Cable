@@ -7,13 +7,11 @@ import sys
 import argparse
 import os
 import jack
-import random
-import re
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QTabWidget, QVBoxLayout,
                             QHBoxLayout, QCheckBox, QPushButton, QLineEdit, QSizePolicy,
-                            QSpacerItem, QMessageBox, QGraphicsPathItem, QTreeWidget, QToolBar) # Removed QSize, Added QToolBar
+                            QSpacerItem, QMessageBox, QTreeWidget, QToolBar) # Removed QSize, Added QToolBar
 from PyQt6.QtCore import Qt, QMimeData, QPointF, QRectF, QTimer, QSize, QRect, QProcess, pyqtSignal, QPoint, pyqtSlot
-from PyQt6.QtGui import QGuiApplication, QColor, QPalette, QFont, QKeySequence, QAction, QTextCursor, QPainterPath, QPen, QBrush
+from PyQt6.QtGui import QGuiApplication, QColor, QPalette, QFont, QKeySequence, QAction, QTextCursor, QPen, QBrush
 
 # Import our modules
 from cables import jack_utils # Import the new jack_utils module
@@ -28,9 +26,13 @@ from cables.ui_state_manager import UIStateManager # Added import
 from cables.action_manager import ActionManager # Added import
 from cables.port_manager import PortManager # Added import
 from cables.interaction_manager import InteractionManager # Added import
+from cables.tab_manager import TabManager # Added import
+from cables.unified_sink_manager import UnifiedSinkManager # Added import
 from cable_core import app_config
 from cables.features.mixer import AlsMixerApp # Added import for Alsa Mixer
 from cables.features.node_visibility_manager import NodeVisibilityManager
+from cables.ui.ui_manager import UIManager
+from cables.connection_visualizer import ConnectionVisualizer
 
 class JackConnectionManager(QMainWindow):
     """
@@ -74,9 +76,6 @@ class JackConnectionManager(QMainWindow):
         
         self.preset_handler = PresetHandler(self)
         
-        # Read last active tab from config
-        self.last_active_tab = self.config_manager.get_int('last_active_tab', 0)
-        
         # Set up the main window
         self.setWindowTitle('Cables')
         # Load window dimensions from config or use app_config defaults
@@ -92,18 +91,17 @@ class JackConnectionManager(QMainWindow):
 
         # Initialize connection history
         self.connection_history = ConnectionHistory()
-        
+
         self.flatpak_env = os.path.exists('/.flatpak-info')
-        
-        self.dark_mode = self.is_dark_mode()
-        self.setup_colors()
-        
-        self.output_filter_edit = QLineEdit()
-        self.output_filter_edit.setPlaceholderText("Filter outputs...")
-        self.output_filter_edit.setToolTip("Use '-' prefix for exclusive filtering")
-        self.input_filter_edit = QLineEdit()
-        self.input_filter_edit.setPlaceholderText("Filter inputs...")
-        self.input_filter_edit.setToolTip("Use '-' prefix for exclusive filtering")
+
+        # Initialize UnifiedSinkManager early (before graph components that need it)
+        self.unified_sink_manager = UnifiedSinkManager(self.config_manager)
+
+        # Initialize UI Manager
+        self.ui_manager = UIManager(self, self.config_manager)
+
+        # Initialize Connection Visualizer
+        self.connection_visualizer = ConnectionVisualizer(self.client, self.ui_manager)
         
         self.client.set_port_registration_callback(self._handle_port_registration)
         self.client.set_client_registration_callback(self._handle_client_registration)
@@ -113,13 +111,6 @@ class JackConnectionManager(QMainWindow):
         self.port_registered.connect(self._on_port_registered)
         self.port_unregistered.connect(self._on_port_unregistered)
         
-        self.port_manager = PortManager(
-            connection_manager=self,
-            jack_client=self.client,
-            input_filter_edit=self.input_filter_edit,
-            output_filter_edit=self.output_filter_edit
-        )
-
         self.ui_elements = {}
 
         self.action_manager = ActionManager(
@@ -128,24 +119,64 @@ class JackConnectionManager(QMainWindow):
             preset_handler=self.preset_handler,
             ui=self.ui_elements
         )
-        self._setup_ui()
 
-        self.port_manager.set_trees(
-            input_tree=getattr(self, 'input_tree', None),
-            output_tree=getattr(self, 'output_tree', None),
-            midi_input_tree=getattr(self, 'midi_input_tree', None),
-            midi_output_tree=getattr(self, 'midi_output_tree', None)
+        # Initialize UI Manager first to create UI elements
+        self.ui_manager._setup_ui()
+
+        # Initialize highlight manager with UI manager colors
+        self.highlight_manager = HighlightManager(
+            input_tree=None,
+            output_tree=None,
+            midi_input_tree=None,
+            midi_output_tree=None,
+            client=self.client,
+            colors={
+                'text': self.ui_manager.text_color,
+                'background': self.ui_manager.background_color,
+                'highlight': self.ui_manager.highlight_color,
+                'auto_highlight': self.ui_manager.auto_highlight_color,
+                'drag_highlight': self.ui_manager.drag_highlight_color
+            }
         )
 
+        # Initialize Tab Manager to set up tabs and create tree widgets
+        self.tab_manager = TabManager(self)
+        self.tab_manager.setup_tabs()
+
+        # Now create Port Manager after trees are available
+        self.port_manager = PortManager(
+            connection_manager=self,
+            jack_client=self.client,
+            input_filter_edit=self.ui_manager.input_filter_edit,
+            output_filter_edit=self.ui_manager.output_filter_edit
+        )
+
+        # Set the tree references created by TabManager
+        self.port_manager.set_trees(
+            input_tree=self.input_tree,
+            output_tree=self.output_tree,
+            midi_input_tree=self.midi_input_tree,
+            midi_output_tree=self.midi_output_tree
+        )
+
+        # Update highlight_manager with the created trees
+        self.highlight_manager.set_trees(
+            input_tree=self.input_tree,
+            output_tree=self.output_tree,
+            midi_input_tree=self.midi_input_tree,
+            midi_output_tree=self.midi_output_tree
+        )
+
+        # Initialize UI State Manager after trees are set up
         self.ui_state_manager = UIStateManager(
             parent=self,
             config_manager=self.config_manager,
             main_window=self,
-            auto_refresh_checkbox=self.auto_refresh_checkbox,
-            collapse_checkbox=self.collapse_all_checkbox,
-            untangle_button=self.untangle_button,
-            increase_font_button=self.zoom_in_button,
-            decrease_font_button=self.zoom_out_button,
+            auto_refresh_checkbox=self.ui_manager.auto_refresh_checkbox,
+            collapse_checkbox=self.ui_manager.collapse_all_checkbox,
+            untangle_button=self.ui_manager.untangle_button,
+            increase_font_button=self.ui_manager.zoom_in_button,
+            decrease_font_button=self.ui_manager.zoom_out_button,
             input_tree=self.input_tree,
             output_tree=self.output_tree,
             midi_input_tree=self.midi_input_tree,
@@ -154,30 +185,30 @@ class JackConnectionManager(QMainWindow):
             midi_connection_view=self.midi_connection_view
         )
         
-        if hasattr(self, 'auto_refresh_checkbox') and self.auto_refresh_checkbox:
-            self.auto_refresh_checkbox.stateChanged.connect(self.ui_state_manager.toggle_auto_refresh)
-        if hasattr(self, 'collapse_all_checkbox') and self.collapse_all_checkbox:
-            self.collapse_all_checkbox.stateChanged.connect(self.ui_state_manager.toggle_collapse_all)
-        if hasattr(self, 'untangle_button') and self.untangle_button:
-            self.untangle_button.clicked.connect(self.ui_state_manager.toggle_untangle_sort)
-        if hasattr(self, 'zoom_in_button') and self.zoom_in_button:
-            self.zoom_in_button.clicked.connect(self.ui_state_manager.increase_font_size)
-        if hasattr(self, 'zoom_out_button') and self.zoom_out_button:
-            self.zoom_out_button.clicked.connect(self.ui_state_manager.decrease_font_size)
+        if hasattr(self.ui_manager, 'auto_refresh_checkbox') and self.ui_manager.auto_refresh_checkbox:
+            self.ui_manager.auto_refresh_checkbox.stateChanged.connect(self.ui_state_manager.toggle_auto_refresh)
+        if hasattr(self.ui_manager, 'collapse_all_checkbox') and self.ui_manager.collapse_all_checkbox:
+            self.ui_manager.collapse_all_checkbox.stateChanged.connect(self.ui_state_manager.toggle_collapse_all)
+        if hasattr(self.ui_manager, 'untangle_button') and self.ui_manager.untangle_button:
+            self.ui_manager.untangle_button.clicked.connect(self.ui_state_manager.toggle_untangle_sort)
+        if hasattr(self.ui_manager, 'zoom_in_button') and self.ui_manager.zoom_in_button:
+            self.ui_manager.zoom_in_button.clicked.connect(self.ui_state_manager.increase_font_size)
+        if hasattr(self.ui_manager, 'zoom_out_button') and self.ui_manager.zoom_out_button:
+            self.ui_manager.zoom_out_button.clicked.connect(self.ui_state_manager.decrease_font_size)
 
-        if hasattr(self, 'tab_widget'):
-             self.switch_tab(self.tab_widget.currentIndex())
+        if hasattr(self.ui_manager, 'tab_widget'):
+             self.tab_manager.switch_tab(self.ui_manager.tab_widget.currentIndex())
 
         self.ui_elements.update({
-            'tab_widget': self.tab_widget,
+            'tab_widget': self.ui_manager.tab_widget,
             'connect_button': getattr(self, 'connect_button', None),
             'disconnect_button': getattr(self, 'disconnect_button', None),
             'midi_connect_button': getattr(self, 'midi_connect_button', None),
             'midi_disconnect_button': getattr(self, 'midi_disconnect_button', None),
-            'undo_button': getattr(self, 'undo_button', None),
-            'redo_button': getattr(self, 'redo_button', None),
-            'collapse_all_checkbox': getattr(self, 'collapse_all_checkbox', None),
-            'auto_refresh_checkbox': getattr(self, 'auto_refresh_checkbox', None),
+            'undo_button': self.ui_manager.undo_button,
+            'redo_button': self.ui_manager.redo_button,
+            'collapse_all_checkbox': self.ui_manager.collapse_all_checkbox,
+            'auto_refresh_checkbox': self.ui_manager.auto_refresh_checkbox,
             'output_tree': getattr(self, 'output_tree', None),
             'input_tree': getattr(self, 'input_tree', None),
             'midi_output_tree': getattr(self, 'midi_output_tree', None),
@@ -188,10 +219,10 @@ class JackConnectionManager(QMainWindow):
         if hasattr(self, 'action_manager') and self.action_manager and hasattr(self, 'ui_state_manager'):
             self.action_manager.complete_setup(state_manager=self.ui_state_manager)
 
-        if hasattr(self, 'undo_button') and self.undo_button and hasattr(self.action_manager, 'global_undo_action') and self.action_manager.global_undo_action:
-            self.undo_button.clicked.connect(self.action_manager.global_undo_action.trigger)
-        if hasattr(self, 'redo_button') and self.redo_button and hasattr(self.action_manager, 'global_redo_action') and self.action_manager.global_redo_action:
-            self.redo_button.clicked.connect(self.action_manager.global_redo_action.trigger)
+        if self.ui_manager.undo_button and hasattr(self.action_manager, 'global_undo_action') and self.action_manager.global_undo_action:
+            self.ui_manager.undo_button.clicked.connect(self.action_manager.global_undo_action.trigger)
+        if self.ui_manager.redo_button and hasattr(self.action_manager, 'global_redo_action') and self.action_manager.global_redo_action:
+            self.ui_manager.redo_button.clicked.connect(self.action_manager.global_redo_action.trigger)
 
         if hasattr(self, 'presets_button') and self.presets_button:
             self.presets_button.clicked.connect(self.preset_handler._show_preset_menu)
@@ -199,7 +230,12 @@ class JackConnectionManager(QMainWindow):
             self.midi_presets_button.clicked.connect(self.preset_handler._show_preset_menu)
         
         self.client.activate()
-        
+
+        # Clean up orphaned unified sinks immediately on startup (before any UI)
+        orphaned_count = self.unified_sink_manager.cleanup_orphaned_unified_sinks(self.client.get_ports())
+        if orphaned_count > 0:
+            print(f"Cleaned up {orphaned_count} orphaned unified sinks on startup.")
+
         if hasattr(self.action_manager, 'save_preset_action') and self.action_manager.save_preset_action:
             self.action_manager.save_preset_action.setEnabled(bool(self.preset_handler.current_preset_name))
 
@@ -217,6 +253,13 @@ class JackConnectionManager(QMainWindow):
             update_connection_buttons_func=self.update_connection_buttons,
             update_midi_connection_buttons_func=self.update_midi_connection_buttons
         )
+
+        # Initialize NodeVisibilityManager
+        self.node_visibility_manager = NodeVisibilityManager(self, self.config_manager)
+        
+        # Pass node visibility manager to port_manager
+        if hasattr(self, 'port_manager') and self.port_manager:
+            self.port_manager.set_node_visibility_manager(self.node_visibility_manager)
 
         if hasattr(self, 'input_tree') and self.input_tree:
             self.input_tree.itemClicked.connect(
@@ -243,94 +286,70 @@ class JackConnectionManager(QMainWindow):
                 )
             )
 
-        # Initialize NodeVisibilityManager
-        self.node_visibility_manager = NodeVisibilityManager(self, self.config_manager)
-        
         # Pass node visibility manager to port_manager
         if hasattr(self, 'port_manager') and self.port_manager:
             self.port_manager.set_node_visibility_manager(self.node_visibility_manager)
 
-    def _setup_ui(self):
-        main_widget = QWidget()
-        self.setCentralWidget(main_widget)
-        main_layout = QVBoxLayout(main_widget)
-        
-        self.tab_widget = QTabWidget()
-        main_layout.addWidget(self.tab_widget)
-        
-        self.audio_tab_widget = QWidget()
-        self.midi_tab_widget = QWidget()
-        self.graph_tab_widget = QWidget()
-        self.alsa_mixer_tab_widget = QWidget()
-        self.pwtop_tab_widget = QWidget()
-        self.latency_tab_widget = QWidget()
-        
-        self.tab_ui_manager = TabUIManager()
-        self.highlight_manager = HighlightManager(
-            input_tree=None,
-            output_tree=None,
-            midi_input_tree=None,
-            midi_output_tree=None,
-            client=self.client,
-            colors={
-                'text': self.text_color,
-                'background': self.background_color,
-                'highlight': self.highlight_color,
-                'auto_highlight': self.auto_highlight_color,
-                'drag_highlight': self.drag_highlight_color
-            }
-        )
-
-        self.tab_ui_manager.setup_port_tab(self, self.audio_tab_widget, "Audio", 'audio')
-        self.tab_ui_manager.setup_port_tab(self, self.midi_tab_widget, "MIDI", 'midi')
-        self.tab_ui_manager.setup_pwtop_tab(self, self.pwtop_tab_widget)
-        self.tab_ui_manager.setup_latency_tab(self, self.latency_tab_widget)
-
-        self.highlight_manager.input_tree = self.input_tree
-        self.highlight_manager.output_tree = self.output_tree
-        self.highlight_manager.midi_input_tree = self.midi_input_tree
-        self.highlight_manager.midi_output_tree = self.midi_output_tree
-
-        # New Tab Order:
-        # Audio (0), MIDI (1), Graph (2), pw-top (3), Alsa Mixer (4), Latency Test (5)
-        self.tab_widget.addTab(self.audio_tab_widget, "Audio") # Index 0
-        self.tab_widget.addTab(self.midi_tab_widget, "MIDI")   # Index 1
-
-        self.tab_ui_manager.setup_graph_tab(self, self.graph_tab_widget)
-        self.tab_widget.insertTab(2, self.graph_tab_widget, "Graph") # Index 2
-        
-        self.tab_widget.addTab(self.pwtop_tab_widget, "pw-top") # Index 3
-        
-        self.alsa_mixer_layout = QVBoxLayout(self.alsa_mixer_tab_widget)
-        self.alsa_mixer_app = AlsMixerApp(config_manager=self.config_manager) # Pass ConfigManager
-        self.alsa_mixer_layout.addWidget(self.alsa_mixer_app)
-        self.tab_widget.insertTab(4, self.alsa_mixer_tab_widget, "ALSA Mixer") # Index 4
-        
-        self.tab_widget.addTab(self.latency_tab_widget, "Latency Test") # Index 5
- 
-        if hasattr(self, 'graph_main_window') and self.graph_main_window and \
-           hasattr(self.graph_main_window, 'view') and self.graph_main_window.view and \
-           hasattr(self.graph_main_window.view, 'fullscreen_request_signal'):
-            self.graph_main_window.view.fullscreen_request_signal.connect(self.toggle_graph_fullscreen)
-        
-        if 0 <= self.last_active_tab < self.tab_widget.count():
-            self.tab_widget.setCurrentIndex(self.last_active_tab)
-        
-        self._setup_bottom_layout(main_layout)
-        
-        self.tab_widget.currentChanged.connect(self.switch_tab)
-        # Set initial state for global zoom actions based on the initially loaded tab
-        if hasattr(self, 'tab_widget'):
-             self._update_global_zoom_action_state(self.tab_widget.currentIndex())
-    
-    def _update_global_zoom_action_state(self, current_tab_index):
-        """Enable/disable global zoom actions based on the active tab."""
-        if not hasattr(self, 'tab_widget') or not hasattr(self, 'action_manager') or \
-           not self.action_manager or not hasattr(self, 'alsa_mixer_tab_widget'):
+    def _handle_unified_port_added(self, port_name, client_name, flags, type_str, is_input):
+        if not hasattr(self, 'graph_main_window') or not self.graph_main_window or not hasattr(self.graph_main_window, 'scene') or not self.graph_main_window.scene:
             return
 
-        current_widget = self.tab_widget.widget(current_tab_index)
-        is_alsa_mixer_tab_active = (current_widget == self.alsa_mixer_tab_widget)
+        scene = self.graph_main_window.scene
+        unified_nodes = scene.get_unified_nodes()
+
+        for node in unified_nodes:
+            if node.client_name == client_name:
+                print(f"New port {port_name} for unified client {client_name}. Reconnecting to sink.")
+                # Use unified sink manager to reconnect ports
+                all_ports = self.client.get_ports()
+                self.unified_sink_manager.connect_ports_to_unified_sink(node, self.jack_handler, all_ports)
+                break
+
+    def disconnect_all_unified(self):
+        if not hasattr(self, 'graph_main_window') or not self.graph_main_window or not hasattr(self.graph_main_window, 'scene') or not self.graph_main_window.scene:
+            return
+
+        scene = self.graph_main_window.scene
+        unified_nodes = scene.get_unified_nodes()
+
+        for node in unified_nodes:
+            for port_item in list(node.output_ports.values()):
+                for conn_item in list(port_item.connections):
+                    if conn_item and conn_item.source_port and conn_item.dest_port:
+                        try:
+                            self.jack_handler.break_connection(conn_item.source_port.port_name, conn_item.dest_port.port_name)
+                        except Exception as e:
+                            print(f"Error breaking output connection for {port_item.port_name} of {node.client_name}: {e}")
+
+    def reconnect_all_unified(self):
+        if not hasattr(self, 'graph_main_window') or not self.graph_main_window or not hasattr(self.graph_main_window, 'scene') or not self.graph_main_window.scene:
+            return
+
+        scene = self.graph_main_window.scene
+        unified_nodes = scene.get_unified_nodes()
+        all_ports = self.client.get_ports()
+
+        for node in unified_nodes:
+            self.unified_sink_manager.connect_ports_to_unified_sink(node, self.jack_handler, all_ports)
+
+    def _setup_ui(self):
+        # UI setup is now handled by UIManager
+        pass
+    
+    def refresh_visualizations(self):
+        if self.port_type == 'audio':
+            self.update_connections()
+        else:
+            self.update_midi_connections()
+
+    def _update_global_zoom_action_state(self, current_tab_index):
+        """Enable/disable global zoom actions based on the active tab."""
+        if not hasattr(self.ui_manager, 'tab_widget') or not hasattr(self, 'action_manager') or \
+           not self.action_manager:
+            return
+
+        current_widget = self.ui_manager.tab_widget.widget(current_tab_index)
+        is_alsa_mixer_tab_active = (current_widget == self.ui_manager.alsa_mixer_tab_widget)
 
         if hasattr(self.action_manager, 'zoom_in_action') and self.action_manager.zoom_in_action:
             self.action_manager.zoom_in_action.setEnabled(not is_alsa_mixer_tab_active)
@@ -415,9 +434,9 @@ class JackConnectionManager(QMainWindow):
             bottom_layout.addWidget(self.input_filter_edit)
         
         main_layout.addLayout(bottom_layout)
-        
+
         current_tab = self.tab_widget.currentIndex() if hasattr(self, 'tab_widget') else 0
-        self.show_bottom_controls(current_tab < 2)
+        self.tab_manager.show_bottom_controls(current_tab < 2)
 
     def is_dark_mode(self):
         palette = QApplication.palette()
@@ -464,99 +483,33 @@ class JackConnectionManager(QMainWindow):
             }}
         """
     
+    @property
+    def text_color(self):
+        return self.ui_manager.text_color
+
+    @property
+    def background_color(self):
+        return self.ui_manager.background_color
+
+    @property
+    def highlight_color(self):
+        return self.ui_manager.highlight_color
+
+    @property
+    def button_color(self):
+        return self.ui_manager.button_color
+
+    @property
+    def dark_mode(self):
+        return self.ui_manager.dark_mode
+
     def button_stylesheet(self):
         return f"""
             QPushButton {{ background-color: {self.button_color.name()}; color: {self.text_color.name()}; }}
             QPushButton:hover {{ background-color: {self.highlight_color.name()}; }}
         """
     
-    def switch_tab(self, index):
-        """
-        Handle tab switching.
-        
-        Args:
-            index: The index of the tab to switch to
-        """
-        # New Tab Order:
-        # Audio (0), MIDI (1), Graph (2), pw-top (3), Alsa Mixer (4), Latency Test (5)
 
-        # Stop pw-top monitor if switching away from it (pw-top is now index 3)
-        if index != 3 and hasattr(self, 'pwtop_monitor') and self.pwtop_monitor is not None:
-            self.pwtop_monitor.stop()
- 
-        # Configure based on the new tab index
-        if index < 2:  # Audio (0) or MIDI (1) tabs
-            self.port_type = 'audio' if index == 0 else 'midi'
-            if hasattr(self, 'ui_state_manager'):
-                 self.ui_state_manager.apply_collapse_state_to_current_trees()
-            self.refresh_visualizations()
-            self.show_bottom_controls(True)
-        elif index == 2: # Graph tab (index 2)
-            self.show_bottom_controls(False)
-            # Disable global Alt+U shortcut when Graph tab is active to allow Graph-specific Alt+U handling
-            if hasattr(self, 'action_manager') and hasattr(self.action_manager, 'untangle_shortcut_action'):
-                self.action_manager.untangle_shortcut_action.setEnabled(False)
-            if hasattr(self, 'graph_main_window') and self.graph_main_window:
-                if hasattr(self.graph_main_window, 'scene') and self.graph_main_window.scene:
-                    self.graph_main_window.scene.full_graph_refresh()
-        elif index == 3:  # pw-top tab (index 3)
-            if hasattr(self, 'pwtop_monitor') and self.pwtop_monitor is not None:
-                self.pwtop_monitor.start()
-            self.show_bottom_controls(False)
-        elif index == 4: # Alsa Mixer tab (index 4)
-            self.show_bottom_controls(False)
-            if hasattr(self, 'alsa_mixer_app') and self.alsa_mixer_app:
-                # Start ALSA mixer updates only if the window is focused
-                if self.isActiveWindow():
-                    self.alsa_mixer_app.start_updates()
-        elif index == 5:  # Latency Test tab (index 5)
-            self.show_bottom_controls(False)
-        
-        # Stop ALSA mixer updates when switching away from the tab
-        if self.last_active_tab == 4 and hasattr(self, 'alsa_mixer_app') and self.alsa_mixer_app:
-            self.alsa_mixer_app.stop_updates()
-
-        # Re-enable global Alt+U shortcut when switching away from Graph tab
-        if self.last_active_tab == 2:  # Was previously on Graph tab
-            if hasattr(self, 'action_manager') and hasattr(self.action_manager, 'untangle_shortcut_action'):
-                self.action_manager.untangle_shortcut_action.setEnabled(True)
-
-        self.last_active_tab = index
-        self.config_manager.set_int('last_active_tab', index)
-
-        # Update global zoom action enabled state
-        self._update_global_zoom_action_state(index)
- 
-        if hasattr(self, 'ui_state_manager') and self.ui_state_manager:
-             self.ui_state_manager._update_refresh_timer_interval()
-    
-    def show_bottom_controls(self, visible):
-        if hasattr(self, 'auto_refresh_checkbox'):
-            self.auto_refresh_checkbox.setVisible(visible)
-            if hasattr(self, 'untangle_button'):
-                self.untangle_button.setVisible(visible)
-        if hasattr(self, 'collapse_all_checkbox'):
-            self.collapse_all_checkbox.setVisible(visible)
-        if hasattr(self, 'bottom_refresh_button'):
-            self.bottom_refresh_button.setVisible(visible)
-        if hasattr(self, 'undo_button'):
-            self.undo_button.setVisible(visible)
-        if hasattr(self, 'redo_button'):
-            self.redo_button.setVisible(visible)
-        if hasattr(self, 'output_filter_edit'):
-            self.output_filter_edit.setVisible(visible)
-        if hasattr(self, 'input_filter_edit'):
-            self.input_filter_edit.setVisible(visible)
-        if hasattr(self, 'zoom_in_button'):
-            self.zoom_in_button.setVisible(visible)
-        if hasattr(self, 'zoom_out_button'):
-            self.zoom_out_button.setVisible(visible)
-    
-    def refresh_visualizations(self):
-        if self.port_type == 'audio':
-            self.update_connections()
-        else:
-            self.update_midi_connections()
     
     def _refresh_single_port_type(self, port_type_to_refresh):
         if port_type_to_refresh == 'audio':
@@ -575,8 +528,8 @@ class JackConnectionManager(QMainWindow):
             print(f"Warning: Invalid port_type '{port_type_to_refresh}' passed to _refresh_single_port_type")
             return
         
-        current_input_filter = self.input_filter_edit.text() if hasattr(self, 'input_filter_edit') else ""
-        current_output_filter = self.output_filter_edit.text() if hasattr(self, 'output_filter_edit') else ""
+        current_input_filter = self.ui_manager.input_filter_edit.text() if hasattr(self.ui_manager, 'input_filter_edit') else ""
+        current_output_filter = self.ui_manager.output_filter_edit.text() if hasattr(self.ui_manager, 'output_filter_edit') else ""
         
         selected_input_info = self._get_selected_item_info(input_tree)
         selected_output_info = self._get_selected_item_info(output_tree)
@@ -617,14 +570,14 @@ class JackConnectionManager(QMainWindow):
     
     def refresh_ports(self, refresh_all=False, from_shortcut=False):
         if from_shortcut:
-            self._animate_button_press(self.bottom_refresh_button)
-        
+            self._animate_button_press(self.ui_manager.bottom_refresh_button)
+
         if refresh_all:
             self._refresh_single_port_type('audio')
             self._refresh_single_port_type('midi')
         else:
             self._refresh_single_port_type(self.port_type)
-        
+
         # Apply node visibility settings after refreshing ports
         if hasattr(self, 'node_visibility_manager') and self.node_visibility_manager:
             self.node_visibility_manager.apply_visibility_settings()
@@ -699,10 +652,10 @@ class JackConnectionManager(QMainWindow):
                  self.ui_state_manager.handle_focus_change(is_focused)
 
             # Manage ALSA mixer updates based on focus and active tab
-            if hasattr(self, 'tab_widget') and hasattr(self, 'alsa_mixer_tab_widget') and hasattr(self, 'alsa_mixer_app'):
-                current_tab_index = self.tab_widget.currentIndex()
-                current_widget = self.tab_widget.widget(current_tab_index)
-                is_alsa_mixer_tab_active = (current_widget == self.alsa_mixer_tab_widget)
+            if hasattr(self.ui_manager, 'tab_widget') and hasattr(self.ui_manager, 'alsa_mixer_tab_widget') and hasattr(self, 'alsa_mixer_app'):
+                current_tab_index = self.ui_manager.tab_widget.currentIndex()
+                current_widget = self.ui_manager.tab_widget.widget(current_tab_index)
+                is_alsa_mixer_tab_active = (current_widget == self.ui_manager.alsa_mixer_tab_widget)
 
                 if is_alsa_mixer_tab_active:
                     if is_focused:
@@ -713,21 +666,22 @@ class JackConnectionManager(QMainWindow):
     def _animate_button_press(self, button):
         if not button:
             return
-        
+
         original_style = button.styleSheet()
-        
+
         if "inset" in original_style:
             return
-        
+
+        color_scheme = self.ui_manager.get_color_scheme()
         pressed_style = f"""
             QPushButton {{
-                background-color: {self.highlight_color.name()};
-                color: {self.text_color.name()};
-                border: 2px inset {self.highlight_color.darker(120).name()};
+                background-color: {color_scheme['highlight'].name()};
+                color: {color_scheme['text'].name()};
+                border: 2px inset {color_scheme['highlight'].darker(120).name()};
             }}
         """
         button.setStyleSheet(pressed_style)
-        
+
         QTimer.singleShot(150, lambda: button.setStyleSheet(original_style))
     
     def _handle_port_registration(self, port, register: bool):
@@ -995,10 +949,10 @@ class JackConnectionManager(QMainWindow):
         disconnect_button.setEnabled(can_disconnect)
 
     def update_undo_redo_buttons(self):
-        if hasattr(self, 'undo_button') and self.undo_button:
-            self.undo_button.setEnabled(self.connection_history.can_undo())
-        if hasattr(self, 'redo_button') and self.redo_button:
-            self.redo_button.setEnabled(self.connection_history.can_redo())
+        if hasattr(self.ui_manager, 'undo_button') and self.ui_manager.undo_button:
+            self.ui_manager.undo_button.setEnabled(self.connection_history.can_undo())
+        if hasattr(self.ui_manager, 'redo_button') and self.ui_manager.redo_button:
+            self.ui_manager.redo_button.setEnabled(self.connection_history.can_redo())
 
     def disconnect_node(self, node_name):
         self.jack_handler.disconnect_node(node_name)
@@ -1039,98 +993,13 @@ class JackConnectionManager(QMainWindow):
         self.refresh_visualizations()
     
     def update_connections(self):
-        self._update_connection_graphics(self.connection_scene, self.connection_view,
-                                        self.output_tree, self.input_tree, is_midi=False)
-    
+        self.connection_visualizer.update_connection_graphics(self.connection_scene, self.connection_view,
+                                                             self.output_tree, self.input_tree, is_midi=False)
+
     def update_midi_connections(self):
-        self._update_connection_graphics(self.midi_connection_scene, self.midi_connection_view,
-                                        self.midi_output_tree, self.midi_input_tree, is_midi=True)
-    
-    def _update_connection_graphics(self, scene, view, output_tree, input_tree, is_midi):
-        scene.clear()
-        view_rect = view.rect()
-        scene_rect = QRectF(0, 0, view_rect.width(), view_rect.height())
-        scene.setSceneRect(scene_rect)
-        
-        connections = []
-        try:
-            relevant_output_ports: list[jack.Port] = []
-            if is_midi:
-                relevant_output_ports = jack_utils.get_all_jack_ports(self.client, is_output=True, is_midi=True)
-            else:
-                relevant_output_ports = jack_utils.get_all_jack_ports(self.client, is_output=True, is_audio=True)
+        self.connection_visualizer.update_connection_graphics(self.midi_connection_scene, self.midi_connection_view,
+                                                             self.midi_output_tree, self.midi_input_tree, is_midi=True)
 
-            for output_port_obj in relevant_output_ports:
-                port_connections = jack_utils.get_all_jack_connections(self.client, output_port_obj)
-                connections.extend(port_connections)
-
-        except jack.JackError as e:
-            print(f"Error getting connections via jack_utils: {e}")
-            return
-        
-        for output_name, input_name in connections:
-            start_pos = self.get_port_position(output_tree, output_name, view)
-            end_pos = self.get_port_position(input_tree, input_name, view)
-            
-            if start_pos and end_pos:
-                path = QPainterPath()
-                path.moveTo(start_pos)
-                
-                ctrl1_x = start_pos.x() + (end_pos.x() - start_pos.x()) / 3
-                ctrl2_x = start_pos.x() + 2 * (end_pos.x() - start_pos.x()) / 3
-                
-                path.cubicTo(
-                    QPointF(ctrl1_x, start_pos.y()),
-                    QPointF(ctrl2_x, end_pos.y()),
-                    end_pos
-                )
-                
-                base_name = output_name.rsplit(':', 1)[0]
-                
-                random.seed(base_name)
-                base_color = QColor(random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
-                
-                if self.dark_mode:
-                    h, s, v, a = base_color.getHsvF()
-                    s = min(1.0, s * 1.4)
-                    v = min(1.0, v * 1.3)
-                    base_color.setHsvF(h, s, v, a)
-                
-                pen = QPen(base_color, 2)
-                path_item = QGraphicsPathItem(path)
-                path_item.setPen(pen)
-                scene.addItem(path_item)
-        
-        view.fitInView(scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
-    
-    def get_port_position(self, tree_widget, port_name, connection_view):
-        port_item = tree_widget.port_items.get(port_name)
-        if not port_item:
-            return None
-        
-        parent_group = port_item.parent()
-        if not parent_group:
-            return None
-        
-        is_expanded = parent_group.isExpanded()
-        
-        target_item = port_item if is_expanded else parent_group
-        
-        rect = tree_widget.visualItemRect(target_item)
-        
-        if rect.height() <= 0:
-            return None
-        
-        is_output = tree_widget in (self.output_tree, self.midi_output_tree)
-        
-        point = QPointF(tree_widget.viewport().width() if is_output else 0,
-                       rect.top() + rect.height() / 2)
-        
-        viewport_point = tree_widget.viewport().mapToParent(point.toPoint())
-        global_point = tree_widget.mapToGlobal(viewport_point)
-        scene_point = connection_view.mapFromGlobal(global_point)
-        return connection_view.mapToScene(scene_point)
-    
     def disconnect_selected_groups(self, group_items):
         ports_to_disconnect = set()
         
@@ -1164,12 +1033,12 @@ class JackConnectionManager(QMainWindow):
 
     @pyqtSlot()
     def toggle_graph_fullscreen(self):
-        if not hasattr(self, 'tab_widget') or not hasattr(self, 'graph_tab_widget'):
+        if not hasattr(self.ui_manager, 'tab_widget') or not hasattr(self.ui_manager, 'graph_tab_widget'):
             print("Error: Tab widget or graph_tab_widget not found.")
             return
- 
+
         # Ensure this action is only for the graph tab, which should be at index 2 (new index)
-        if self.tab_widget.widget(2) != self.graph_tab_widget or self.tab_widget.currentWidget() != self.graph_tab_widget: # Graph is now index 2
+        if self.ui_manager.tab_widget.widget(2) != self.ui_manager.graph_tab_widget or self.ui_manager.tab_widget.currentWidget() != self.ui_manager.graph_tab_widget: # Graph is now index 2
             print("Graph fullscreen toggle requested, but graph tab is not active or not found at index 2.")
             return
  
@@ -1185,8 +1054,8 @@ class JackConnectionManager(QMainWindow):
             if toolbar.parent() == self:
                 components_to_manage.append(toolbar)
 
-        if hasattr(self.tab_widget, 'tabBar'):
-            components_to_manage.append(self.tab_widget.tabBar())
+        if hasattr(self.ui_manager.tab_widget, 'tabBar'):
+            components_to_manage.append(self.ui_manager.tab_widget.tabBar())
 
         if self._graph_is_fullscreen:
             self._widgets_original_visibility.clear()
@@ -1195,15 +1064,15 @@ class JackConnectionManager(QMainWindow):
                 if widget:
                     self._widgets_original_visibility[widget] = widget.isVisible()
                     widget.hide()
-            
-            self.show_bottom_controls(False)
-            
-            for i in range(self.tab_widget.count()):
-                tab_page_widget = self.tab_widget.widget(i)
-                if tab_page_widget != self.graph_tab_widget:
+
+            self.tab_manager.show_bottom_controls(False)
+
+            for i in range(self.ui_manager.tab_widget.count()):
+                tab_page_widget = self.ui_manager.tab_widget.widget(i)
+                if tab_page_widget != self.ui_manager.graph_tab_widget:
                     if tab_page_widget not in self._widgets_original_visibility:
-                         self._widgets_original_visibility[tab_page_widget] = self.tab_widget.isTabEnabled(i)
-                    self.tab_widget.setTabEnabled(i, False)
+                         self._widgets_original_visibility[tab_page_widget] = self.ui_manager.tab_widget.isTabEnabled(i)
+                    self.ui_manager.tab_widget.setTabEnabled(i, False)
             
             if hasattr(self, 'graph_main_window') and self.graph_main_window and hasattr(self.graph_main_window, 'toggle_internal_controls'):
                 self.graph_main_window.toggle_internal_controls(False)
@@ -1222,8 +1091,8 @@ class JackConnectionManager(QMainWindow):
             for toolbar in self.findChildren(QToolBar):
                 if toolbar.parent() == self:
                     chrome_widgets_managed_on_exit.append(toolbar)
-            if hasattr(self.tab_widget, 'tabBar') and self.tab_widget.tabBar():
-                chrome_widgets_managed_on_exit.append(self.tab_widget.tabBar())
+            if hasattr(self.ui_manager.tab_widget, 'tabBar') and self.ui_manager.tab_widget.tabBar():
+                chrome_widgets_managed_on_exit.append(self.ui_manager.tab_widget.tabBar())
 
             for item_widget, original_state in self._widgets_original_visibility.items():
                 if item_widget in chrome_widgets_managed_on_exit:
@@ -1231,21 +1100,21 @@ class JackConnectionManager(QMainWindow):
                         item_widget.show()
                 else:
                     tab_index_to_restore = -1
-                    for i in range(self.tab_widget.count()):
-                        if self.tab_widget.widget(i) == item_widget:
+                    for i in range(self.ui_manager.tab_widget.count()):
+                        if self.ui_manager.tab_widget.widget(i) == item_widget:
                             tab_index_to_restore = i
                             break
-                    
-                    if tab_index_to_restore != -1 and self.tab_widget.widget(tab_index_to_restore) != self.graph_tab_widget:
+
+                    if tab_index_to_restore != -1 and self.ui_manager.tab_widget.widget(tab_index_to_restore) != self.ui_manager.graph_tab_widget:
                         if original_state:
-                            self.tab_widget.setTabEnabled(tab_index_to_restore, True)
+                            self.ui_manager.tab_widget.setTabEnabled(tab_index_to_restore, True)
             
             self._widgets_original_visibility.clear()
             
         if self.centralWidget() and self.centralWidget().layout():
             self.centralWidget().layout().activate()
-        if self.graph_tab_widget and self.graph_tab_widget.layout():
-            self.graph_tab_widget.layout().activate()
+        if self.ui_manager.graph_tab_widget and self.ui_manager.graph_tab_widget.layout():
+            self.ui_manager.graph_tab_widget.layout().activate()
 
     def show_node_visibility_dialog(self):
         """Show the node visibility configuration dialog."""

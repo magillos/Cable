@@ -84,6 +84,7 @@ class PresetHandler:
         self.original_preset_connections = None
         self.original_preset_layout_data = None
         self.save_button_initially_enabled = False
+        self.unified_clients = {}
 
     def _show_preset_menu(self):
         """Populates the preset management menu. Assumes menu is sender()."""
@@ -402,9 +403,11 @@ class PresetHandler:
 
         # Use enhanced preset manager if available, otherwise fall back to basic
         if hasattr(self.manager.preset_manager, 'load_and_apply_preset_with_layout'):
+            self.manager.disconnect_all_unified()
             success, layout_data = self.manager.preset_manager.load_and_apply_preset_with_layout(
                 name, strict_mode=strict_mode, daemon_mode=daemon_mode, apply_layout=restore_layout
             )
+            self.manager.reconnect_all_unified()
 
             # Store the original preset state for change detection
             self.original_preset_connections = self.manager._get_current_connections()
@@ -758,15 +761,15 @@ class PresetHandler:
                 if hasattr(self.manager, 'node_visibility_manager') and self.manager.node_visibility_manager:
                     visibility_data = layout_data['node_visibility']
 
-                    # Update the node visibility manager's settings
+                    # Replace the node visibility manager's settings (not update)
                     if 'audio_input' in visibility_data:
-                        self.manager.node_visibility_manager.audio_input_visibility.update(visibility_data['audio_input'])
+                        self.manager.node_visibility_manager.audio_input_visibility = dict(visibility_data['audio_input'])
                     if 'audio_output' in visibility_data:
-                        self.manager.node_visibility_manager.audio_output_visibility.update(visibility_data['audio_output'])
+                        self.manager.node_visibility_manager.audio_output_visibility = dict(visibility_data['audio_output'])
                     if 'midi_input' in visibility_data:
-                        self.manager.node_visibility_manager.midi_input_visibility.update(visibility_data['midi_input'])
+                        self.manager.node_visibility_manager.midi_input_visibility = dict(visibility_data['midi_input'])
                     if 'midi_output' in visibility_data:
-                        self.manager.node_visibility_manager.midi_output_visibility.update(visibility_data['midi_output'])
+                        self.manager.node_visibility_manager.midi_output_visibility = dict(visibility_data['midi_output'])
 
                     # Save the updated settings to the config file
                     self.manager.node_visibility_manager.save_visibility_settings()
@@ -775,6 +778,15 @@ class PresetHandler:
                     self.manager.node_visibility_manager.apply_visibility_settings()
 
                     print("Applied node visibility settings from preset")
+
+            # Apply unified clients if available
+            if 'unified_clients' in layout_data and hasattr(self.manager, 'graph_main_window'):
+                if self.manager.graph_main_window and hasattr(self.manager.graph_main_window, 'scene'):
+                    scene = self.manager.graph_main_window.scene
+                    if scene and hasattr(scene, 'apply_unified_states'):
+                        self.unified_clients = layout_data.get('unified_clients', {})
+                        scene.apply_unified_states(self.unified_clients)
+                        print("Applied unified clients from preset")
 
         except Exception as e:
             print(f"Error applying layout data: {e}")

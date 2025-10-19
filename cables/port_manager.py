@@ -282,8 +282,8 @@ class PortManager:
 
     def _handle_filter_change(self):
         """Handles text changes in the shared filter boxes."""
-        # Access tab_widget through connection_manager
-        current_index = self.connection_manager.tab_widget.currentIndex()
+        # Access tab_widget through ui_manager
+        current_index = self.connection_manager.ui_manager.tab_widget.currentIndex()
         input_text = self.input_filter_edit.text()
         output_text = self.output_filter_edit.text()
 

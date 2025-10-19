@@ -95,10 +95,20 @@ class EnhancedPresetManager(PresetManager):
             layout_file = os.path.join(self.layout_presets_dir, f"{clean_name}.json")
             
             try:
+                unified_clients = {}
+                if node_states:
+                    for client_name, state in node_states.items():
+                        if state.get('is_unified'):
+                            unified_clients[client_name] = {
+                                'virtual_sink_name': state.get('unified_virtual_sink_name'),
+                                'channel_map': 'stereo' # Currently hardcoded to stereo
+                            }
+
                 layout_data = {
                     'node_states': node_states,
                     'graph_zoom_level': graph_zoom_level,
-                    'node_visibility': node_visibility_data
+                    'node_visibility': node_visibility_data,
+                    'unified_clients': unified_clients
                 }
                 
                 print(f"EnhancedPresetManager: Writing JSON to {layout_file}")

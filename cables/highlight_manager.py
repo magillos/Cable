@@ -34,6 +34,21 @@ class HighlightManager:
         self.auto_highlight_color = self.colors.get('auto_highlight', QColor(255, 140, 0)) # Default light mode auto-highlight
         self.drag_highlight_color = self.colors.get('drag_highlight', QColor(200, 200, 200)) # Default light mode drag highlight
 
+    def set_trees(self, input_tree, output_tree, midi_input_tree, midi_output_tree):
+        """
+        Update tree references after they are created.
+
+        Args:
+            input_tree: The input port tree widget (PortTreeWidget).
+            output_tree: The output port tree widget (PortTreeWidget).
+            midi_input_tree: The MIDI input port tree widget (PortTreeWidget).
+            midi_output_tree: The MIDI output port tree widget (PortTreeWidget).
+        """
+        self.input_tree = input_tree
+        self.output_tree = output_tree
+        self.midi_input_tree = midi_input_tree
+        self.midi_output_tree = midi_output_tree
+
     # --- Highlighting Methods Moved from JackConnectionManager ---
 
     def _highlight_connected_outputs_for_input(self, input_name, is_midi):

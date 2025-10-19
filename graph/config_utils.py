@@ -17,6 +17,10 @@ class ConfigManager:
     INPUT_PART_FOLDED_KEY = "::input_part_folded"
     OUTPUT_PART_FOLDED_KEY = "::output_part_folded"
     MANUAL_SPLIT_KEY = "::manual_split" # Added for manual split flag
+    IS_UNIFIED_KEY = "::is_unified"
+    UNIFIED_SINK_NAME_KEY = "::unified_sink_name"
+    UNIFIED_MODULE_ID_KEY = "::unified_module_id"
+    UNIFIED_PORTS_TYPE_KEY = "::unified_ports_type"
  
     def __init__(self):
         self.config_dir = Path.home() / ".config" / "cable"
@@ -55,7 +59,7 @@ class ConfigManager:
                 continue
 
             saved_count += 1
-            node_data = {}
+            node_data = data_to_save.get(client_name, {})
 
             # 1. Save the normal position (position of the original node, even if hidden)
             pos = node.scenePos()
@@ -102,6 +106,13 @@ class ConfigManager:
                     node_data[self.INPUT_PART_FOLDED_KEY] = node.split_input_node.input_part_folded
                 if node.split_output_node:
                     node_data[self.OUTPUT_PART_FOLDED_KEY] = node.split_output_node.output_part_folded
+
+            # 6. Save unified state
+            if hasattr(node, 'is_unified') and node.is_unified:
+                node_data[self.IS_UNIFIED_KEY] = True
+                node_data[self.UNIFIED_SINK_NAME_KEY] = node.unified_virtual_sink_name
+                node_data[self.UNIFIED_MODULE_ID_KEY] = node.unified_module_id
+                node_data[self.UNIFIED_PORTS_TYPE_KEY] = node.unified_ports_type
  
             # Store all collected data for this client_name
             data_to_save[client_name] = node_data
@@ -170,6 +181,13 @@ class ConfigManager:
                 if config.get("is_split", False):
                     config[self.INPUT_PART_FOLDED_KEY] = bool(node_data.get(self.INPUT_PART_FOLDED_KEY, False))
                     config[self.OUTPUT_PART_FOLDED_KEY] = bool(node_data.get(self.OUTPUT_PART_FOLDED_KEY, False))
+
+                # Load unified state
+                if self.IS_UNIFIED_KEY in node_data and node_data[self.IS_UNIFIED_KEY]:
+                    config['is_unified'] = True
+                    config['virtual_sink_name'] = node_data.get(self.UNIFIED_SINK_NAME_KEY)
+                    config['unified_module_id'] = node_data.get(self.UNIFIED_MODULE_ID_KEY)
+                    config['unified_ports_type'] = node_data.get(self.UNIFIED_PORTS_TYPE_KEY)
  
                 if config: # Only add if we loaded something
                     loaded_config[client_name] = config

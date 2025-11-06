@@ -155,6 +155,7 @@ class UIManager:
         self.audio_tab_widget = QWidget()
         self.midi_tab_widget = QWidget()
         self.graph_tab_widget = QWidget()
+        self.midi_matrix_tab_widget = QWidget()
         self.alsa_mixer_tab_widget = QWidget()
         self.pwtop_tab_widget = QWidget()
         self.latency_tab_widget = QWidget()

@@ -2,10 +2,10 @@
 TabUIManager - Manages the setup of UI tabs
 """
 
-from PyQt6.QtWidgets import (QVBoxLayout, QHBoxLayout, QLabel, QSpacerItem,
+from PyQt6.QtWidgets import (QVBoxLayout, QHBoxLayout, QLabel, QSpacerItem, QSplitter,
                              QSizePolicy, QWidget, QTextEdit, QComboBox, QPushButton,
-                             QToolButton, QMenu) # Added QToolButton, QMenu
-from PyQt6.QtCore import Qt
+                             QToolButton, QMenu) # Added QToolButton, QMenu, QSplitter
+from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QFont, QIcon, QAction
 import threading # Added for graph tab
 
@@ -44,12 +44,13 @@ class TabUIManager:
         """
         # Create main layout for the tab
         layout = QVBoxLayout(tab_widget)
+        layout.setContentsMargins(0, 0, 0, 0)
 
         # Create button widget and layout at the top
         button_widget = QWidget()
         button_layout = QHBoxLayout(button_widget)
         button_layout.setContentsMargins(0, 0, 0, 0)
-        
+
         # Create buttons using shared_widgets factory
         if port_type == 'audio':
             actual_connect_action = manager.action_manager.audio_connect_action
@@ -83,7 +84,7 @@ class TabUIManager:
         
         # Add Node Visibility button
         node_visibility_action = QAction("Clients Visibility", button_widget)
-        node_visibility_action.triggered.connect(manager.show_node_visibility_dialog)
+        node_visibility_action.triggered.connect(lambda: manager.show_node_visibility_dialog(port_type))
         node_visibility_button = create_action_button(
             parent_widget=button_widget,
             action=node_visibility_action,
@@ -155,12 +156,21 @@ class TabUIManager:
         connection_view_initial_width = manager.config_manager.get_int_setting("CONNECTION_VIEW_INITIAL_WIDTH", app_config.CONNECTION_VIEW_INITIAL_WIDTH)
         middle_layout_widget.setFixedWidth(connection_view_initial_width)
         
-        # Combine layouts
-        content_layout = QHBoxLayout()
-        content_layout.addLayout(output_layout)
-        content_layout.addWidget(middle_layout_widget)
-        content_layout.addLayout(input_layout)
-        layout.addLayout(content_layout)
+        # For MIDI tab, use splitter with traditional view on top and matrix view on bottom
+        if port_type == 'midi':
+            # For Audio tab, use traditional layout
+            content_layout = QHBoxLayout()
+            content_layout.addLayout(output_layout)
+            content_layout.addWidget(middle_layout_widget)
+            content_layout.addLayout(input_layout)
+            layout.addLayout(content_layout)
+        else:
+            # For Audio tab, use traditional layout
+            content_layout = QHBoxLayout()
+            content_layout.addLayout(output_layout)
+            content_layout.addWidget(middle_layout_widget)
+            content_layout.addLayout(input_layout)
+            layout.addLayout(content_layout)
         
         # Store references in manager
         if port_type == 'audio':
@@ -202,6 +212,100 @@ class TabUIManager:
         
         # Initial font size is now applied by UIStateManager after it's initialized
         # manager._apply_port_list_font_size() # Removed call
+
+    def setup_midi_matrix_tab(self, manager, tab_widget):
+        """
+        Set up the MIDI Matrix tab.
+        
+        Args:
+            manager: The JackConnectionManager instance
+            tab_widget: The widget to set up as the MIDI Matrix tab
+        """
+        # Create main layout for the tab
+        layout = QVBoxLayout(tab_widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        # Create button widget and layout at the top
+        button_widget = QWidget()
+        button_layout = QHBoxLayout(button_widget)
+        button_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Create buttons using shared_widgets factory
+        presets_action = manager.action_manager.presets_action
+        presets_button = create_action_button(
+            parent_widget=button_widget,
+            action=presets_action,
+            tooltip="Manage Presets"
+        )
+        presets_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+
+        # Add Node Visibility button
+        node_visibility_action = QAction("Clients Visibility", button_widget)
+        node_visibility_action.triggered.connect(lambda: manager.show_node_visibility_dialog('midi_matrix'))
+        node_visibility_button = create_action_button(
+            parent_widget=button_widget,
+            action=node_visibility_action,
+            tooltip="Configure which MIDI clients should be visible in the matrix"
+        )
+
+        # Add Undo/Redo buttons
+        undo_button = create_action_button(
+            parent_widget=button_widget,
+            action=manager.action_manager.global_undo_action,
+            tooltip="Undo last connection <span style='color:grey'>Ctrl+Z</span>"
+        )
+        redo_button = create_action_button(
+            parent_widget=button_widget,
+            action=manager.action_manager.global_redo_action,
+            tooltip="Redo last connection <span style='color:grey'>Shift+Ctrl+Z/Ctrl+Y</span>"
+        )
+
+        # Add zoom buttons
+        zoom_in_button = QPushButton('+')
+        zoom_in_button.setToolTip("Increase font size in matrix <span style='color:grey'>Ctrl++</span>")
+        zoom_out_button = QPushButton('-')
+        zoom_out_button.setToolTip("Decrease font size in matrix <span style='color:grey'>Ctrl+-</span>")
+        zoom_button_size = QSize(25, 25)
+        zoom_in_button.setFixedSize(zoom_button_size)
+        zoom_out_button.setFixedSize(zoom_button_size)
+
+        # Add buttons to layout with stretches for centering
+        button_layout.addStretch()
+        button_layout.addWidget(undo_button)
+        button_layout.addWidget(redo_button)
+        button_layout.addWidget(presets_button)
+        button_layout.addWidget(node_visibility_button)
+        button_layout.addStretch()
+        button_layout.addWidget(zoom_out_button)
+        button_layout.addWidget(zoom_in_button)
+
+        # Add button widget to main layout
+        layout.addWidget(button_widget)
+
+        # Bottom widget - matrix view with adjustable output labels
+        from cables.ui.midi_matrix_widget import MIDIMatrixWidget
+        matrix_widget = MIDIMatrixWidget(manager, tab_widget)
+        manager.midi_matrix_widget = matrix_widget
+        manager.midi_matrix_node_visibility_button = node_visibility_button
+
+        # Connect zoom buttons
+        zoom_in_button.clicked.connect(matrix_widget.zoom_in)
+        zoom_out_button.clicked.connect(matrix_widget.zoom_out)
+
+        # Add splitter to main layout
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter.setChildrenCollapsible(True)
+
+        top_widget = QWidget()
+        top_widget.setMinimumHeight(0)
+
+        splitter.addWidget(top_widget)
+        splitter.addWidget(matrix_widget)
+        splitter.setSizes([0, 400])
+
+        layout.addWidget(splitter)
+        manager.midi_matrix_v_splitter = splitter
+
 
     def setup_pwtop_tab(self, manager, tab_widget):
         """
@@ -398,7 +502,7 @@ class TabUIManager:
             if hasattr(manager.graph_main_window, 'preset_button') and manager.graph_main_window.preset_button:
                 # Create the Node Visibility button
                 graph_node_visibility_action = QAction("Clients Visibility", manager.graph_main_window)
-                graph_node_visibility_action.triggered.connect(manager.show_node_visibility_dialog)
+                graph_node_visibility_action.triggered.connect(lambda: manager.show_node_visibility_dialog('graph'))
                 graph_node_visibility_button = create_action_button(
                     parent_widget=manager.graph_main_window,
                     action=graph_node_visibility_action,

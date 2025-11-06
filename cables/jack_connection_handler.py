@@ -21,6 +21,30 @@ class JackConnectionHandler:
         """
         self._client = client
         self._manager = manager # To access history and UI update methods
+        self._batch_count = 0
+
+    def start_batch(self):
+        """Start a batch of connection operations."""
+        self._batch_count += 1
+
+    def end_batch(self):
+        """End a batch of connection operations and perform a single refresh."""
+        self._batch_count -= 1
+        if self._batch_count == 0:
+            self._perform_refresh()
+
+    def _perform_refresh(self):
+        """Perform all UI and state updates after an operation."""
+        self._manager.update_undo_redo_buttons()
+        self._manager.update_connections()  # Update audio viz
+        self._manager.update_midi_connections()  # Update midi viz
+        self._manager.refresh_ports(refresh_all=True)  # Refresh both audio and midi ports
+        self._manager.update_connection_buttons()  # Update audio buttons
+        self._manager.update_midi_connection_buttons()  # Update midi buttons
+
+        # Update preset save button state if presets are being used
+        if hasattr(self._manager, 'preset_handler') and self._manager.preset_handler:
+            self._manager.preset_handler._update_save_button_enabled_state()
 
     def _port_operation(self, operation_type, output_name, input_name, is_midi, is_undo_redo=False):
         """
@@ -35,61 +59,22 @@ class JackConnectionHandler:
         """
         try:
             if operation_type == 'connect':
-                # Check if connection already exists before attempting to connect
-                try:
-                    # Ensure port exists before querying connections
-                    if not any(p.name == output_name for p in self._client.get_ports(is_output=True, is_midi=is_midi)):
-                         print(f"Output port {output_name} not found, skipping connection check.")
-                         return # Don't attempt connect if output port doesn't exist
-
-                    connections = self._client.get_all_connections(output_name)
-                    if any(conn.name == input_name for conn in connections):
-                        print(f"Connection {output_name} -> {input_name} already exists, skipping")
-                        return
-                except jack.JackError as check_err:
-                    # If we can't check connections, log and try the connect anyway
-                    print(f"Warning: Could not check existing connections for {output_name}: {check_err}")
-                    pass
-
                 self._client.connect(output_name, input_name)
                 if not is_undo_redo:
                     self._manager.connection_history.add_action('connect', output_name, input_name, is_midi)
             else: # disconnect
-                 # Check if connection exists before attempting to disconnect
-                try:
-                    # Ensure port exists before querying connections
-                    if not any(p.name == output_name for p in self._client.get_ports(is_output=True, is_midi=is_midi)):
-                         print(f"Output port {output_name} not found, skipping disconnection check.")
-                         return # Don't attempt disconnect if output port doesn't exist
-
-                    connections = self._client.get_all_connections(output_name)
-                    if not any(conn.name == input_name for conn in connections):
-                        print(f"Connection {output_name} -> {input_name} does not exist, skipping disconnection")
-                        return
-                except jack.JackError as check_err:
-                     # If we can't check, log and try the disconnect anyway
-                    print(f"Warning: Could not check existing connections for {output_name} before disconnect: {check_err}")
-                    pass
-
                 self._client.disconnect(output_name, input_name)
                 if not is_undo_redo:
                     self._manager.connection_history.add_action('disconnect', output_name, input_name, is_midi)
 
-            # Call UI/State update methods on the manager instance - Always update/refresh everything like original
-            self._manager.update_undo_redo_buttons()
-            self._manager.update_connections() # Update audio viz
-            self._manager.update_midi_connections() # Update midi viz
-            self._manager.refresh_ports(refresh_all=True) # Refresh both audio and midi ports
-            self._manager.update_connection_buttons() # Update audio buttons
-            self._manager.update_midi_connection_buttons() # Update midi buttons
+            if self._batch_count == 0:
+                self._perform_refresh()
 
-            # Update preset save button state if presets are being used
-            if hasattr(self._manager, 'preset_handler') and self._manager.preset_handler:
-                self._manager.preset_handler._update_save_button_enabled_state()
-
-        except jack.JackError as e:
-            print(f"{operation_type.capitalize()} error: {e}")
-            # Don't crash on connection errors, just log them
+        except jack.JackError:
+            # Silently ignore connection/disconnection errors.
+            # This is expected during drag operations in the matrix view when
+            # trying to connect/disconnect a port that is already in that state.
+            pass
 
     def make_connection(self, output_name, input_name, is_undo_redo=False):
         """

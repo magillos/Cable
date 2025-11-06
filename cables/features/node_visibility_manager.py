@@ -38,7 +38,9 @@ class NodeVisibilityManager:
         self.audio_output_visibility = {}
         self.midi_input_visibility = {}
         self.midi_output_visibility = {}
-        
+        self.midi_matrix_input_visibility = {}
+        self.midi_matrix_output_visibility = {}
+
         # For backward compatibility
         self.audio_node_visibility = {}
         self.midi_node_visibility = {}
@@ -59,6 +61,8 @@ class NodeVisibilityManager:
                     self.audio_output_visibility = data.get('audio_output', {})
                     self.midi_input_visibility = data.get('midi_input', {})
                     self.midi_output_visibility = data.get('midi_output', {})
+                    self.midi_matrix_input_visibility = data.get('midi_matrix_input', {})
+                    self.midi_matrix_output_visibility = data.get('midi_matrix_output', {})
                     
                     # If using legacy format, convert to new format
                     if (self.audio_node_visibility or self.midi_node_visibility) and not (
@@ -91,7 +95,9 @@ class NodeVisibilityManager:
             'audio_input': self.audio_input_visibility,
             'audio_output': self.audio_output_visibility,
             'midi_input': self.midi_input_visibility,
-            'midi_output': self.midi_output_visibility
+            'midi_output': self.midi_output_visibility,
+            'midi_matrix_input': self.midi_matrix_input_visibility,
+            'midi_matrix_output': self.midi_matrix_output_visibility
         }
         
         try:
@@ -147,49 +153,103 @@ class NodeVisibilityManager:
     def is_output_visible(self, node_name, is_midi=False):
         """
         Check if a node's output should be visible.
-        
+
         Args:
             node_name: The name of the node to check
             is_midi: Whether this is a MIDI node
-            
+
         Returns:
             bool: True if the node's output should be visible, False otherwise
         """
         # Get the client name part (before the colon)
         parts = node_name.split(':')
         client_name = parts[0] if parts else node_name
-        
+
         # Check the visibility setting
         visibility_dict = self.midi_output_visibility if is_midi else self.audio_output_visibility
         # If the node is not in the dictionary, it's visible by default
         return visibility_dict.get(client_name, True)
+
+    def is_midi_matrix_input_visible(self, node_name):
+        """
+        Check if a node's input should be visible in the MIDI Matrix.
+
+        Args:
+            node_name: The name of the node to check
+
+        Returns:
+            bool: True if the node's input should be visible, False otherwise
+        """
+        # Get the client name part (before the colon)
+        parts = node_name.split(':')
+        client_name = parts[0] if parts else node_name
+
+        # If the node is not in the dictionary, it's visible by default
+        return self.midi_matrix_input_visibility.get(client_name, True)
+
+    def is_midi_matrix_output_visible(self, node_name):
+        """
+        Check if a node's output should be visible in the MIDI Matrix.
+
+        Args:
+            node_name: The name of the node to check
+
+        Returns:
+            bool: True if the node's output should be visible, False otherwise
+        """
+        # Get the client name part (before the colon)
+        parts = node_name.split(':')
+        client_name = parts[0] if parts else node_name
+
+        # If the node is not in the dictionary, it's visible by default
+        return self.midi_matrix_output_visibility.get(client_name, True)
     
-    def show_configuration_dialog(self, parent=None):
+    def show_configuration_dialog(self, parent=None, tab_type='graph'):
         """
         Show the node visibility configuration dialog.
-        
+
         Args:
             parent: The parent widget
+            tab_type: The type of tab ('audio', 'midi', 'midi_matrix', or 'graph')
         """
-        dialog = NodeVisibilityDialog(
-            self.connection_manager,
-            self.audio_input_visibility,
-            self.audio_output_visibility,
-            self.midi_input_visibility,
-            self.midi_output_visibility,
-            parent
-        )
-        
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            # Update settings from dialog
-            self.audio_input_visibility = dialog.audio_input_visibility
-            self.audio_output_visibility = dialog.audio_output_visibility
-            self.midi_input_visibility = dialog.midi_input_visibility
-            self.midi_output_visibility = dialog.midi_output_visibility
-            self.save_visibility_settings()
-            
-            # Apply new visibility settings
-            self.apply_visibility_settings()
+        if tab_type == 'midi_matrix':
+            dialog = NodeVisibilityDialog(
+                self.connection_manager,
+                {},  # No audio for MIDI matrix
+                {},  # No audio for MIDI matrix
+                self.midi_matrix_input_visibility,
+                self.midi_matrix_output_visibility,
+                parent,
+                tab_type
+            )
+
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                # Settings are already modified directly since dialog works with references
+                self.save_visibility_settings()
+
+                # Apply new visibility settings
+                self.apply_visibility_settings()
+        else:
+            dialog = NodeVisibilityDialog(
+                self.connection_manager,
+                self.audio_input_visibility,
+                self.audio_output_visibility,
+                self.midi_input_visibility,
+                self.midi_output_visibility,
+                parent,
+                tab_type
+            )
+
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                # Update settings from dialog
+                self.audio_input_visibility = dialog.audio_input_visibility
+                self.audio_output_visibility = dialog.audio_output_visibility
+                self.midi_input_visibility = dialog.midi_input_visibility
+                self.midi_output_visibility = dialog.midi_output_visibility
+                self.save_visibility_settings()
+
+                # Apply new visibility settings
+                self.apply_visibility_settings()
     
     def apply_visibility_settings(self):
         """Apply current visibility settings to the port trees."""
@@ -207,6 +267,10 @@ class NodeVisibilityManager:
             is_midi=True
         )
         
+        # Update MIDI matrix
+        if hasattr(self.connection_manager, 'midi_matrix_widget') and self.connection_manager.midi_matrix_widget:
+            self.connection_manager.midi_matrix_widget.refresh_matrix()
+
         # Update graph view
         if hasattr(self.connection_manager, 'graph_main_window') and self.connection_manager.graph_main_window:
             if hasattr(self.connection_manager.graph_main_window, 'scene') and self.connection_manager.graph_main_window.scene:
@@ -214,10 +278,10 @@ class NodeVisibilityManager:
                 if not hasattr(self.connection_manager.graph_main_window.scene, 'node_visibility_manager') or \
                    self.connection_manager.graph_main_window.scene.node_visibility_manager is None:
                     self.connection_manager.graph_main_window.scene.set_node_visibility_manager(self)
-                
+
                 # Log changes from dialog to help with debugging
                 print("Applying visibility settings to graph. Current settings:")
-                for client_name in set(list(self.audio_input_visibility.keys()) + 
+                for client_name in set(list(self.audio_input_visibility.keys()) +
                                       list(self.audio_output_visibility.keys()) +
                                       list(self.midi_input_visibility.keys()) +
                                       list(self.midi_output_visibility.keys())):
@@ -225,14 +289,14 @@ class NodeVisibilityManager:
                     audio_out_visible = self.audio_output_visibility.get(client_name, True)
                     midi_in_visible = self.midi_input_visibility.get(client_name, True)
                     midi_out_visible = self.midi_output_visibility.get(client_name, True)
-                    
+
                     # Check for partial visibility (one part hidden, one visible)
-                    if ((audio_in_visible != audio_out_visible) or 
+                    if ((audio_in_visible != audio_out_visible) or
                         (midi_in_visible != midi_out_visible)):
                         print(f"Node {client_name} has partial visibility - should be split")
                         print(f"  Audio in: {audio_in_visible}, Audio out: {audio_out_visible}")
                         print(f"  MIDI in: {midi_in_visible}, MIDI out: {midi_out_visible}")
-                
+
                 # Perform a full refresh to apply visibility settings
                 self.connection_manager.graph_main_window.scene.full_graph_refresh()
     
@@ -281,11 +345,11 @@ class NodeVisibilityManager:
 class NodeVisibilityDialog(QDialog):
     """Dialog for configuring node visibility settings."""
     
-    def __init__(self, connection_manager, audio_input_visibility, audio_output_visibility, 
-                 midi_input_visibility, midi_output_visibility, parent=None):
+    def __init__(self, connection_manager, audio_input_visibility, audio_output_visibility,
+                 midi_input_visibility, midi_output_visibility, parent=None, tab_type='graph'):
         """
         Initialize the dialog.
-        
+
         Args:
             connection_manager: The main JackConnectionManager instance
             audio_input_visibility: Dictionary of audio input visibility settings
@@ -293,15 +357,28 @@ class NodeVisibilityDialog(QDialog):
             midi_input_visibility: Dictionary of MIDI input visibility settings
             midi_output_visibility: Dictionary of MIDI output visibility settings
             parent: The parent widget
+            tab_type: The type of tab ('audio', 'midi', or 'graph')
         """
         super().__init__(parent)
         self.connection_manager = connection_manager
-        self.audio_input_visibility = dict(audio_input_visibility)
-        self.audio_output_visibility = dict(audio_output_visibility)
-        self.midi_input_visibility = dict(midi_input_visibility)
-        self.midi_output_visibility = dict(midi_output_visibility)
+        # For MIDI Matrix, work with references to allow direct modification
+        if tab_type == 'midi_matrix':
+            self.audio_input_visibility = audio_input_visibility
+            self.audio_output_visibility = audio_output_visibility
+            self.midi_input_visibility = midi_input_visibility
+            self.midi_output_visibility = midi_output_visibility
+        else:
+            # For other tabs, work with copies for cancel functionality
+            self.audio_input_visibility = dict(audio_input_visibility)
+            self.audio_output_visibility = dict(audio_output_visibility)
+            self.midi_input_visibility = dict(midi_input_visibility)
+            self.midi_output_visibility = dict(midi_output_visibility)
+        self.tab_type = tab_type
         
-        self.setWindowTitle("Clients Visibility Configuration")
+        if self.tab_type == 'midi_matrix':
+            self.setWindowTitle("MIDI Matrix Clients Visibility Configuration")
+        else:
+            self.setWindowTitle("Clients Visibility Configuration")
         self.resize(600, 600)
         
         # Track node checkboxes and their children
@@ -326,7 +403,10 @@ class NodeVisibilityDialog(QDialog):
         layout.addLayout(filter_layout)
         
         # Tabs label
-        self.tabs_label = QLabel("Note: Changes will apply to Audio, MIDI, and Graph tabs")
+        if self.tab_type == 'midi_matrix':
+            self.tabs_label = QLabel("Note: Changes will apply to the MIDI Matrix tab")
+        else:
+            self.tabs_label = QLabel("Note: Changes will apply to Audio, MIDI, and Graph tabs")
         layout.addWidget(self.tabs_label)
         
         # Create scroll area for node checkboxes
@@ -392,28 +472,34 @@ class NodeVisibilityDialog(QDialog):
                 if isinstance(cb, QWidget):
                     self.node_layout.removeWidget(cb)
                     cb.deleteLater()
-        
+
         for node_dict in self.midi_nodes.values():
             for cb in node_dict.values():
                 if isinstance(cb, QWidget):
                     self.node_layout.removeWidget(cb)
                     cb.deleteLater()
-        
+
         self.audio_nodes = {}
         self.midi_nodes = {}
-        
-        # Get all audio nodes (clients)
-        audio_nodes = self._get_unique_client_names(is_midi=False)
-        for node in sorted(audio_nodes):
-            self._add_node_hierarchy(node, is_midi=False)
-        
-        # Get all MIDI nodes (clients)
-        midi_nodes = self._get_unique_client_names(is_midi=True)
-        for node in sorted(midi_nodes):
-            self._add_node_hierarchy(node, is_midi=True)
-        
+
+        # Get clients based on tab type
+        if self.tab_type in ['audio', 'graph']:
+            # Get all audio nodes (clients)
+            audio_nodes = self._get_unique_client_names(is_midi=False)
+            for node in sorted(audio_nodes):
+                self._add_node_hierarchy(node, is_midi=False)
+
+        if self.tab_type in ['midi', 'midi_matrix', 'graph']:
+            # Get all MIDI nodes (clients)
+            midi_nodes = self._get_unique_client_names(is_midi=True)
+            for node in sorted(midi_nodes):
+                self._add_node_hierarchy(node, is_midi=True)
+
         # Apply any active filter
         self._apply_filter(self.filter_edit.text())
+
+        # Add stretch to prevent spacing issues when there are few clients
+        self.node_layout.addStretch()
     
     def _add_node_hierarchy(self, node_name, is_midi=False):
         """
@@ -527,24 +613,25 @@ class NodeVisibilityDialog(QDialog):
                 'widget': node_widget
             }
     
+
     def _on_node_checkbox_changed(self, state, input_checkbox, output_checkbox):
         """Handle changes to the node checkbox by updating child checkboxes."""
         checked = (state == Qt.CheckState.Checked.value)
-        
+
         if input_checkbox:
             input_checkbox.blockSignals(True)
             input_checkbox.setChecked(checked)
             input_checkbox.blockSignals(False)
             if not input_checkbox.signalsBlocked():
                 input_checkbox.stateChanged.emit(Qt.CheckState.Checked.value if checked else Qt.CheckState.Unchecked.value)
-        
+
         if output_checkbox:
             output_checkbox.blockSignals(True)
             output_checkbox.setChecked(checked)
             output_checkbox.blockSignals(False)
             if not output_checkbox.signalsBlocked():
                 output_checkbox.stateChanged.emit(Qt.CheckState.Checked.value if checked else Qt.CheckState.Unchecked.value)
-    
+
     def _update_node_checkbox_state(self, node_checkbox, input_checkbox, output_checkbox):
         """Synchronize node checkbox state with its existing child checkboxes."""
         node_checkbox.blockSignals(True)
@@ -561,7 +648,7 @@ class NodeVisibilityDialog(QDialog):
         elif all(child_states):
             node_checkbox.setCheckState(Qt.CheckState.Checked)
         elif any(child_states):
-            node_checkbox.setCheckState(Qt.CheckState.PartiallyChecked)
+            node_checkbox.setCheckState(Qt.CheckState.Checked)  # Set to checked if any child is checked
         else:
             node_checkbox.setCheckState(Qt.CheckState.Unchecked)
         
@@ -704,4 +791,4 @@ class NodeVisibilityDialog(QDialog):
         
         # Show/hide section labels based on if any items are visible
         self.audio_label.setHidden(not audio_visible)
-        self.midi_label.setHidden(not midi_visible) 
+        self.midi_label.setHidden(not midi_visible)

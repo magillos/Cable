@@ -56,7 +56,11 @@ class ConfigManager:
             'last_active_tab': '0',
             'load_preset_strict_mode': 'False', # New setting for strict mode
             'load_preset_daemon_mode': 'False', # New setting for daemon mode
-            'load_preset_restore_layout': 'True' # New setting for restore layout (default on)
+            'load_preset_restore_layout': 'True', # New setting for restore layout (default on)
+            'midi_splitter_sizes': '400,300', # MIDI tab splitter positions (top,bottom)
+            'midi_matrix_splitter_sizes': '150,600', # MIDI matrix splitter positions (labels,grid)
+            'midi_matrix_zoom_level': '10', # MIDI matrix zoom level (font size base)
+            'enable_midi_matrix': 'False' # EXPERIMENTAL: Enable MIDI Matrix tab
         }
         
         for key, value in defaults.items():
@@ -127,6 +131,26 @@ class ConfigManager:
 
     def set_int_setting(self, key, value):
         """Sets an integer setting in the config file."""
+        config = self._get_config_parser()
+        if 'DEFAULT' not in config:
+            config['DEFAULT'] = {}
+        config['DEFAULT'][key] = str(value)
+        self._write_config(config)
+
+    def get_float_setting(self, key, default_value):
+        """Gets a float setting from the config file."""
+        config = self._get_config_parser()
+        try:
+            return config.getfloat('DEFAULT', key, fallback=default_value)
+        except ValueError:
+            print(f"Warning: Invalid float value for '{key}' in config. Using default: {default_value}")
+            return default_value
+        except Exception as e:
+            print(f"Error reading float setting '{key}' from config: {e}. Using default: {default_value}")
+            return default_value
+
+    def set_float_setting(self, key, value):
+        """Sets a float setting in the config file."""
         config = self._get_config_parser()
         if 'DEFAULT' not in config:
             config['DEFAULT'] = {}

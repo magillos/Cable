@@ -214,6 +214,7 @@ class JackConnectionManager(QMainWindow):
             'midi_output_tree': getattr(self, 'midi_output_tree', None),
             'midi_input_tree': getattr(self, 'midi_input_tree', None),
             'graph_main_window': getattr(self, 'graph_main_window', None),
+            'midi_matrix_widget': getattr(self, 'midi_matrix_widget', None),
         })
         
         if hasattr(self, 'action_manager') and self.action_manager and hasattr(self, 'ui_state_manager'):
@@ -256,10 +257,14 @@ class JackConnectionManager(QMainWindow):
 
         # Initialize NodeVisibilityManager
         self.node_visibility_manager = NodeVisibilityManager(self, self.config_manager)
-        
+
         # Pass node visibility manager to port_manager
         if hasattr(self, 'port_manager') and self.port_manager:
             self.port_manager.set_node_visibility_manager(self.node_visibility_manager)
+
+        # Pass node visibility manager to midi_matrix_widget
+        if hasattr(self, 'midi_matrix_widget') and self.midi_matrix_widget:
+            self.midi_matrix_widget.set_node_visibility_manager(self.node_visibility_manager)
 
         if hasattr(self, 'input_tree') and self.input_tree:
             self.input_tree.itemClicked.connect(
@@ -1037,9 +1042,15 @@ class JackConnectionManager(QMainWindow):
             print("Error: Tab widget or graph_tab_widget not found.")
             return
 
-        # Ensure this action is only for the graph tab, which should be at index 2 (new index)
-        if self.ui_manager.tab_widget.widget(2) != self.ui_manager.graph_tab_widget or self.ui_manager.tab_widget.currentWidget() != self.ui_manager.graph_tab_widget: # Graph is now index 2
-            print("Graph fullscreen toggle requested, but graph tab is not active or not found at index 2.")
+        # Find the graph tab index dynamically
+        graph_tab_index = -1
+        for i in range(self.ui_manager.tab_widget.count()):
+            if self.ui_manager.tab_widget.widget(i) == self.ui_manager.graph_tab_widget:
+                graph_tab_index = i
+                break
+
+        if graph_tab_index == -1 or self.ui_manager.tab_widget.currentWidget() != self.ui_manager.graph_tab_widget:
+            print("Graph fullscreen toggle requested, but graph tab is not active or not found.")
             return
  
         self._graph_is_fullscreen = not self._graph_is_fullscreen
@@ -1116,11 +1127,11 @@ class JackConnectionManager(QMainWindow):
         if self.ui_manager.graph_tab_widget and self.ui_manager.graph_tab_widget.layout():
             self.ui_manager.graph_tab_widget.layout().activate()
 
-    def show_node_visibility_dialog(self):
+    def show_node_visibility_dialog(self, tab_type='graph'):
         """Show the node visibility configuration dialog."""
         if hasattr(self, 'node_visibility_manager') and self.node_visibility_manager:
-            self.node_visibility_manager.show_configuration_dialog(self)
-            
+            self.node_visibility_manager.show_configuration_dialog(self, tab_type)
+
             # After dialog closes, pass node visibility manager to graph_main_window.scene if needed
             if hasattr(self, 'graph_main_window') and self.graph_main_window:
                 if hasattr(self.graph_main_window, 'scene') and self.graph_main_window.scene:

@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QPushButton,
-    QDialogButtonBox, QMessageBox, QFrame, QLineEdit
+    QDialogButtonBox, QMessageBox, QFrame, QLineEdit, QCheckBox
 )
 from PyQt6.QtCore import Qt
 
@@ -59,9 +59,13 @@ class OtherSettingsDialog(QDialog):
 
         # Calculate maximum label width
         max_label_width = 0
-        for setting_info in self.settings_map.values():
-            label = QLabel(setting_info["label"])
-            # Ensure proper size calculation
+        all_labels = [info["label"] for info in self.settings_map.values()] + [
+            "Graph Untangle configuration\n(clients in a row and cycle order)",
+            "Enable MIDI Matrix - EXPERIMENTAL"
+        ]
+
+        for label_text in all_labels:
+            label = QLabel(label_text)
             label.adjustSize()
             if label.width() > max_label_width:
                 max_label_width = label.width()
@@ -118,6 +122,18 @@ class OtherSettingsDialog(QDialog):
 
         main_layout.addLayout(untangle_layout)
 
+        # Add MIDI Matrix checkbox
+        midi_matrix_layout = QHBoxLayout()
+        midi_matrix_label = QLabel("Enable MIDI Matrix - EXPERIMENTAL")
+        midi_matrix_label.setFixedWidth(max_label_width)
+        midi_matrix_layout.addWidget(midi_matrix_label)
+
+        self.midi_matrix_checkbox = QCheckBox()
+        self.midi_matrix_checkbox.setToolTip("May require Pipewire 1.5.81 (1.6 RC1) or later")
+        midi_matrix_layout.addStretch(1)
+        midi_matrix_layout.addWidget(self.midi_matrix_checkbox)
+        main_layout.addLayout(midi_matrix_layout)
+
         # Add separator after untangle values
         separator = QFrame()
         separator.setFrameShape(QFrame.Shape.HLine)
@@ -158,6 +174,10 @@ class OtherSettingsDialog(QDialog):
         
         self.text_fields["GRAPH_UNTANGLE_VALUES"].setText(untangle_values_str)
 
+        # Load MIDI Matrix setting
+        enable_midi_matrix = self.config_manager.get_bool('enable_midi_matrix', False)
+        self.midi_matrix_checkbox.setChecked(enable_midi_matrix)
+
     def _show_restart_warning(self):
         msg_box = QMessageBox(self) # Re-add parent
         msg_box.setIcon(QMessageBox.Icon.Warning)
@@ -174,11 +194,14 @@ class OtherSettingsDialog(QDialog):
         # Save untangle values
         untangle_values_str = self.text_fields["GRAPH_UNTANGLE_VALUES"].text().strip()
         self.config_manager.set_str_setting("GRAPH_UNTANGLE_VALUES", untangle_values_str)
-        # The warning is now shown by _handle_button_click for Apply/Default
+
+        # Save MIDI Matrix setting
+        self.config_manager.set_bool('enable_midi_matrix', self.midi_matrix_checkbox.isChecked())
 
     def _reset_to_defaults(self):
         keys_to_clear = list(self.settings_map.keys())
         keys_to_clear.append("GRAPH_UNTANGLE_VALUES")  # Add the untangle values key
+        keys_to_clear.append("enable_midi_matrix")
         self.config_manager.clear_settings(keys_to_clear)
 
         # Also reset "don't show again" confirmation dialog settings to show dialogs by default

@@ -134,9 +134,6 @@ class ConfigManager:
         config = configparser.ConfigParser()
         config.read(self.config_file, encoding='utf-8')
 
-        if not config.has_section('DEFAULT'):
-            config.add_section('DEFAULT')
-
         config['DEFAULT'][key] = '1' if value else '0'
         self.write_config(config)
 

@@ -318,6 +318,7 @@ class UIStateManager(QObject):
     def increase_font_size(self):
         """Increases the font size for the port lists."""
         if not self._callbacks_enabled: return
+
         max_font_size = self.config_manager.get_int('max_font_size', 24) if self.config_manager else 24
         if self._port_list_font_size < max_font_size:
             self._port_list_font_size += 1
@@ -325,11 +326,11 @@ class UIStateManager(QObject):
             self._apply_port_list_font_size()
             if self.config_manager:
                 self.config_manager.set_str('port_list_font_size', str(self._port_list_font_size))
-            # Emit signal if defined: self.font_size_changed.emit(self._port_list_font_size)
 
     def decrease_font_size(self):
         """Decreases the font size for the port lists."""
         if not self._callbacks_enabled: return
+
         min_font_size = self.config_manager.get_int('min_font_size', 6) if self.config_manager else 6
         if self._port_list_font_size > min_font_size:
             self._port_list_font_size -= 1
@@ -337,7 +338,6 @@ class UIStateManager(QObject):
             self._apply_port_list_font_size()
             if self.config_manager:
                 self.config_manager.set_str('port_list_font_size', str(self._port_list_font_size))
-            # Emit signal if defined: self.font_size_changed.emit(self._port_list_font_size)
 
     def _apply_port_list_font_size(self):
         """Applies the current font size to the port list tree widgets."""

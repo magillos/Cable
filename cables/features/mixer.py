@@ -279,7 +279,8 @@ class AlsMixerApp(QWidget):
 
         try:
             alsa_cards_short_names = alsaaudio.cards() if alsaaudio else []
-            if not alsa_cards_short_names:
+            alsa_card_indexes = alsaaudio.card_indexes() if alsaaudio else []
+            if not alsa_cards_short_names or not alsa_card_indexes:
                 self.card_combo.addItem("No cards found")
                 self.card_combo.setEnabled(False)
                 QMessageBox.information(self, "Info", "No sound cards found.")
@@ -289,18 +290,18 @@ class AlsMixerApp(QWidget):
 
             self.card_name_to_index_map = {}
 
-            for i, short_name in enumerate(alsa_cards_short_names):
-                descriptive_name = self._get_long_card_name(i, f"{short_name} (hw:{i})")
-                display_text = f"{descriptive_name}" 
-                
+            for card_index, short_name in zip(alsa_card_indexes, alsa_cards_short_names):
+                descriptive_name = self._get_long_card_name(card_index, f"{short_name} (hw:{card_index})")
+                display_text = f"{descriptive_name}"
+
                 original_display_text = display_text
                 counter = 1
                 while display_text in self.card_name_to_index_map:
                     display_text = f"{original_display_text} ({counter})"
                     counter += 1
-                
-                self.card_combo.addItem(display_text, userData=i)
-                self.card_name_to_index_map[display_text] = i
+
+                self.card_combo.addItem(display_text, userData=card_index)
+                self.card_name_to_index_map[display_text] = card_index
 
             self.card_combo.setEnabled(True)
 

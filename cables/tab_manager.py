@@ -62,6 +62,12 @@ class TabManager:
             self.connection_manager, self.connection_manager.ui_manager.midi_tab_widget, "MIDI", 'midi'
         )
 
+        # Conditionally setup and add MIDI Matrix tab
+        if self.connection_manager.config_manager.get_bool('enable_midi_matrix', False):
+            self.tab_ui_manager.setup_midi_matrix_tab(
+                self.connection_manager, self.connection_manager.ui_manager.midi_matrix_tab_widget
+            )
+
         # Setup pw-top tab
         self.tab_ui_manager.setup_pwtop_tab(self.connection_manager, self.connection_manager.ui_manager.pwtop_tab_widget)
         self.connection_manager.pwtop_monitor = getattr(self.connection_manager, 'pwtop_monitor', None)
@@ -71,22 +77,25 @@ class TabManager:
         self.connection_manager.latency_tester = getattr(self.connection_manager, 'latency_tester', None)
 
         # New Tab Order:
-        # Audio (0), MIDI (1), Graph (2), pw-top (3), Alsa Mixer (4), Latency Test (5)
+        # Audio (0), MIDI (1), MIDI Matrix (2), Graph (3), pw-top (4), Alsa Mixer (5), Latency Test (6)
         self.tab_widget.addTab(self.connection_manager.ui_manager.audio_tab_widget, "Audio") # Index 0
         self.tab_widget.addTab(self.connection_manager.ui_manager.midi_tab_widget, "MIDI")   # Index 1
+        
+        if self.connection_manager.config_manager.get_bool('enable_midi_matrix', False):
+            self.tab_widget.addTab(self.connection_manager.ui_manager.midi_matrix_tab_widget, "MIDI Matrix") # Index 2
 
         self.tab_ui_manager.setup_graph_tab(self.connection_manager, self.connection_manager.ui_manager.graph_tab_widget)
-        self.tab_widget.insertTab(2, self.connection_manager.ui_manager.graph_tab_widget, "Graph") # Index 2
+        self.tab_widget.insertTab(self.tab_widget.count(), self.connection_manager.ui_manager.graph_tab_widget, "Graph")
 
-        self.tab_widget.addTab(self.connection_manager.ui_manager.pwtop_tab_widget, "pw-top") # Index 3
+        self.tab_widget.addTab(self.connection_manager.ui_manager.pwtop_tab_widget, "pw-top")
 
-        # Alsa Mixer tab (index 4)
+        # Alsa Mixer tab
         alsa_mixer_layout = QVBoxLayout(self.connection_manager.ui_manager.alsa_mixer_tab_widget)
         self.connection_manager.alsa_mixer_app = AlsMixerApp(config_manager=self.connection_manager.config_manager) # Pass ConfigManager
         alsa_mixer_layout.addWidget(self.connection_manager.alsa_mixer_app)
-        self.tab_widget.insertTab(4, self.connection_manager.ui_manager.alsa_mixer_tab_widget, "ALSA Mixer") # Index 4
+        self.tab_widget.insertTab(self.tab_widget.count(), self.connection_manager.ui_manager.alsa_mixer_tab_widget, "ALSA Mixer")
 
-        self.tab_widget.addTab(self.connection_manager.ui_manager.latency_tab_widget, "Latency Test") # Index 5
+        self.tab_widget.addTab(self.connection_manager.ui_manager.latency_tab_widget, "Latency Test")
 
         # Setup fullscreen functionality
         if hasattr(self.connection_manager, 'graph_main_window') and self.connection_manager.graph_main_window and \
@@ -102,9 +111,37 @@ class TabManager:
         # Connect tab switching signal
         self.tab_widget.currentChanged.connect(self.switch_tab)
 
-        # Set initial state for global zoom actions
+        # Set initial state for global zoom actions and tooltips
         current_tab = self.tab_widget.currentIndex() if hasattr(self, 'tab_widget') else 0
+        self._update_zoom_button_tooltips(current_tab)
         self._update_global_zoom_action_state(current_tab)
+
+        self._setup_midi_matrix_v_splitter()
+
+    def _setup_midi_matrix_v_splitter(self):
+        """Setup MIDI Matrix vertical splitter position loading and saving."""
+        if hasattr(self.connection_manager, 'midi_matrix_v_splitter') and self.connection_manager.midi_matrix_v_splitter:
+            # Load splitter sizes from config
+            splitter_sizes_str = self.connection_manager.config_manager.get_str('midi_matrix_v_splitter_sizes', '0,400')
+            try:
+                sizes = [int(x.strip()) for x in splitter_sizes_str.split(',')]
+                if len(sizes) == 2:
+                    self.connection_manager.midi_matrix_v_splitter.setSizes(sizes)
+            except (ValueError, IndexError):
+                # Use default sizes if config is invalid
+                self.connection_manager.midi_matrix_v_splitter.setSizes([0, 400])
+
+            # Connect splitterMoved signal to save position
+            self.connection_manager.midi_matrix_v_splitter.splitterMoved.connect(self._save_midi_matrix_v_splitter_sizes)
+
+    def _save_midi_matrix_v_splitter_sizes(self, pos, index):
+        """Save MIDI Matrix vertical splitter sizes to config when splitter is moved."""
+        if hasattr(self.connection_manager, 'midi_matrix_v_splitter') and self.connection_manager.midi_matrix_v_splitter:
+            sizes = self.connection_manager.midi_matrix_v_splitter.sizes()
+            if len(sizes) == 2:
+                sizes_str = f"{sizes[0]},{sizes[1]}"
+                self.connection_manager.config_manager.set_str('midi_matrix_v_splitter_sizes', sizes_str)
+
 
     def _setup_bottom_layout(self, main_layout):
         """Setup bottom UI controls layout."""
@@ -119,20 +156,24 @@ class TabManager:
             index: The index of the tab to switch to
         """
         # New Tab Order:
-        # Audio (0), MIDI (1), Graph (2), pw-top (3), Alsa Mixer (4), Latency Test (5)
+        # Audio (0), MIDI (1), MIDI Matrix (2), Graph (3), pw-top (4), Alsa Mixer (5), Latency Test (6)
 
-        # Stop pw-top monitor if switching away from it (pw-top is now index 3)
-        if index != 3 and hasattr(self.connection_manager, 'pwtop_monitor') and self.connection_manager.pwtop_monitor is not None:
+        # Stop pw-top monitor if switching away from it
+        if self.tab_widget.tabText(self.last_active_tab) == "pw-top" and hasattr(self.connection_manager, 'pwtop_monitor') and self.connection_manager.pwtop_monitor is not None:
             self.connection_manager.pwtop_monitor.stop()
 
         # Configure based on the new tab index
-        if index < 2:  # Audio (0) or MIDI (1) tabs
-            self.connection_manager.port_type = 'audio' if index == 0 else 'midi'
+        current_tab_text = self.tab_widget.tabText(index)
+
+        if current_tab_text in ["Audio", "MIDI"]:
+            self.connection_manager.port_type = 'audio' if current_tab_text == "Audio" else 'midi'
             if hasattr(self.connection_manager, 'ui_state_manager'):
                  self.connection_manager.ui_state_manager.apply_collapse_state_to_current_trees()
             self.connection_manager.refresh_visualizations()
             self.show_bottom_controls(True)
-        elif index == 2: # Graph tab (index 2)
+        elif current_tab_text == "MIDI Matrix":
+            self.show_bottom_controls(False)
+        elif current_tab_text == "Graph":
             self.show_bottom_controls(False)
             # Disable global Alt+U shortcut when Graph tab is active to allow Graph-specific Alt+U handling
             if hasattr(self.connection_manager, 'action_manager') and hasattr(self.connection_manager.action_manager, 'untangle_shortcut_action'):
@@ -140,30 +181,33 @@ class TabManager:
             if hasattr(self.connection_manager, 'graph_main_window') and self.connection_manager.graph_main_window:
                 if hasattr(self.connection_manager.graph_main_window, 'scene') and self.connection_manager.graph_main_window.scene:
                     self.connection_manager.graph_main_window.scene.full_graph_refresh()
-        elif index == 3:  # pw-top tab (index 3)
+        elif current_tab_text == "pw-top":
             if hasattr(self.connection_manager, 'pwtop_monitor') and self.connection_manager.pwtop_monitor is not None:
                 self.connection_manager.pwtop_monitor.start()
             self.show_bottom_controls(False)
-        elif index == 4: # Alsa Mixer tab (index 4)
+        elif current_tab_text == "ALSA Mixer":
             self.show_bottom_controls(False)
             if hasattr(self.connection_manager, 'alsa_mixer_app') and self.connection_manager.alsa_mixer_app:
                 # Start ALSA mixer updates only if the window is focused
                 if self.connection_manager.isActiveWindow():
                     self.connection_manager.alsa_mixer_app.start_updates()
-        elif index == 5:  # Latency Test tab (index 5)
+        elif current_tab_text == "Latency Test":
             self.show_bottom_controls(False)
 
         # Stop ALSA mixer updates when switching away from the tab
-        if self.last_active_tab == 4 and hasattr(self.connection_manager, 'alsa_mixer_app') and self.connection_manager.alsa_mixer_app:
+        if self.tab_widget.tabText(self.last_active_tab) == "ALSA Mixer" and hasattr(self.connection_manager, 'alsa_mixer_app') and self.connection_manager.alsa_mixer_app:
             self.connection_manager.alsa_mixer_app.stop_updates()
 
         # Re-enable global Alt+U shortcut when switching away from Graph tab
-        if self.last_active_tab == 2:  # Was previously on Graph tab
+        if self.tab_widget.tabText(self.last_active_tab) == "Graph":
             if hasattr(self.connection_manager, 'action_manager') and hasattr(self.connection_manager.action_manager, 'untangle_shortcut_action'):
                 self.connection_manager.action_manager.untangle_shortcut_action.setEnabled(True)
 
         self.last_active_tab = index
         self.connection_manager.config_manager.set_int('last_active_tab', index)
+
+        # Update zoom button tooltips based on tab
+        self._update_zoom_button_tooltips(index)
 
         # Update global zoom action enabled state
         self._update_global_zoom_action_state(index)
@@ -200,6 +244,7 @@ class TabManager:
         if hasattr(self.connection_manager.ui_manager, 'zoom_out_button') and self.connection_manager.ui_manager.zoom_out_button:
             self.connection_manager.ui_manager.zoom_out_button.setVisible(visible)
 
+
     def _update_global_zoom_action_state(self, current_tab_index: int):
         """
         Enable/disable global zoom actions based on the active tab.
@@ -218,3 +263,26 @@ class TabManager:
             self.connection_manager.action_manager.zoom_in_action.setEnabled(not is_alsa_mixer_tab_active)
         if hasattr(self.connection_manager.action_manager, 'zoom_out_action') and self.connection_manager.action_manager.zoom_out_action:
             self.connection_manager.action_manager.zoom_out_action.setEnabled(not is_alsa_mixer_tab_active)
+
+    def _update_zoom_button_tooltips(self, current_tab_index: int):
+        """
+        Update zoom button tooltips based on the active tab.
+
+        Args:
+            current_tab_index: Current tab index
+        """
+        if not hasattr(self.connection_manager, 'ui_manager'):
+            return
+
+        ui_manager = self.connection_manager.ui_manager
+
+        current_tab_text = self.tab_widget.tabText(current_tab_index)
+
+        if current_tab_text in ["Audio", "MIDI"]:
+            if hasattr(ui_manager, 'zoom_in_button') and ui_manager.zoom_in_button:
+                ui_manager.zoom_in_button.setToolTip("Increase port list font size <span style='color:grey'>Ctrl++</span>")
+            if hasattr(ui_manager, 'zoom_out_button') and ui_manager.zoom_out_button:
+                ui_manager.zoom_out_button.setToolTip("Decrease port list font size <span style='color:grey'>Ctrl+-</span>")
+        elif current_tab_text == "MIDI Matrix":
+            # The zoom buttons are in the tab, not in the bottom bar
+            pass

@@ -1,4 +1,5 @@
 import sys
+import signal
 import subprocess
 import json
 import re
@@ -629,14 +630,12 @@ class PipeWireSettingsApp(QWidget):
             # Ensure signals are unblocked
             self.sample_rate_combo.blockSignals(False)
 
-    def cleanup_and_quit(self):
-        """Clean up resources and quit the application."""
+    def cleanup_before_quit(self):
+        """Clean up resources before quitting."""
         print("Performing cleanup before quitting...")
         # Stop the daemon directly
         preset_manager = PresetManager() # Create an instance to access the stop method
         preset_manager.stop_daemon_mode()
-        # Quit the application
-        QApplication.quit()
 
 def main():
     # Parse command line arguments
@@ -650,6 +649,17 @@ def main():
     
     # Create main window, passing the minimized flag
     ex = PipeWireSettingsApp(is_minimized_startup=args.minimized)
+
+    # Connect the cleanup function to the application's quit signal
+    app.aboutToQuit.connect(ex.cleanup_before_quit)
+
+    # Set up a signal handler for SIGINT (Ctrl+C) to gracefully quit
+    signal.signal(signal.SIGINT, lambda sig, frame: app.quit())
+
+    # Use a timer to allow the Python interpreter to process signals
+    timer = QTimer()
+    timer.start(100)  # Check for signals every 100ms
+    timer.timeout.connect(lambda: None)  # No-op to wake up the interpreter
     
     # Handle initial window state
     if args.minimized:

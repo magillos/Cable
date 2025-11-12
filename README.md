@@ -1,6 +1,6 @@
 # Cable
 PyQT GUI application to dynamically modify Pipewire and Wireplumber settings at runtime, such as quantum, sample rate, audio profiles, latency offset, services restart and more.
-It features side-by-side and graph style connections managers (uses Python Jack Client so will not list Pipewire items), pw-top wrapper, simple ALSA mixer and jack_delay GUI. 
+It features side-by-side, MIDI matrix and graph style connections managers (uses Python Jack Client so will not list Pipewire items), pw-top wrapper, simple ALSA mixer and jack_delay GUI. 
 
 
 To run, clone repository and start with `python Cable.py`. You will need python jack client, see [here](https://pypi.org/project/JACK-Client/0.5.1/), python PyQT6, jack_delay (or jack-example-tools), pyalsaaudio and aj-snapshot installed:
@@ -27,6 +27,7 @@ You need Pipewire in version 1.0 or newer, for connections manager to work.
 ![](https://github.com/magillos/Cable/blob/main/mixer.png)
 ![](https://github.com/magillos/Cable/blob/main/latency.png)
 ![](https://github.com/magillos/Cable/blob/main/visibility.png)
+![](https://github.com/magillos/Cable/blob/main/MIDI_Matrix.png)
 
 
 Icon comes from [here](https://game-icons.net/1x1/delapouite/jack-plug.html) and is licenced under [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/).

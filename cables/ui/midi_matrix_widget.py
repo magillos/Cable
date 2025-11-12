@@ -2,12 +2,13 @@
 MIDIMatrixWidget - A matrix-style connection view widget for MIDI ports
 """
 import dataclasses
+import random
 
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QScrollArea, QFrame,
                              QVBoxLayout, QSizePolicy, QSplitter)
 from PyQt6.QtCore import Qt, QSize, QRect, QRectF, QTimer, QPointF
 from PyQt6.QtGui import QPolygonF
-from PyQt6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QPalette
+from PyQt6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QPalette, QPainterPath, QLinearGradient
 
 @dataclasses.dataclass
 class MidiMatrixStyleConfig:
@@ -15,8 +16,11 @@ class MidiMatrixStyleConfig:
     # --- Input Labels (Bottom) ---
     # Rotation angle for input port labels.
     input_label_rotation: int = 55
-    # Horizontal positioning factor for input labels. Smaller values move labels left.
-    input_label_x_pos_factor: float = 1.2
+    # Horizontal positioning factor for input labels showing clients and ports combo. Smaller values move labels left.
+    input_label_x_pos_factor_client_port: float = 1.15
+    # Horizontal positioning factor for input labels showing ports only. Smaller values move labels left.
+    input_label_x_pos_factor_ports_only: float = 1.4  # Deprecated: Use input_label_x_pos_factor_client_port and input_label_x_pos_factor_ports_only instead
+    input_label_x_pos_factor: float = 1.5
     # Vertical offset between client and port names in input labels.
     input_label_port_y_offset: int = -7
 
@@ -29,15 +33,32 @@ class MidiMatrixStyleConfig:
     selection_arrowhead_length: int = 15
     selection_arrowhead_width: int = 8
 
+    # --- Connection Guide Lines ---
+    # Line width for non-hovered connection guide lines.
+    guide_line_width: int = 3
+    # Line width for hovered connection guide lines (for the active cell).
+    guide_line_hover_width: int = 3
+    # Arrowhead size for connection guide lines
+    guide_arrowhead_length: int = 12
+    guide_arrowhead_width: int = 8
+    # Dot size for connection guide lines (at output end)
+    guide_dot_radius: int = 4
+
     # --- Grid Square Colors (Dark Theme) ---
     disconnected_square_color_dark: tuple = (32, 35, 38)
     self_connection_square_color_dark: tuple = (60, 63, 65)
     hover_highlight_square_color_dark: tuple = (51, 51, 70)
 
     # --- Grid Square Colors (Light Theme) ---
-    disconnected_square_color_light: tuple = (239, 240, 241)
+    disconnected_square_color_light: tuple = (226, 226, 226)
     self_connection_square_color_light: tuple = (215, 216, 217)
-    hover_highlight_square_color_light: tuple = (226, 226, 226)
+    hover_highlight_square_color_light: tuple = (195, 196, 197)
+
+    # --- Grid Border Width --
+    # Width of grid lines that separate squares
+    grid_line_width: int = 0.3
+    # Width of borders around individual squares
+    square_border_width: int = 0.1
 
     # --- Scrollbar Trigger Padding --
     horizontal_padding: int = 400
@@ -71,6 +92,8 @@ class MIDIMatrixWidget(QWidget):
 
         # Zoom configuration
         self.zoom_level = connection_manager.config_manager.get_float_setting('midi_matrix_zoom_level', 10.0)
+        self.color_generator = random.Random()
+        self.color_seed_offset = 0
 
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._setup_ui()
@@ -151,7 +174,8 @@ class MIDIMatrixWidget(QWidget):
         # Force the matrix widget to recalculate its size
         if hasattr(self, 'matrix_widget'):
             self.matrix_widget.update_matrix()
-            self._update_scroll_behavior()
+            # Defer the call to prevent potential resize loops
+            QTimer.singleShot(0, self._update_scroll_behavior)
 
     def _on_main_splitter_moved(self, pos, index):
         """Handle main splitter movement to update output label truncation and save position."""
@@ -255,11 +279,9 @@ class MIDIMatrixWidget(QWidget):
 
     def _generate_client_color(self, client_name):
         """Generate a consistent color for a client."""
-        import random
-
         # Use client name to generate consistent color
-        hash_value = hash(client_name)
-        random.seed(hash_value)
+        hash_value = hash(client_name) + self.color_seed_offset
+        self.color_generator.seed(hash_value)
 
         # Determine if we're in dark mode or light mode
         window_color = self.palette().color(QPalette.ColorRole.Window)
@@ -287,9 +309,9 @@ class MIDIMatrixWidget(QWidget):
             return dark_mode_colors[color_index]
         else:  # Light mode - use dark colors
             # Generate darker HSV colors for light backgrounds
-            hue = random.randint(0, 359)
-            saturation = 180 + random.randint(0, 75)  # 180-255 for good saturation
-            value = 50 + random.randint(0, 100)      # 50-150 for dark colors
+            hue = self.color_generator.randint(0, 359)
+            saturation = 180 + self.color_generator.randint(0, 75)  # 180-255 for good saturation
+            value = 50 + self.color_generator.randint(0, 100)      # 50-150 for dark colors
             return QColor.fromHsv(hue, saturation, value)
 
     def is_connected(self, output_port, input_port):
@@ -340,6 +362,11 @@ class MIDIMatrixWidget(QWidget):
 
         if is_midi_connection:
             QTimer.singleShot(10, self.refresh_matrix)  # Debounce updates
+
+    def reshuffle_colors(self):
+        """Reshuffle client colors."""
+        self.color_seed_offset = self.color_generator.randint(0, 10000)
+        self.refresh_matrix()
 
     def zoom_in(self):
         """Increase zoom level."""
@@ -392,6 +419,10 @@ class MIDIMatrixWidget(QWidget):
         # Calculate proper minimum size accounting for angled input labels
         proper_min_size = self._calculate_proper_minimum_size()
 
+        # Explicitly set the minimum size of the splitter. This is the key.
+        # It forces the splitter to have a minimum size that reflects its content.
+        self.main_splitter.setMinimumSize(proper_min_size)
+
         # Get the scroll area's viewport size
         viewport_size = self.main_scroll_area.viewport().size()
 
@@ -399,8 +430,9 @@ class MIDIMatrixWidget(QWidget):
         content_too_large = (proper_min_size.width() > viewport_size.width() or
                            proper_min_size.height() > viewport_size.height())
 
-        # If content is too large, disable widget resizing to show scrollbars
-        # If content fits, enable widget resizing to fill the space
+        # If content is too large, disable widget resizing to show scrollbars.
+        # The scroll area will then respect the splitter's minimum size.
+        # If content fits, enable widget resizing to fill the space.
         self.main_scroll_area.setWidgetResizable(not content_too_large)
 
     def _calculate_proper_minimum_size(self):
@@ -408,8 +440,9 @@ class MIDIMatrixWidget(QWidget):
         if not hasattr(self, 'main_splitter') or not hasattr(self, 'output_labels_widget') or not hasattr(self, 'matrix_widget'):
             return QSize(200, 200)
 
-        # Get the output labels widget minimum width
-        output_min_width = self.output_labels_widget.minimumWidth()
+        # Get the output labels widget's current width from the splitter
+        splitter_sizes = self.main_splitter.sizes()
+        output_min_width = splitter_sizes[0] if splitter_sizes else self.output_labels_widget.minimumWidth()
 
         # Get the matrix widget minimum size
         matrix_min_size = self.matrix_widget.minimumSize()
@@ -482,14 +515,16 @@ class _MatrixGridWidget(QWidget):
         # Set minimum size based on content
         min_height = self.top_margin + total_height + self.bottom_margin
 
-        # Account for angled input labels by adding output widget width as approximation
-        output_widget_width = 0
-        if hasattr(self.parent_matrix, 'output_labels_widget') and self.parent_matrix.output_labels_widget:
-            output_widget_width = self.parent_matrix.output_labels_widget.minimumWidth()
-
-        min_width = total_width + output_widget_width if total_width > 0 else max(200, input_count * 35)
+        # If the calculated total_width is very small (i.e., there are no input ports),
+        # we set the minimum width to 0. When combined with the Expanding size policy,
+        # this allows the widget to grow to fill the available space within the splitter,
+        # preventing it from collapsing to a small fixed width.
+        min_width = total_width
+        if min_width < 50:  # A small threshold to detect when there's no content
+            min_width = 0
 
         self.setMinimumSize(min_width, min_height)
+        self.updateGeometry()
         
         # Set size policy to allow expansion
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -511,14 +546,26 @@ class _MatrixGridWidget(QWidget):
         # Create a temporary painter for text measurements
         painter = QPainter(self)
 
-        # Group ports by client for measurements
+        # Group ports by client and count ports to support grouped labels
         input_client_groups = defaultdict(list)
         for i, (client_name, port_name, display_name) in enumerate(self.parent_matrix.input_ports):
             input_client_groups[client_name].append((i, port_name, display_name))
 
+        # Also precompute how many ports each input client has
+        input_client_port_counts = {
+            client: len(ports) for client, ports in input_client_groups.items()
+        }
+        self.input_client_port_counts = input_client_port_counts
+
         output_client_groups = defaultdict(list)
         for i, (client_name, port_name, display_name) in enumerate(self.parent_matrix.output_ports):
             output_client_groups[client_name].append((i, port_name, display_name))
+
+        # Also precompute how many ports each output client has
+        output_client_port_counts = {
+            client: len(ports) for client, ports in output_client_groups.items()
+        }
+        self.output_client_port_counts = output_client_port_counts
 
         # Calculate row heights and positions based on output labels (left side)
         self.row_heights = []
@@ -621,11 +668,14 @@ class _MatrixGridWidget(QWidget):
         # Define regions - ensure grid fills available space
         available_width = width - self.left_margin - self.right_margin
         grid_width = getattr(self, 'grid_width', 0)
-        
+
         # Use full available width for drawing even if content is smaller
-        grid_rect = QRect(self.left_margin, self.top_margin,
-                         max(available_width, grid_width),
-                         height - self.top_margin - self.bottom_margin)
+        grid_rect = QRect(
+            self.left_margin,
+            self.top_margin,
+            max(available_width, grid_width),
+            height - self.top_margin - self.bottom_margin,
+        )
 
         # Draw background
         painter.fillRect(self.rect(), self.parent_matrix.connection_manager.background_color)
@@ -635,9 +685,15 @@ class _MatrixGridWidget(QWidget):
 
         # Draw grid
         self._draw_grid(painter, grid_rect)
+
+        # Draw connection squares
         self._draw_connection_squares(painter, grid_rect)
 
-        # Draw selection rectangle if dragging
+        # Draw connection guide lines for existing connections so users
+        # can visually follow which ports a highlighted cell represents.
+        self._draw_connection_guides(painter, grid_rect)
+
+        # Draw selection rectangle / drag arrow if dragging
         if self.is_dragging and not self.selected_rect.isEmpty():
             self._draw_selection_rectangle(painter)
 
@@ -648,28 +704,29 @@ class _MatrixGridWidget(QWidget):
 
     def _draw_grid(self, painter, grid_rect):
         """Draw the grid lines using pre-calculated positions."""
-        painter.setPen(QPen(QColor(200, 200, 200), 1))
+        painter.setPen(QPen(QColor(200, 200, 200), self.parent_matrix.style_config.grid_line_width))
 
-        # Calculate final vertical position for grid lines (end of grid content)
-        final_y = self.row_positions[-1] + self.row_heights[-1] if self.row_positions and self.row_heights else grid_rect.bottom()
+        # Calculate the bottom y-coordinate for the grid content
+        grid_bottom_y = self.row_positions[-1] + self.row_heights[-1] if self.row_positions and self.row_heights else grid_rect.bottom()
+
+        # Calculate the right x-coordinate for the grid content
+        grid_right_x = self.left_margin
+        if self.column_positions and self.column_widths:
+            grid_right_x = self.column_positions[-1] + self.column_widths[-1]
 
         # Vertical lines (columns) - using pre-calculated column positions
         for col_x in self.column_positions:
-            painter.drawLine(col_x, grid_rect.top(), col_x, final_y)
+            painter.drawLine(col_x, grid_rect.top(), col_x, grid_bottom_y)
 
-        # Draw final right boundary
-        if self.column_positions and self.column_widths:
-            final_x = self.column_positions[-1] + self.column_widths[-1]
-            painter.drawLine(final_x, grid_rect.top(), final_x, final_y)
+        # Draw final right boundary of content
+        painter.drawLine(grid_right_x, grid_rect.top(), grid_right_x, grid_bottom_y)
 
         # Horizontal lines (rows) - using pre-calculated row positions
         for row_y in self.row_positions:
-            painter.drawLine(self.left_margin, row_y, final_x, row_y)
+            painter.drawLine(self.left_margin, row_y, grid_right_x, row_y)
 
-        # Draw final bottom boundary
-        if self.row_positions and self.row_heights:
-            final_y = self.row_positions[-1] + self.row_heights[-1]
-            painter.drawLine(self.left_margin, final_y, final_x, final_y)
+        # Draw final bottom boundary of content
+        painter.drawLine(self.left_margin, grid_bottom_y, grid_right_x, grid_bottom_y)
 
     def _are_corresponding(self, name1, name2):
         n1 = name1.lower()
@@ -746,22 +803,173 @@ class _MatrixGridWidget(QWidget):
 
                 if is_connected:
                     # Connected - filled with dark color
-                    painter.fillRect(rect, QBrush(QColor(79, 86, 154)))
-                elif is_self_connection_square:
-                    painter.fillRect(rect, QBrush(self_connection_color))
+                    painter.fillRect(rect, QBrush(QColor(69, 97, 139)))
                 elif is_arrow_highlighted:
                     # Arrow highlighted - use special color for squares that will be connected by arrow
                     painter.fillRect(rect, QBrush(hover_highlight_color))
                 elif is_hover_highlighted:
                     # Hover highlighted - use special color for squares in same row/column as hovered square
                     painter.fillRect(rect, QBrush(hover_highlight_color))
+                elif is_self_connection_square:
+                    painter.fillRect(rect, QBrush(self_connection_color))
                 else:
                     # Not connected - theme-aware background
                     painter.fillRect(rect, QBrush(disconnected_color))
 
                 # Border
-                painter.setPen(QPen(QColor(200, 200, 200), 1))
+                painter.setPen(QPen(QColor(200, 200, 200), self.parent_matrix.style_config.square_border_width))
                 painter.drawRect(rect)
+
+    def _draw_connection_guides(self, painter, grid_rect):
+        """
+        Draw subtle guide lines for connected cells from:
+          - the center of the connection square
+          - to the center of its output label row (left)
+          - and to the center of its input label column (bottom)
+
+        This makes it easy to see which ports a highlighted connection square represents,
+        especially on large matrices.
+        """
+        output_ports = self.parent_matrix.output_ports
+        input_ports = self.parent_matrix.input_ports
+
+        if not output_ports or not input_ports:
+            return
+
+        # Determine hover target: only emphasize guides for the hovered connected cell.
+        hover_row = self.hover_row
+        hover_col = self.hover_col
+
+        # Helper function to make color less vibrant
+        def make_less_vibrant(color):
+            h, s, v, a = color.getHsv()
+            s = max(0, s - 50)  # reduce saturation
+            return QColor.fromHsv(h, s, v, a)
+
+        # Iterate through all cells and draw guides only for connected ones
+        for col, (input_client, input_port, _) in enumerate(input_ports):
+            if col >= len(self.column_positions) or col >= len(self.column_widths):
+                continue
+            col_x = self.column_positions[col]
+            column_width = self.column_widths[col]
+
+            # X position for the connection square center
+            cell_center_x = col_x + column_width / 2.0
+
+            for row, (output_client, output_port, _) in enumerate(output_ports):
+                if row >= len(self.row_positions) or row >= len(self.row_heights):
+                    continue
+
+                if not self.parent_matrix.is_connected(output_port, input_port):
+                    continue
+
+                row_y = self.row_positions[row]
+                row_height = self.row_heights[row]
+
+                # Rect for this connection cell (same as in _draw_connection_squares)
+                square_width = min(
+                    column_width - 2,
+                    grid_rect.width() - col_x + grid_rect.left() - 2,
+                )
+                cell_rect = QRect(
+                    int(col_x + 1),
+                    int(row_y + 1),
+                    int(square_width),
+                    int(row_height - 2),
+                )
+
+                # Cell center point
+                cell_cx = cell_rect.center().x()
+                cell_cy = cell_rect.center().y()
+
+                # Determine if this is the hovered connected cell
+                is_hover_cell = (
+                    hover_row == row
+                    and hover_col == col
+                )
+
+                # Get port colors
+                output_color = self.parent_matrix.client_colors.get(output_client, QColor(Qt.GlobalColor.black))
+                input_color = self.parent_matrix.client_colors.get(input_client, QColor(Qt.GlobalColor.black))
+
+                # 1 & 2) Draw a rounded path from the output port to the input port
+                # passing through the connection cell.
+                radius = 10.0
+                path = QPainterPath()
+
+                # Define start, end, and corner points for the path
+                output_row_center_y = row_y + row_height / 2.0
+                grid_bottom_y = (
+                    getattr(self, "top_margin", 10)
+                    + getattr(self, "grid_height", self.height() - 20)
+                )
+                input_label_anchor_y = grid_bottom_y + 5
+
+                start_x = self.left_margin / 2.0
+                start_y = output_row_center_y
+
+                end_y = input_label_anchor_y
+
+                corner_x = cell_cx
+                # corner_y is the same as start_y and cell_cy
+
+                # Build the path with a rounded corner using a quadratic Bezier curve
+                path.moveTo(start_x, start_y)
+                path.lineTo(corner_x - radius, start_y)
+                path.quadTo(corner_x, start_y, corner_x, start_y + radius)
+                path.lineTo(corner_x, end_y)
+
+                # Determine line color based on port colors
+                if output_color == input_color:
+                    line_color = output_color
+                else:
+                    # Create gradient for different colors
+                    line_color = output_color  # Use output color as base, gradient will be applied
+
+                # Adjust for hover state
+                if is_hover_cell:
+                    # Full vibrant color on hover
+                    final_color = line_color
+                    line_width = self.parent_matrix.style_config.guide_line_hover_width
+                else:
+                    # Less vibrant when not hovered
+                    final_color = make_less_vibrant(line_color)
+                    line_width = self.parent_matrix.style_config.guide_line_width
+
+                # Create pen or brush for gradient
+                style_cfg = self.parent_matrix.style_config
+                if output_color == input_color:
+                    pen = QPen(final_color, line_width, Qt.PenStyle.SolidLine)
+                    painter.setPen(pen)
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
+                else:
+                    # Create gradient from output to input color
+                    gradient = QLinearGradient(start_x, start_y, corner_x, end_y)
+                    gradient.setColorAt(0, final_color if is_hover_cell else make_less_vibrant(output_color))
+                    gradient.setColorAt(1, final_color if is_hover_cell else make_less_vibrant(input_color))
+                    pen = QPen(QBrush(gradient), line_width, Qt.PenStyle.SolidLine)
+                    painter.setPen(pen)
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
+
+                pen.setCosmetic(True)  # keep width consistent regardless of zoom
+
+                # Draw dot at the start of the path (near output labels)
+                # Use output color for dot when there's a gradient, otherwise use final_color
+                if output_color == input_color:
+                    dot_color = final_color
+                else:
+                    dot_color = output_color if is_hover_cell else make_less_vibrant(output_color)
+                self._draw_connection_dot(painter, start_x, start_y, dot_color)
+
+                painter.drawPath(path)
+
+                # Draw arrow head at the end of the path (near input labels)
+                # Use input color for arrow head when there's a gradient, otherwise use final_color
+                if output_color == input_color:
+                    arrow_color = final_color
+                else:
+                    arrow_color = input_color if is_hover_cell else make_less_vibrant(input_color)
+                self._draw_connection_arrowhead(painter, corner_x, end_y, arrow_color)
 
     def _draw_rotated_text(self, painter, text, x, y, font, color, is_hovered=False):
         painter.save()
@@ -795,47 +1003,98 @@ class _MatrixGridWidget(QWidget):
         port_font = QFont()
         port_font.setPointSize(self.font_size)
 
-        for i, (client_name, port_name, display_name) in enumerate(self.parent_matrix.input_ports):
-            col_x = self.column_positions[i]
-            column_width = self.column_widths[i]
-            is_hovered = (i == self.hover_col)
+        # Access grouped input clients info to draw client name once per group
+        input_client_port_counts = getattr(self.parent_matrix.matrix_widget, "input_client_port_counts", {})
+        ports = self.parent_matrix.input_ports
 
-            # Common setup for both client and port labels
-            grid_bottom_y = getattr(self, 'top_margin', 10) + getattr(self, 'grid_height', self.height() - 20)
-            label_start_y = grid_bottom_y + 5  # Adjust margin to be smaller
+        idx = 0
+        while idx < len(ports):
+            client_name, _, _ = ports[idx]
+            count = input_client_port_counts.get(client_name, 1)
 
-            painter.save()
+            # Draw client label on the first (rightmost) port column for this client block.
+            first_col_index = idx + count - 1
 
-            # Position for labels - center of the column
-            x_pos = col_x + column_width / self.parent_matrix.style_config.input_label_x_pos_factor
-            painter.translate(x_pos, label_start_y)
-            painter.rotate(self.parent_matrix.style_config.input_label_rotation)
+            for offset in range(count):
+                col_index = idx + offset
+                if col_index >= len(self.column_positions):
+                    break
 
-            # --- Draw Client Name ---
-            current_client_font = QFont(client_font)
-            if is_hovered:
-                current_client_font.setPointSize(self.client_name_font_size + 1)
-            painter.setFont(current_client_font)
-            painter.setPen(QPen(self.parent_matrix.client_colors.get(client_name, QColor(Qt.GlobalColor.black))))
+                _, port_name, display_name = ports[col_index]
+                col_x = self.column_positions[col_index]
+                column_width = self.column_widths[col_index]
+                is_hovered = (col_index == self.hover_col)
 
-            client_text = client_name.upper()
-            # Draw text from top-left
-            client_text_rect = painter.boundingRect(QRect(0, 0, 500, 100), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, client_text)
-            painter.drawText(client_text_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, client_text)
+                # Common setup for both client and port labels
+                grid_bottom_y = getattr(self, 'top_margin', 10) + getattr(self, 'grid_height', self.height() - 20)
+                label_start_y = grid_bottom_y + 5  # Adjust margin to be smaller
 
-            # --- Draw Port Name ---
-            current_port_font = QFont(port_font)
-            if is_hovered:
-                current_port_font.setBold(True)
-            painter.setFont(current_port_font)
-            painter.setPen(QPen(self.parent_matrix.client_colors.get(client_name, QColor(Qt.GlobalColor.black))))
+                painter.save()
 
-            # Offset the port name to be below the client name
-            port_y_start = client_text_rect.height() + self.parent_matrix.style_config.input_label_port_y_offset
-            port_text_rect = QRect(0, port_y_start, 500, 100)
-            painter.drawText(port_text_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, display_name)
+                # --- Draw Client Name (only on the rightmost column of this client block) ---
+                if col_index == first_col_index:
+                    # Position for labels showing clients and ports combo
+                    x_pos = col_x + column_width / self.parent_matrix.style_config.input_label_x_pos_factor_client_port
+                    painter.translate(x_pos, label_start_y)
+                    painter.rotate(self.parent_matrix.style_config.input_label_rotation)
 
-            painter.restore()
+                    current_client_font = QFont(client_font)
+                    if is_hovered:
+                        current_client_font.setPointSize(self.client_name_font_size + 1)
+                    painter.setFont(current_client_font)
+                    painter.setPen(QPen(self.parent_matrix.client_colors.get(client_name, QColor(Qt.GlobalColor.black))))
+
+                    client_text = client_name.upper()
+                    client_text_rect = painter.boundingRect(
+                        QRect(0, 0, 500, 100),
+                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+                        client_text,
+                    )
+                    painter.drawText(
+                        client_text_rect,
+                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+                        client_text,
+                    )
+
+                    # --- Draw Port Name (always) ---
+                    current_port_font = QFont(port_font)
+                    if is_hovered:
+                        current_port_font.setBold(True)
+                    painter.setFont(current_port_font)
+                    painter.setPen(QPen(self.parent_matrix.client_colors.get(client_name, QColor(Qt.GlobalColor.black))))
+
+                    # Offset the port name to be below the reserved client label area
+                    port_y_start = client_text_rect.height() + self.parent_matrix.style_config.input_label_port_y_offset
+                    port_text_rect = QRect(0, port_y_start, 500, 100)
+                    painter.drawText(
+                        port_text_rect,
+                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+                        display_name,
+                    )
+                else:
+                    # Position for labels showing ports only
+                    x_pos = col_x + column_width / self.parent_matrix.style_config.input_label_x_pos_factor_ports_only
+                    painter.translate(x_pos, label_start_y)
+                    painter.rotate(self.parent_matrix.style_config.input_label_rotation)
+
+                    # This is a subsequent port, draw only the port name, centered and shifted.
+                    current_port_font = QFont(port_font)
+                    if is_hovered:
+                        current_port_font.setBold(True)
+                    painter.setFont(current_port_font)
+                    painter.setPen(QPen(self.parent_matrix.client_colors.get(client_name, QColor(Qt.GlobalColor.black))))
+
+                    # No vertical offset, and a slight horizontal shift to the right
+                    port_text_rect = QRect(5, 0, 500, 100)  # 5px right
+                    painter.drawText(
+                        port_text_rect,
+                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+                        display_name,
+                    )
+
+                painter.restore()
+
+            idx += count
 
         painter.restore()
 
@@ -913,6 +1172,53 @@ class _MatrixGridWidget(QWidget):
         painter.drawPolygon(arrow_polygon)
 
         painter.restore()
+
+    def _draw_connection_dot(self, painter, x, y, color):
+        """Draw a small dot for connection guide lines at the output end."""
+        painter.save()
+        painter.setBrush(QBrush(color))
+        painter.setPen(QPen(color))
+
+        # Dot radius from style config
+        radius = self.parent_matrix.style_config.guide_dot_radius
+
+        # Draw filled circle
+        painter.drawEllipse(QPointF(x, y), radius, radius)
+
+        painter.restore()
+
+    def _draw_connection_arrowhead(self, painter, x, y, color):
+        """Draw a small arrowhead for connection guide lines pointing downward."""
+        painter.save()
+        painter.setBrush(QBrush(color))
+        painter.setPen(QPen(color))
+
+        # Arrowhead size from style config
+        arrowhead_length = self.parent_matrix.style_config.guide_arrowhead_length
+        arrowhead_width = self.parent_matrix.style_config.guide_arrowhead_width
+
+        # Arrow points for downward pointing arrow
+        tip = QPointF(x, y)
+        left = QPointF(x - arrowhead_width / 2, y - arrowhead_length)
+        right = QPointF(x + arrowhead_width / 2, y - arrowhead_length)
+
+        # Draw arrowhead as filled triangle
+        arrow_polygon = QPolygonF([tip, left, right])
+        painter.drawPolygon(arrow_polygon)
+
+        painter.restore()
+
+    def contextMenuEvent(self, event):
+        """Show context menu."""
+        from PyQt6.QtWidgets import QMenu
+        from PyQt6.QtGui import QAction
+
+        context_menu = QMenu(self)
+        reshuffle_action = QAction("Reshuffle colours", self)
+        reshuffle_action.triggered.connect(self.parent_matrix.reshuffle_colors)
+        context_menu.addAction(reshuffle_action)
+
+        context_menu.exec(event.globalPos())
 
     def mousePressEvent(self, event):
         """Handle mouse press for both click and drag operations."""
@@ -1328,57 +1634,97 @@ class _OutputLabelsWidget(QWidget):
         if hasattr(self.parent_matrix, 'matrix_widget') and self.parent_matrix.matrix_widget:
             hover_row = self.parent_matrix.matrix_widget.hover_row
 
-        for i, (client_name, port_name, display_name) in enumerate(self.parent_matrix.output_ports):
-            row_y = self.row_positions[i]
-            row_height = self.row_heights[i]
-            is_hovered = (i == hover_row)
+        # Access grouped output clients info to draw client name once per group
+        output_client_port_counts = getattr(self.parent_matrix.matrix_widget, "output_client_port_counts", {})
+        ports = self.parent_matrix.output_ports
 
-            # Draw client and port names, centered vertically in the row
-            painter.save()
+        idx = 0
+        while idx < len(ports):
+            client_name, _, _ = ports[idx]
+            count = output_client_port_counts.get(client_name, 1)
 
-            # Prepare fonts
-            current_client_font = QFont(client_font)
-            if is_hovered:
-                current_client_font.setPointSize(self.client_name_font_size + 1)
-            
-            current_port_font = QFont(port_font)
-            if is_hovered:
-                current_port_font.setBold(True)
+            for offset in range(count):
+                row_index = idx + offset
+                if row_index >= len(self.row_positions):
+                    break
 
-            # Prepare texts
-            client_text = _truncate_text(client_name.upper(), self.max_client_chars)
-            port_text = _truncate_text(display_name, self.max_port_chars)
+                _, port_name, display_name = ports[row_index]
+                row_y = self.row_positions[row_index]
+                row_height = self.row_heights[row_index]
+                is_hovered = (row_index == hover_row)
 
-            # Get text dimensions
-            painter.setFont(current_client_font)
-            client_text_h = painter.fontMetrics().height()
-            
-            painter.setFont(current_port_font)
-            port_text_h = painter.fontMetrics().height()
+                # Draw client and port names, centered vertically in the row
+                painter.save()
 
-            # This is the tweakable value for vertical spacing, similar to the one for input ports
-            port_v_offset = self.parent_matrix.style_config.output_label_port_v_offset
+                # Prepare fonts
+                current_client_font = QFont(client_font)
+                if is_hovered and offset == 0:
+                    # Emphasize only on first row for this client
+                    current_client_font.setPointSize(self.client_name_font_size + 1)
+                
+                current_port_font = QFont(port_font)
+                if is_hovered:
+                    current_port_font.setBold(True)
 
-            # Calculate positions to center the text block vertically
-            total_text_height = client_text_h + port_text_h + port_v_offset
-            block_start_y = row_y + (row_height - total_text_height) / 2
+                # Prepare texts
+                client_text = _truncate_text(client_name.upper(), self.max_client_chars)
+                port_text = _truncate_text(display_name, self.max_port_chars)
 
-            client_y = block_start_y
-            port_y = block_start_y + client_text_h + port_v_offset
+                # Get text dimensions
+                painter.setFont(current_client_font)
+                client_text_h = painter.fontMetrics().height()
+                
+                painter.setFont(current_port_font)
+                port_text_h = painter.fontMetrics().height()
 
-            # Draw client name
-            painter.setFont(current_client_font)
-            painter.setPen(QPen(self.parent_matrix.client_colors.get(client_name, QColor(Qt.GlobalColor.black))))
-            client_rect = QRect(0, int(client_y), self.width() - 4, client_text_h)
-            painter.drawText(client_rect, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, client_text)
+                # Spacing between client and port labels
+                port_v_offset = self.parent_matrix.style_config.output_label_port_v_offset
 
-            # Draw port name
-            painter.setFont(current_port_font)
-            painter.setPen(QPen(self.parent_matrix.client_colors.get(client_name, QColor(Qt.GlobalColor.black))))
-            port_rect = QRect(0, int(port_y), self.width() - 4, port_text_h)
-            painter.drawText(port_rect, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, port_text)
+                # Draw client name only once (on the first port row of this client)
+                if offset == 0:
+                    # Calculate positions to center the text block vertically
+                    total_text_height = client_text_h + port_text_h + port_v_offset
+                    block_start_y = row_y + (row_height - total_text_height) / 2
 
-            painter.restore()
+                    client_y = block_start_y
+                    port_y = block_start_y + client_text_h + port_v_offset
+
+                    painter.setFont(current_client_font)
+                    painter.setPen(QPen(self.parent_matrix.client_colors.get(client_name, QColor(Qt.GlobalColor.black))))
+                    client_rect = QRect(0, int(client_y), self.width() - 4, client_text_h)
+                    painter.drawText(
+                        client_rect,
+                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                        client_text,
+                    )
+
+                    # Draw port name on every row
+                    painter.setFont(current_port_font)
+                    painter.setPen(QPen(self.parent_matrix.client_colors.get(client_name, QColor(Qt.GlobalColor.black))))
+                    port_rect = QRect(0, int(port_y), self.width() - 4, port_text_h)
+                    painter.drawText(
+                        port_rect,
+                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                        port_text,
+                    )
+                else:
+                    # This is a subsequent port, draw only the port name, centered and shifted.
+                    # Center vertically and move up slightly
+                    port_y = row_y + (row_height - port_text_h) / 2 - 3  # 3px up
+
+                    # Draw port name
+                    painter.setFont(current_port_font)
+                    painter.setPen(QPen(self.parent_matrix.client_colors.get(client_name, QColor(Qt.GlobalColor.black))))
+                    port_rect = QRect(0, int(port_y), self.width() - 4, port_text_h)
+                    painter.drawText(
+                        port_rect,
+                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                        port_text,
+                    )
+
+                painter.restore()
+
+            idx += count
 
     def _draw_client_separators(self, painter):
         """Draw dashed line separators around each output port entry."""

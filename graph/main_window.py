@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-                             QLineEdit, QSpacerItem, QSizePolicy, QMessageBox, QToolButton, QMenu)
-from PyQt6.QtCore import pyqtSlot, QSize # Added QSize
+                             QLineEdit, QSpacerItem, QSizePolicy, QMessageBox, QToolButton, QMenu, QApplication)
+from PyQt6.QtCore import pyqtSlot, QSize, Qt, QTimer # Added QTimer for debounce
 from PyQt6.QtGui import QAction, QKeySequence, QIcon # Added for shortcuts and icons
 from typing import TYPE_CHECKING
 
@@ -36,11 +36,16 @@ class MainWindow(QMainWindow):
         # Load untangle values from config or use defaults
         self.untangle_values = self._load_untangle_values()
         
+        # Debounce timer for I/O layout reapplication
+        self._layout_debounce_timer = QTimer(self)
+        self._layout_debounce_timer.setSingleShot(True)
+        self._layout_debounce_timer.timeout.connect(self._deferred_reapply_layout)
+        
         # Add the special value for original layout to the untangle values
         if ORIGINAL_LAYOUT not in self.untangle_values:
             self.untangle_values.append(ORIGINAL_LAYOUT)
         
-        # Current max_nodes_per_row value for untangle
+        # Current max_nodes_per_row value for untangle - will be loaded from scene after initialization
         self.current_untangle_setting = self.untangle_values[0] if self.untangle_values else 6  # Default value
         # Track if untangle has been used at least once
         self.untangle_button_clicked = False
@@ -60,12 +65,22 @@ class MainWindow(QMainWindow):
         )
         self.view = JackGraphView(self.scene)
         
+        # Load the saved untangle setting from the scene if available (tooltip will be updated after button creation)
+        if hasattr(self.scene, 'initial_untangle_setting') and self.scene.initial_untangle_setting is not None:
+            # Validate that the loaded setting is in our untangle_values list
+            if self.scene.initial_untangle_setting in self.untangle_values:
+                self.current_untangle_setting = self.scene.initial_untangle_setting
+                self.untangle_button_clicked = True  # Mark as used since we loaded a saved state
+                print(f"Loaded untangle setting: {self.current_untangle_setting}")
+        
         # Store initial node positions after the scene is fully loaded
         self.scene.scene_fully_loaded.connect(self._store_initial_node_positions)
         # Update the stored original layout whenever user changes node states
         self.scene.node_states_changed.connect(self._update_original_layout_baseline)
         # Update preset save button state when node states change
         self.scene.node_states_changed.connect(lambda: self.preset_handler._update_save_button_enabled_state() if hasattr(self, 'preset_handler') and self.preset_handler else None)
+        # Reapply layout after graph refresh if we're in a specific layout mode (debounced for I/O)
+        self.scene.scene_connections_changed.connect(self._schedule_layout_reapply)
 
         # Main widget and layout
         main_widget = QWidget()
@@ -106,19 +121,29 @@ class MainWindow(QMainWindow):
         # Create Untangle button and action
         self.untangle_action = QAction("Untangle", self)
         next_value = self._get_next_untangle_value()
-        # At startup, only show the next value in the tooltip
-        self.untangle_action.setToolTip(f"Automatically organize nodes to reduce visual clutter (next: {next_value})")
+        # At startup, show initial state in the tooltip
+        self.untangle_action.setToolTip(f"Reorganise graph. (Use with Shift to reload). (initial, next: {next_value})")
         self.untangle_action.triggered.connect(self._handle_untangle)
         self.untangle_button = create_action_button(
             self,
             self.untangle_action,
-            tooltip=f"Reorganize graph (next: {next_value}) <span style='color:grey'>Alt+U</span>",
+            tooltip=f"Reorganise graph. (Use with Shift to reload). (initial, next: {next_value}) <span style='color:grey'>Alt+U</span>",
             min_width=100
         )
-
-
-
-
+        # Make tooltip stay visible as long as user hovers over the button
+        self.untangle_button.setToolTipDuration(-1)
+        
+        # Update tooltip if we loaded a saved untangle setting
+        if self.untangle_button_clicked:
+            next_value = self._get_next_untangle_value()
+            if self.current_untangle_setting == ORIGINAL_LAYOUT:
+                current_display = "original layout (saved)"
+            elif self.current_untangle_setting == 0:
+                current_display = "I/O"
+            else:
+                current_display = f"{self.current_untangle_setting} nodes per row"
+            self.untangle_button.setToolTip(f"Reorganise graph. (Use with Shift to reload). ({current_display}, next: {next_value}) <span style='color:grey'>Alt+U</span>")
+            self.untangle_action.setToolTip(f"Reorganise graph. (Use with Shift to reload). ({current_display}, next: {next_value}) <span style='color:grey'>Alt+U</span>")
 
         self.zoom_in_action = action_manager.zoom_in_action # Assuming generic zoom actions
         self.zoom_in_button = create_action_button(
@@ -268,13 +293,40 @@ class MainWindow(QMainWindow):
         node_states = self.scene.get_node_states()
         if node_states:
             self.initial_node_positions = copy.deepcopy(node_states)
-            # Also update tooltip to indicate saved original
-            next_value = self._get_next_untangle_value()
-            current_display = (
-                "original layout (saved)" if self.current_untangle_setting == ORIGINAL_LAYOUT
-                else f"{self.current_untangle_setting} nodes per row"
-            )
-            self.untangle_button.setToolTip(f"Reorganize graph ({current_display}, next: {next_value}) <span style='color:grey'>Alt+U</span>")
+            # Only update tooltip if untangle has been used, otherwise keep "initial" display
+            if self.untangle_button_clicked:
+                next_value = self._get_next_untangle_value()
+                if self.current_untangle_setting == ORIGINAL_LAYOUT:
+                    current_display = "original layout (saved)"
+                elif self.current_untangle_setting == 0:
+                    current_display = "I/O"
+                else:
+                    current_display = f"{self.current_untangle_setting} nodes per row"
+                self.untangle_button.setToolTip(f"Reorganise graph. (Use with Shift to reload). ({current_display}, next: {next_value}) <span style='color:grey'>Alt+U</span>")
+    
+    def _schedule_layout_reapply(self):
+        """Schedule a debounced layout reapplication for I/O mode."""
+        if self.current_untangle_setting == 0 and self.untangle_button_clicked:
+            self._layout_debounce_timer.start(150)  # 150ms debounce to batch rapid changes
+    
+    @pyqtSlot()
+    def _deferred_reapply_layout(self):
+        """Deferred reapplication of layout after debounce."""
+        self._reapply_layout_if_needed()
+    
+    def _reapply_layout_if_needed(self):
+        """Reapply the current layout after graph refresh only for dynamic I/O layout."""
+        # Only reapply if this was triggered by a full graph refresh (not individual connection changes)
+        if hasattr(self.scene, '_in_full_refresh') and self.scene._in_full_refresh:
+            return  # Don't reapply during the refresh itself
+        
+        # Only reapply if untangle has been used and it's I/O layout (dynamic)
+        if not self.untangle_button_clicked or self.current_untangle_setting != 0:
+            return
+        
+        # Reapply I/O layout (dynamic sorting) - skip redundant unsplit as layout handles splitting
+        print("Reapplying I/O layout after graph refresh")
+        self.scene.untangle_graph_by_io()
 
     def _get_next_untangle_value(self):
         """Get the next untangle value in the cycle."""
@@ -290,10 +342,15 @@ class MainWindow(QMainWindow):
             if next_value == ORIGINAL_LAYOUT:
                 # Indicate if the original layout was saved by the user
                 return "original layout (saved)" if hasattr(self, 'initial_node_positions') and self.initial_node_positions else "original layout"
+            if next_value == 0:
+                return "I/O"
             return next_value
         except (ValueError, IndexError):
             # If current value not in the list or list is empty
-            return self.untangle_values[0] if self.untangle_values else 6
+            first_value = self.untangle_values[0] if self.untangle_values else 6
+            if first_value == 0:
+                return "I/O"
+            return first_value
 
     def toggle_internal_controls(self, visible: bool):
         """Shows or hides the internal toolbar/control widgets."""
@@ -373,67 +430,72 @@ class MainWindow(QMainWindow):
     def handle_zoom_changed(self, zoom_level: float):
         """Handles the zoom_changed signal from the view and saves the state."""
         # print(f"Handling zoom change event in MainWindow: {zoom_level}") # Silenced
-        # Save node positions and zoom level
-        self.scene.save_node_states(graph_zoom_level=zoom_level)
+        # Save node positions, zoom level, and untangle setting
+        self.scene.save_node_states(graph_zoom_level=zoom_level, current_untangle_setting=self.current_untangle_setting)
         
     def _handle_untangle(self):
-        """Handles the untangle button action and cycles through max_nodes_per_row values."""
-        # Use the loaded untangle values from config
-        if not self.untangle_values:
-            # If no values are available, use defaults
-            self.untangle_values = app_config.DEFAULT_UNTANGLE_VALUES
-            # Make sure the original layout option is included
-            if ORIGINAL_LAYOUT not in self.untangle_values:
-                self.untangle_values.append(ORIGINAL_LAYOUT)
+        """Handles the untangle button action. Cycles through layouts, or reloads with Shift."""
         
-        # Get the index of the current setting in the cycle
-        try:
-            current_index = self.untangle_values.index(self.current_untangle_setting)
-            # Move to the next value in the cycle
-            next_index = (current_index + 1) % len(self.untangle_values)
-            self.current_untangle_setting = self.untangle_values[next_index]
-        except ValueError:
-            # If current value not in the list, start with the first value
-            self.current_untangle_setting = self.untangle_values[0]
+        modifiers = QApplication.keyboardModifiers()
+        is_shift_pressed = modifiers == Qt.KeyboardModifier.ShiftModifier
+
+        if not is_shift_pressed:
+            # Cycle to the next value if Shift is not held
+            if not self.untangle_values:
+                self.untangle_values = app_config.DEFAULT_UNTANGLE_VALUES
+                if ORIGINAL_LAYOUT not in self.untangle_values:
+                    self.untangle_values.append(ORIGINAL_LAYOUT)
+            
+            try:
+                current_index = self.untangle_values.index(self.current_untangle_setting)
+                next_index = (current_index + 1) % len(self.untangle_values)
+                self.current_untangle_setting = self.untangle_values[next_index]
+            except ValueError:
+                self.current_untangle_setting = self.untangle_values[0] if self.untangle_values else 6
         
-        # If the current setting is the special value for original layout
-        if self.current_untangle_setting == ORIGINAL_LAYOUT:
-            # Restore the original node positions (preserves split state from original layout)
+        current_setting = self.current_untangle_setting
+        
+        # Apply the layout
+        if current_setting == ORIGINAL_LAYOUT:
             if self.initial_node_positions:
                 self.scene.restore_node_states(self.initial_node_positions)
-                # Display a status message
+                message = "Reloaded original layout." if is_shift_pressed else "Restored original layout."
                 if hasattr(self, 'statusBar') and self.statusBar():
-                    self.statusBar().showMessage("Restored original layout.", 3000)
+                    self.statusBar().showMessage(message, 3000)
             else:
-                # If no initial positions are stored, use a default untangle
-                print("No initial node positions stored, using default untangle")
                 self.scene.untangle_graph(max_nodes_per_row=6)
                 if hasattr(self, 'statusBar') and self.statusBar():
                     self.statusBar().showMessage("Original layout not available, using default untangle.", 3000)
-        else:
-            # For untangle layouts, unsplit all nodes first to improve organization
-            print(f"Untangling with {self.current_untangle_setting} nodes per row - unsplitting all nodes first")
+        elif current_setting == 0:
             self.scene.unsplit_all_nodes(save_state=False)
-            
-            # Then apply the regular untangle with the current setting
-            self.scene.untangle_graph(max_nodes_per_row=self.current_untangle_setting)
-            # Display a status message with the current setting
+            self.scene.untangle_graph_by_io()
+            message = "Reloaded I/O layout." if is_shift_pressed else "Graph untangled by I/O."
             if hasattr(self, 'statusBar') and self.statusBar():
-                self.statusBar().showMessage(f"Graph untangled with {self.current_untangle_setting} nodes per row.", 3000)
+                self.statusBar().showMessage(message, 3000)
+        else:
+            self.scene.unsplit_all_nodes(save_state=False)
+            self.scene.untangle_graph(max_nodes_per_row=current_setting)
+            message = f"Reloaded layout with {current_setting} nodes per row." if is_shift_pressed else f"Graph untangled with {current_setting} nodes per row."
+            if hasattr(self, 'statusBar') and self.statusBar():
+                self.statusBar().showMessage(message, 3000)
         
-        # Update the button tooltip to show both current and next values after first click
+        # Save the current untangle setting after applying the layout
+        current_zoom_level = self.view.get_zoom_level() if hasattr(self.view, 'get_zoom_level') else None
+        self.scene.save_node_states(graph_zoom_level=current_zoom_level, current_untangle_setting=self.current_untangle_setting)
+        
+        # Update tooltip
         next_value = self._get_next_untangle_value()
         self.untangle_button_clicked = True
         
-        # Format the current setting for display
-        if self.current_untangle_setting == ORIGINAL_LAYOUT:
-            # Indicate if the original layout was saved by the user
-            original_label = "original layout (saved)" if hasattr(self, 'initial_node_positions') and self.initial_node_positions else "original layout"
-            current_display = original_label
+        if current_setting == ORIGINAL_LAYOUT:
+            current_display = "original layout (saved)" if self.initial_node_positions else "original layout"
+        elif current_setting == 0:
+            current_display = "I/O"
         else:
-            current_display = f"{self.current_untangle_setting} nodes per row"
+            current_display = f"{current_setting} nodes per row"
         
-        self.untangle_button.setToolTip(f"Reorganize graph ({current_display}, next: {next_value})")
+        self.untangle_button.setToolTip(f"Reorganise graph. (Use with Shift to reload). ({current_display}, next: {next_value}) <span style='color:grey'>Alt+U</span>")
+        self.untangle_action.setToolTip(f"Reorganise graph. (Use with Shift to reload). ({current_display}, next: {next_value}) <span style='color:grey'>Alt+U</span>")
 
     @pyqtSlot()
     def update_graph_connection_buttons_state(self):
@@ -862,7 +924,7 @@ class MainWindow(QMainWindow):
         current_states = self.scene.get_node_states()
         
         # Save the node states to the config file
-        self.scene.config_manager.save_node_states_as_default(current_states)
+        self.scene.node_config_manager.save_node_states_as_default(current_states)
         
         # Update the in-memory initial_node_positions variable
         # This ensures that when cycling back to the original layout with the Untangle button,
@@ -875,5 +937,10 @@ class MainWindow(QMainWindow):
         
         # Update the Untangle button tooltip to reflect that the original layout has been changed
         next_value = self._get_next_untangle_value()
-        current_display = "original layout (saved)" if self.current_untangle_setting == ORIGINAL_LAYOUT else f"{self.current_untangle_setting} nodes per row"
-        self.untangle_button.setToolTip(f"Reorganize graph ({current_display}, next: {next_value})")
+        if self.current_untangle_setting == ORIGINAL_LAYOUT:
+            current_display = "original layout (saved)"
+        elif self.current_untangle_setting == 0:
+            current_display = "I/O"
+        else:
+            current_display = f"{self.current_untangle_setting} nodes per row"
+        self.untangle_button.setToolTip(f"Reorganise graph. (Use with Shift to reload). ({current_display}, next: {next_value}) <span style='color:grey'>Alt+U</span>")

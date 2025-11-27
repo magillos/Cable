@@ -60,6 +60,14 @@ SPLIT_OUTPUT_SUFFIX = " (Outputs)"
 # Node Horizontal Spacing (e.g. between split parts)
 NODE_HSPACING = 30
 
+# Minimum spacing between nodes for layout and overlap prevention
+MIN_NODE_H_SPACING = 10.0
+MIN_NODE_V_SPACING = 10.0
+
+# Node push-away animation settings
+PUSH_AWAY_ANIMATION_DURATION = 200  # milliseconds
+PUSH_AWAY_ANIMATION_ENABLED = True  # Set to False for instant movement
+
 # UI Layout Fine-tuning
 GRAPH_TOOLBAR_UNDO_REDO_OFFSET = -65 # Adjust to shift Undo/Redo buttons in Graph tab toolbar, e.g., 10 or -10
 

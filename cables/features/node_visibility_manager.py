@@ -106,6 +106,29 @@ class NodeVisibilityManager:
         except Exception as e:
             print(f"Error saving node visibility settings: {e}")
     
+    def _extract_client_name(self, node_name):
+        """
+        Extract the base client name from a node name.
+        Handles both port names (with ':') and split audio/midi nodes (with ' (Audio)' or ' (MIDI)').
+        
+        Args:
+            node_name: The name of the node (e.g., "Client:port", "Client (Audio)", "Client (MIDI)")
+            
+        Returns:
+            str: The base client name
+        """
+        # First, get the client name part (before the colon for port names)
+        parts = node_name.split(':')
+        client_name = parts[0] if parts else node_name
+        
+        # Then, strip the (Audio) or (MIDI) suffix if present (for split audio/midi clients)
+        if client_name.endswith(' (Audio)'):
+            client_name = client_name[:-8]  # Remove ' (Audio)'
+        elif client_name.endswith(' (MIDI)'):
+            client_name = client_name[:-7]  # Remove ' (MIDI)'
+        
+        return client_name
+    
     def is_node_visible(self, node_name, is_midi=False):
         """
         Check if a node should be visible (for backward compatibility).
@@ -117,18 +140,42 @@ class NodeVisibilityManager:
         Returns:
             bool: True if the node should be visible, False otherwise
         """
-        # Get the client name part (before the colon)
-        parts = node_name.split(':')
-        client_name = parts[0] if parts else node_name
+        # Get the base client name
+        client_name = self._extract_client_name(node_name)
         
         if is_midi:
-            # For MIDI nodes, either inputs OR outputs can be visible for the node to appear
-            return (self.midi_input_visibility.get(client_name, True) or 
-                    self.midi_output_visibility.get(client_name, True))
+            # For MIDI nodes, check if EITHER inputs or outputs are explicitly set to visible
+            # If neither is in the dictionary, default to True (visible)
+            input_visible = self.midi_input_visibility.get(client_name)
+            output_visible = self.midi_output_visibility.get(client_name)
+            
+            # If both are explicitly set, use OR logic
+            if input_visible is not None and output_visible is not None:
+                return input_visible or output_visible
+            # If only one is set, use that value
+            elif input_visible is not None:
+                return input_visible
+            elif output_visible is not None:
+                return output_visible
+            # If neither is set, default to visible
+            else:
+                return True
         else:
-            # For audio nodes, either inputs OR outputs can be visible for the node to appear
-            return (self.audio_input_visibility.get(client_name, True) or 
-                    self.audio_output_visibility.get(client_name, True))
+            # For audio nodes, same logic
+            input_visible = self.audio_input_visibility.get(client_name)
+            output_visible = self.audio_output_visibility.get(client_name)
+            
+            # If both are explicitly set, use OR logic
+            if input_visible is not None and output_visible is not None:
+                return input_visible or output_visible
+            # If only one is set, use that value
+            elif input_visible is not None:
+                return input_visible
+            elif output_visible is not None:
+                return output_visible
+            # If neither is set, default to visible
+            else:
+                return True
     
     def is_input_visible(self, node_name, is_midi=False):
         """
@@ -141,9 +188,8 @@ class NodeVisibilityManager:
         Returns:
             bool: True if the node's input should be visible, False otherwise
         """
-        # Get the client name part (before the colon)
-        parts = node_name.split(':')
-        client_name = parts[0] if parts else node_name
+        # Get the base client name
+        client_name = self._extract_client_name(node_name)
         
         # Check the visibility setting
         visibility_dict = self.midi_input_visibility if is_midi else self.audio_input_visibility
@@ -161,9 +207,8 @@ class NodeVisibilityManager:
         Returns:
             bool: True if the node's output should be visible, False otherwise
         """
-        # Get the client name part (before the colon)
-        parts = node_name.split(':')
-        client_name = parts[0] if parts else node_name
+        # Get the base client name
+        client_name = self._extract_client_name(node_name)
 
         # Check the visibility setting
         visibility_dict = self.midi_output_visibility if is_midi else self.audio_output_visibility
@@ -180,9 +225,8 @@ class NodeVisibilityManager:
         Returns:
             bool: True if the node's input should be visible, False otherwise
         """
-        # Get the client name part (before the colon)
-        parts = node_name.split(':')
-        client_name = parts[0] if parts else node_name
+        # Get the base client name
+        client_name = self._extract_client_name(node_name)
 
         # If the node is not in the dictionary, it's visible by default
         return self.midi_matrix_input_visibility.get(client_name, True)
@@ -197,9 +241,8 @@ class NodeVisibilityManager:
         Returns:
             bool: True if the node's output should be visible, False otherwise
         """
-        # Get the client name part (before the colon)
-        parts = node_name.split(':')
-        client_name = parts[0] if parts else node_name
+        # Get the base client name
+        client_name = self._extract_client_name(node_name)
 
         # If the node is not in the dictionary, it's visible by default
         return self.midi_matrix_output_visibility.get(client_name, True)
@@ -466,18 +509,7 @@ class NodeVisibilityDialog(QDialog):
     
     def _populate_nodes(self):
         """Populate the dialog with node checkboxes."""
-        # Clear existing widgets
-        for node_dict in self.audio_nodes.values():
-            for cb in node_dict.values():
-                if isinstance(cb, QWidget):
-                    self.node_layout.removeWidget(cb)
-                    cb.deleteLater()
-
-        for node_dict in self.midi_nodes.values():
-            for cb in node_dict.values():
-                if isinstance(cb, QWidget):
-                    self.node_layout.removeWidget(cb)
-                    cb.deleteLater()
+        self._clear_node_layout()
 
         self.audio_nodes = {}
         self.midi_nodes = {}
@@ -501,6 +533,27 @@ class NodeVisibilityDialog(QDialog):
         # Add stretch to prevent spacing issues when there are few clients
         self.node_layout.addStretch()
     
+    def _clear_node_layout(self):
+        """Clear all widgets and items from node layout except section labels."""
+        if not self.node_layout:
+            return
+            
+        # Iterate backwards to safely remove items
+        for i in reversed(range(self.node_layout.count())):
+            item = self.node_layout.itemAt(i)
+            widget = item.widget()
+            
+            # Skip the section labels
+            if widget and (widget == self.audio_label or widget == self.midi_label):
+                continue
+            
+            # Remove the item from layout
+            self.node_layout.takeAt(i)
+            
+            # If it's a widget, delete it
+            if widget:
+                widget.deleteLater()
+    
     def _add_node_hierarchy(self, node_name, is_midi=False):
         """
         Create a hierarchical layout for a node with indented input/output checkboxes.
@@ -512,12 +565,37 @@ class NodeVisibilityDialog(QDialog):
         # Determine which directions this client actually exposes
         has_input = False
         has_output = False
+        
+        # Handle split node names for querying ports
+        query_name = node_name
+        is_audio_split = False
+        is_midi_split = False
+        
+        if node_name.endswith(" (Audio)"):
+            query_name = node_name[:-8]
+            is_audio_split = True
+        elif node_name.endswith(" (MIDI)"):
+            query_name = node_name[:-7]
+            is_midi_split = True
+            
         try:
+            # If it's a split node, we must enforce the type matching the suffix
+            # regardless of the is_midi argument passed to this function (though they should match)
+            check_midi = is_midi
+            check_audio = not is_midi
+            
+            if is_audio_split:
+                check_midi = False
+                check_audio = True
+            elif is_midi_split:
+                check_midi = True
+                check_audio = False
+                
             ports = jack_utils.get_all_jack_ports(
                 self.connection_manager.client,
-                name_pattern=f"{node_name}:",
-                is_midi=is_midi,
-                is_audio=not is_midi
+                name_pattern=f"{query_name}:",
+                is_midi=check_midi,
+                is_audio=check_audio
             )
             for port in ports:
                 if port.is_input:
@@ -529,9 +607,13 @@ class NodeVisibilityDialog(QDialog):
         except Exception as e:
             print(f"Error checking port directions for {node_name}: {e}")
         
-        # If no ports are found, skip adding this node entirely
+        # If no ports are found, assume the node has both input and output
+        # This can happen for nodes that exist in the graph but don't have active JACK ports
+        # at the moment of querying (e.g., Easy Effects internal filters)
         if not has_input and not has_output:
-            return
+            # Default to having both directions so the node appears in the dialog
+            has_input = True
+            has_output = True
         
         # Create node container and checkbox
         node_widget = QWidget()
@@ -554,24 +636,26 @@ class NodeVisibilityDialog(QDialog):
         input_checkbox = None
         if has_input:
             input_checkbox = QCheckBox("Input")
+            # Use query_name (base client name) for visibility lookup
             if is_midi:
-                input_checkbox.setChecked(self.midi_input_visibility.get(node_name, True))
-                input_checkbox.stateChanged.connect(lambda state, n=node_name: self._on_midi_input_checkbox_changed(n, state))
+                input_checkbox.setChecked(self.midi_input_visibility.get(query_name, True))
+                input_checkbox.stateChanged.connect(lambda state, n=query_name: self._on_midi_input_checkbox_changed(n, state))
             else:
-                input_checkbox.setChecked(self.audio_input_visibility.get(node_name, True))
-                input_checkbox.stateChanged.connect(lambda state, n=node_name: self._on_audio_input_checkbox_changed(n, state))
+                input_checkbox.setChecked(self.audio_input_visibility.get(query_name, True))
+                input_checkbox.stateChanged.connect(lambda state, n=query_name: self._on_audio_input_checkbox_changed(n, state))
             io_layout.addWidget(input_checkbox)
         
         # Create output checkbox if the client has output ports
         output_checkbox = None
         if has_output:
             output_checkbox = QCheckBox("Output")
+            # Use query_name (base client name) for visibility lookup
             if is_midi:
-                output_checkbox.setChecked(self.midi_output_visibility.get(node_name, True))
-                output_checkbox.stateChanged.connect(lambda state, n=node_name: self._on_midi_output_checkbox_changed(n, state))
+                output_checkbox.setChecked(self.midi_output_visibility.get(query_name, True))
+                output_checkbox.stateChanged.connect(lambda state, n=query_name: self._on_midi_output_checkbox_changed(n, state))
             else:
-                output_checkbox.setChecked(self.audio_output_visibility.get(node_name, True))
-                output_checkbox.stateChanged.connect(lambda state, n=node_name: self._on_audio_output_checkbox_changed(n, state))
+                output_checkbox.setChecked(self.audio_output_visibility.get(query_name, True))
+                output_checkbox.stateChanged.connect(lambda state, n=query_name: self._on_audio_output_checkbox_changed(n, state))
             io_layout.addWidget(output_checkbox)
         
         io_layout.addStretch()
@@ -667,17 +751,66 @@ class NodeVisibilityDialog(QDialog):
         unique_clients = set()
         
         try:
-            # Get ports of the specified type
-            if is_midi:
-                ports = jack_utils.get_all_jack_ports(self.connection_manager.client, is_midi=True)
-            else:
-                ports = jack_utils.get_all_jack_ports(self.connection_manager.client, is_audio=True)
+            # Check if we should split audio/midi clients
+            # We need to access the main config manager, which is passed to NodeVisibilityManager
+            # but not directly to NodeVisibilityDialog. However, NodeVisibilityDialog has connection_manager
+            # which has config_manager.
+            split_audio_midi = False
+            if hasattr(self.connection_manager, 'config_manager'):
+                split_audio_midi = self.connection_manager.config_manager.get_bool('GRAPH_SPLIT_AUDIO_MIDI_CLIENTS', False)
             
-            # Extract client names (part before the colon)
-            for port in ports:
-                parts = port.name.split(':')
-                if parts:
-                    unique_clients.add(parts[0])
+            # If we are in the graph tab and splitting is enabled, we need special handling
+            if self.tab_type == 'graph' and split_audio_midi:
+                # Get all ports to determine which clients have what
+                all_audio_ports = jack_utils.get_all_jack_ports(self.connection_manager.client, is_audio=True)
+                all_midi_ports = jack_utils.get_all_jack_ports(self.connection_manager.client, is_midi=True)
+                
+                client_capabilities = {} # client_name -> {'audio': bool, 'midi': bool}
+                
+                for port in all_audio_ports:
+                    parts = port.name.split(':')
+                    if parts:
+                        client = parts[0]
+                        if client not in client_capabilities:
+                            client_capabilities[client] = {'audio': False, 'midi': False}
+                        client_capabilities[client]['audio'] = True
+                        
+                for port in all_midi_ports:
+                    parts = port.name.split(':')
+                    if parts:
+                        client = parts[0]
+                        if client not in client_capabilities:
+                            client_capabilities[client] = {'audio': False, 'midi': False}
+                        client_capabilities[client]['midi'] = True
+                
+                # Now generate the list based on requested type
+                for client, caps in client_capabilities.items():
+                    if caps['audio'] and caps['midi']:
+                        # Mixed client - split it
+                        if is_midi:
+                            unique_clients.add(f"{client} (MIDI)")
+                        else:
+                            unique_clients.add(f"{client} (Audio)")
+                    else:
+                        # Not mixed, add as is if it matches the requested type
+                        if is_midi and caps['midi']:
+                            unique_clients.add(client)
+                        elif not is_midi and caps['audio']:
+                            unique_clients.add(client)
+                            
+            else:
+                # Standard behavior for other tabs or when split is disabled
+                if is_midi:
+                    ports = jack_utils.get_all_jack_ports(self.connection_manager.client, is_midi=True)
+                else:
+                    ports = jack_utils.get_all_jack_ports(self.connection_manager.client, is_audio=True)
+                
+                # Extract client names (part before the colon)
+                for port in ports:
+                    parts = port.name.split(':')
+                    if parts:
+                        unique_clients.add(parts[0])
+                        
         except Exception as e:
             print(f"Error getting client names: {e}")
         
@@ -733,18 +866,16 @@ class NodeVisibilityDialog(QDialog):
                     output_cb = checkboxes.get('output')
                     
                     if input_cb:
-                        input_cb.blockSignals(True)
                         input_cb.setChecked(True)
-                        input_cb.blockSignals(False)
                     if output_cb:
-                        output_cb.blockSignals(True)
                         output_cb.setChecked(True)
-                        output_cb.blockSignals(False)
                     
-                    node_cb.setCheckState(Qt.CheckState.Checked)
+                    # Update node checkbox state to reflect children
+                    self._update_node_checkbox_state(node_cb, input_cb, output_cb)
     
     def _deselect_all(self):
-        """Deselect all visible checkboxes."""
+        """Deselect all visible checkboxes and hide all nodes."""
+        # First, uncheck all visible checkboxes in the dialog
         for node_dict in [self.audio_nodes, self.midi_nodes]:
             for checkboxes in node_dict.values():
                 if not checkboxes['widget'].isHidden():
@@ -753,15 +884,24 @@ class NodeVisibilityDialog(QDialog):
                     output_cb = checkboxes.get('output')
                     
                     if input_cb:
-                        input_cb.blockSignals(True)
                         input_cb.setChecked(False)
-                        input_cb.blockSignals(False)
                     if output_cb:
-                        output_cb.blockSignals(True)
                         output_cb.setChecked(False)
-                        output_cb.blockSignals(False)
                     
-                    node_cb.setCheckState(Qt.CheckState.Unchecked)
+                    # Update node checkbox state to reflect children
+                    self._update_node_checkbox_state(node_cb, input_cb, output_cb)
+        
+        # Also explicitly set all nodes in visibility dictionaries to False
+        # This ensures nodes that don't appear in the current dialog (due to tab type)
+        # are also hidden
+        for client_name in list(self.audio_input_visibility.keys()):
+            self.audio_input_visibility[client_name] = False
+        for client_name in list(self.audio_output_visibility.keys()):
+            self.audio_output_visibility[client_name] = False
+        for client_name in list(self.midi_input_visibility.keys()):
+            self.midi_input_visibility[client_name] = False
+        for client_name in list(self.midi_output_visibility.keys()):
+            self.midi_output_visibility[client_name] = False
     
     def _apply_filter(self, filter_text):
         """

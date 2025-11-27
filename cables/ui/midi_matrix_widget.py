@@ -1106,7 +1106,7 @@ class _MatrixGridWidget(QWidget):
         painter.save()
 
         # Set pen for selection line - bright blue with thickness
-        selection_color = QColor(65, 105, 225)  # Royal blue
+        selection_color = QColor(175, 97, 136)  # Royal blue
         selection_pen = QPen(selection_color, self.parent_matrix.style_config.selection_arrow_line_width, Qt.PenStyle.SolidLine)
         painter.setPen(selection_pen)
 

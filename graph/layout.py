@@ -13,6 +13,8 @@ from PyQt6.QtWidgets import QGraphicsItem, QGraphicsTextItem, QStyleOptionGraphi
 from PyQt6.QtGui import QFont, QPainter, QColor
 import math
 import logging
+import random
+from math import sqrt
 from functools import singledispatchmethod
 from . import constants
 
@@ -48,8 +50,8 @@ class GraphLayouter:
             raise TypeError("Scene must be a JackGraphScene with 'nodes' and 'connections' attributes")
             
         self.scene = scene
-        self.min_horizontal_spacing = 30.0
-        self.min_vertical_spacing = 30.0
+        self.min_horizontal_spacing = constants.MIN_NODE_H_SPACING
+        self.min_vertical_spacing = constants.MIN_NODE_V_SPACING
         
         # Constants for node layout with type hints
         self.NODE_PADDING: float = 5.0
@@ -626,6 +628,181 @@ class GraphLayouter:
         
         # Save the new node positions to config
         self.scene.save_node_states()
+
+    def untangle_graph_by_io(self):
+        """
+        Automatically organizes the graph nodes into columns, separating Audio/Mixed and MIDI nodes.
+        
+        Order of columns (groups):
+        1. Connected Audio/Mixed Outputs
+        2. Connected Audio/Mixed Inputs
+        3. Unconnected Audio/Mixed Outputs
+        4. Unconnected Audio/Mixed Inputs
+        5. Connected MIDI Outputs
+        6. Connected MIDI Inputs
+        7. Unconnected MIDI Outputs
+        8. Unconnected MIDI Inputs
+        """
+        if not self.scene.nodes:
+            return
+
+        # 1. Split nodes with both inputs and outputs
+        nodes_to_process = list(self.scene.nodes.values())
+        for node in nodes_to_process:
+            if node.isVisible() and not node.is_split_origin:
+                if node.input_ports and node.output_ports:
+                    node.split_handler.split_node(save_state=False)
+
+        # 2. Collect all visible NodeItems for layout
+        from .node_item import NodeItem
+        layout_nodes = [item for item in self.scene.items() if isinstance(item, NodeItem) and item.isVisible() and not item.is_split_origin]
+
+        # 3. Categorize nodes
+        # Groups:
+        # 0: Connected Audio Outputs
+        # 1: Connected Audio Inputs
+        # 2: Unconnected Audio Outputs
+        # 3: Unconnected Audio Inputs
+        # 4: Connected MIDI Outputs
+        # 5: Connected MIDI Inputs
+        # 6: Unconnected MIDI Outputs
+        # 7: Unconnected MIDI Inputs
+        
+        groups = [[] for _ in range(8)]
+
+        def is_midi_node(node):
+            all_ports = list(node.input_ports.values()) + list(node.output_ports.values())
+            if not all_ports: return False
+            has_midi = any(p.port_obj.is_midi for p in all_ports)
+            has_audio = any(p.port_obj.is_audio for p in all_ports)
+            return has_midi and not has_audio
+
+        for node in layout_nodes:
+            has_conns = any(p.connections for p in node.input_ports.values()) or \
+                        any(p.connections for p in node.output_ports.values())
+            
+            is_output_node = bool(node.output_ports) and not bool(node.input_ports)
+            is_input_node = bool(node.input_ports) and not bool(node.output_ports)
+            
+            is_midi = is_midi_node(node)
+            
+            group_idx = -1
+            
+            if is_output_node:
+                if has_conns:
+                    group_idx = 4 if is_midi else 0
+                else:
+                    group_idx = 6 if is_midi else 2
+            elif is_input_node:
+                if has_conns:
+                    group_idx = 5 if is_midi else 1
+                else:
+                    group_idx = 7 if is_midi else 3
+            
+            if group_idx != -1:
+                groups[group_idx].append(node)
+
+        # 4. Sort within groups
+        for i in range(8):
+            # Basic alphabetical sort for all groups first
+            groups[i].sort(key=lambda n: n.client_name.lower())
+
+        # Special sorting for connected inputs (groups 1 and 5) to align with their sources
+        output_node_y_positions = {} # Will be populated as we place output nodes
+
+        def sort_key_connected_inputs(input_node):
+            min_y = float('inf')
+            is_connected = False
+            for port in input_node.input_ports.values():
+                for conn in port.connections:
+                    source_node = conn.source_port.parentItem()
+                    if source_node in output_node_y_positions:
+                        is_connected = True
+                        min_y = min(min_y, output_node_y_positions[source_node])
+            
+            # If connected to a placed node, use its Y. Otherwise put at end.
+            if is_connected:
+                return (0, min_y, input_node.client_name.lower())
+            else:
+                return (1, 0, input_node.client_name.lower())
+
+        # 5. Layout columns
+        start_x = 50
+        start_y = 50
+        col_spacing = 100
+        group_spacing = 150 # Extra spacing between major sections (Audio vs MIDI, Connected vs Unconnected)
+        
+        current_x = start_x
+        
+        # We will process groups in pairs (Outputs, Inputs) to handle alignment
+        # Pairs: (0,1), (2,3), (4,5), (6,7)
+        
+        pairs = [(0, 1), (2, 3), (4, 5), (6, 7)]
+        
+        for out_idx, in_idx in pairs:
+            # --- Output Column ---
+            max_w_out = 0
+            current_y = start_y
+            
+            # Clear previous Y positions for the new set of inputs to align against *current* outputs?
+            # Actually, connected inputs (1) align to connected outputs (0).
+            # Connected MIDI inputs (5) align to connected MIDI outputs (4).
+            # Unconnected ones don't really align by connection.
+            
+            # We keep output_node_y_positions accumulating or reset? 
+            # Ideally we only care about alignment within the relevant block.
+            # But let's keep it simple: populate y positions for the current output group.
+            
+            current_output_y_positions = {}
+            
+            for node in groups[out_idx]:
+                node_width, node_height = self._get_node_size(node)
+                max_w_out = max(max_w_out, node_width)
+                node.setPos(current_x, current_y)
+                current_output_y_positions[node] = current_y
+                output_node_y_positions[node] = current_y # Update global map
+                current_y += node_height + self.min_vertical_spacing
+            
+            # If this group was empty, we still might need space if the next group exists?
+            # If both out and in are empty, we effectively skip this block visually, 
+            # but we should check if we need to advance X.
+            
+            if not groups[out_idx] and not groups[in_idx]:
+                continue
+
+            # Advance X for Input Column
+            input_col_x = current_x + max_w_out + col_spacing if groups[out_idx] else current_x
+            
+            # --- Input Column ---
+            # Re-sort inputs if they are connected types (1 or 5)
+            if in_idx in [1, 5]:
+                groups[in_idx].sort(key=sort_key_connected_inputs)
+            
+            max_w_in = 0
+            current_y = start_y
+            
+            for node in groups[in_idx]:
+                node_width, node_height = self._get_node_size(node)
+                max_w_in = max(max_w_in, node_width)
+                node.setPos(input_col_x, current_y)
+                current_y += node_height + self.min_vertical_spacing
+            
+            # Advance X for next pair
+            # Width of this block is roughly (max_w_out + col_spacing + max_w_in)
+            # But we just need to set current_x for the next loop
+            
+            block_width = 0
+            if groups[out_idx]:
+                block_width += max_w_out
+            if groups[in_idx]:
+                if groups[out_idx]: block_width += col_spacing
+                block_width += max_w_in
+                
+            current_x += block_width + group_spacing
+
+        # 6. Update paths and save
+        self.scene.update_all_connection_paths()
+        self.scene.save_node_states()
     
     def _identify_nodes_and_splits(self) -> tuple:
         """Identify original nodes and their split parts."""
@@ -894,6 +1071,90 @@ class GraphLayouter:
         
         return x, y, current_row_height
 
+    # --- Overlap Detection Helpers ---
+
+    def get_scene_node_positions(self, exclude_node: Optional['NodeItem'] = None) -> list:
+        """
+        Get current positions of all nodes in the scene for overlap checking.
+        
+        Args:
+            exclude_node: Optional node to exclude from the list (usually the one being moved)
+            
+        Returns:
+            List of tuples: (node, (x1, y1, x2, y2))
+        """
+        positions = []
+        if not self.scene or not hasattr(self.scene, 'nodes'):
+            return positions
+            
+        # We need to import NodeItem here to avoid circular imports if possible, 
+        # or rely on the fact that self.scene.nodes contains NodeItems.
+        # The type hint uses string forward reference.
+        
+        for node in self.scene.nodes.values():
+            if node == exclude_node:
+                continue
+            
+            # Use actual scene position
+            pos = node.scenePos()
+            # We need to be careful about split nodes.
+            # If we are moving a split part, we should check against other parts.
+            
+            # _get_node_size returns size including padding
+            width, height = self._get_node_size(node)
+            
+            # Format: (node, (x1, y1, x2, y2))
+            # Note: _get_node_size adds padding, so we should probably assume the pos is top-left
+            # of the visual item, but _get_node_size might include padding in calculation.
+            # Let's check _get_node_size implementation.
+            # It uses node.boundingRect() and adds padding.
+            
+            rect = (pos.x(), pos.y(), pos.x() + width, pos.y() + height)
+            positions.append((node, rect))
+            
+        return positions
+
+    def find_non_overlapping_position(self, node: 'NodeItem', x: float, y: float) -> Tuple[float, float]:
+        """
+        Find a position for the node that doesn't overlap with existing nodes in the scene.
+        This is a public wrapper around _find_non_overlapping_position that gathers current scene positions.
+        
+        Args:
+            node: The node to place
+            x: Desired X coordinate
+            y: Desired Y coordinate
+            
+        Returns:
+            Tuple[float, float]: The non-overlapping (x, y) coordinates
+        """
+        node_positions = self.get_scene_node_positions(exclude_node=node)
+        return self._find_non_overlapping_position(node, x, y, node_positions)
+
+    def get_overlapping_nodes(self, node: 'NodeItem', x: float, y: float) -> list['NodeItem']:
+        """
+        Find all nodes that overlap with the given node at position (x, y).
+        
+        Args:
+            node: The node to check for overlaps (the aggressor)
+            x: The x coordinate of the node
+            y: The y coordinate of the node
+            
+        Returns:
+            List of NodeItem instances that overlap
+        """
+        overlapping_nodes = []
+        node_positions = self.get_scene_node_positions(exclude_node=node)
+        
+        node_width, node_height = self._get_node_size(node)
+        node_rect = (x, y, x + node_width, y + node_height)
+        
+        for pos_node, pos_rect in node_positions:
+            if (node_rect[0] < pos_rect[2] and node_rect[2] > pos_rect[0] and
+                node_rect[1] < pos_rect[3] and node_rect[3] > pos_rect[1]):
+                overlapping_nodes.append(pos_node)
+                
+        return overlapping_nodes
+
     def _get_node_size(self, node: 'NodeItem') -> tuple[float, float]:
         """
         Get the size of a node, including all its ports and margins.
@@ -919,20 +1180,42 @@ class GraphLayouter:
         
     def _find_non_overlapping_position(self, node: 'NodeItem', x: float, y: float, 
                                      node_positions: list) -> tuple:
-        """Find a position for the node that doesn't overlap with existing nodes."""
-        node_width, node_height = self._get_node_size(node)
-        original_x, original_y = x, y
-        attempt_count = 0
+        """
+        Find a position for the node that doesn't overlap with existing nodes.
+        Uses a spiral search pattern to find the nearest available spot.
+        """
+        if not self._position_causes_overlap(node, x, y, node_positions):
+            return x, y
+
+        # Spiral search parameters
+        step_x = self.min_horizontal_spacing
+        step_y = self.min_vertical_spacing
+        max_steps = 500  # Increased to handle small spacing/large nodes
         
-        while self._position_causes_overlap(node, x, y, node_positions) and attempt_count < 10:
-            x += self.min_horizontal_spacing
-            attempt_count += 1
+        # Directions: Right, Down, Left, Up
+        directions = [(1, 0), (0, 1), (-1, 0), (0, -1)]
+        
+        current_x, current_y = x, y
+        steps_in_leg = 1
+        direction_idx = 0
+        
+        total_steps = 0
+        while total_steps < max_steps * 4: # Heuristic limit
+            for _ in range(2): # Change leg length every 2 directions
+                dx, dy = directions[direction_idx]
+                for _ in range(steps_in_leg):
+                    current_x += dx * step_x
+                    current_y += dy * step_y
+                    
+                    if not self._position_causes_overlap(node, current_x, current_y, node_positions):
+                        return current_x, current_y
+                        
+                direction_idx = (direction_idx + 1) % 4
+            steps_in_leg += 1
+            total_steps += 1
             
-            if attempt_count >= 5:
-                x = original_x
-                y += self.min_vertical_spacing
-        
-        return x, y
+        # Fallback if spiral fails (should be rare with high max_steps)
+        return x + step_x * 5, y + step_y * 5
 
     def _position_causes_overlap(self, node: 'NodeItem', x: float, y: float, 
                                existing_positions: list) -> bool:

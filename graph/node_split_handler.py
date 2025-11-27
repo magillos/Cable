@@ -105,12 +105,33 @@ class NodeSplitHandler:
         # 4. Set DEFAULT positions for new nodes.
         input_node.layout_ports()
         output_node.layout_ports()
+        
+        # Force geometry update to ensure boundingRect is accurate
+        input_node.prepareGeometryChange()
+        input_node.update()
+        output_node.prepareGeometryChange()
+        output_node.update()
+        
         # Set both split parts to same Y-coordinate as original node
-        input_node.setPos(QPointF(original_pos.x(), original_pos.y()))
-        output_node.setPos(QPointF(
-            original_pos.x() + input_node.boundingRect().width() + constants.NODE_HSPACING,
-            original_pos.y()
-        ))
+        input_x = original_pos.x()
+        input_y = original_pos.y()
+        output_x = original_pos.x() + input_node.boundingRect().width() + constants.NODE_HSPACING
+        output_y = original_pos.y()
+        
+        # Check for overlaps and find non-overlapping positions if needed
+        if scene.layouter:
+            input_x, input_y = scene.layouter.find_non_overlapping_position(input_node, input_x, input_y)
+            output_x, output_y = scene.layouter.find_non_overlapping_position(output_node, output_x, output_y)
+        
+        input_node.setPos(QPointF(input_x, input_y))
+        output_node.setPos(QPointF(output_x, output_y))
+        
+        # Defer push-away check until after nodes are fully laid out
+        # This is important for complex nodes with many ports
+        if hasattr(scene, '_apply_push_away_for_node'):
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(0, lambda: scene._apply_push_away_for_node(input_node))
+            QTimer.singleShot(0, lambda: scene._apply_push_away_for_node(output_node))
         
         # 5. Mark original node as split, store references, and HIDE it
         ni.is_split_origin = True

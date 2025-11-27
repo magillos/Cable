@@ -13,6 +13,7 @@ class ConfigManager:
     SPLIT_INPUT_POS_KEY = "::split_input_pos"
     SPLIT_OUTPUT_POS_KEY = "::split_output_pos"
     GRAPH_ZOOM_LEVEL_KEY = "::graph_zoom_level" # Added for zoom level
+    CURRENT_UNTANGLE_SETTING_KEY = "::current_untangle_setting" # Added for current untangle layout
     IS_FOLDED_KEY = "::is_folded" # Added for fold state
     INPUT_PART_FOLDED_KEY = "::input_part_folded"
     OUTPUT_PART_FOLDED_KEY = "::output_part_folded"
@@ -21,20 +22,30 @@ class ConfigManager:
     UNIFIED_SINK_NAME_KEY = "::unified_sink_name"
     UNIFIED_MODULE_ID_KEY = "::unified_module_id"
     UNIFIED_PORTS_TYPE_KEY = "::unified_ports_type"
+    
+    # New keys for split unification
+    IS_INPUT_UNIFIED_KEY = "::is_input_unified"
+    IS_OUTPUT_UNIFIED_KEY = "::is_output_unified"
+    UNIFIED_INPUT_SINK_NAME_KEY = "::unified_input_sink_name"
+    UNIFIED_OUTPUT_SINK_NAME_KEY = "::unified_output_sink_name"
+    UNIFIED_INPUT_MODULE_ID_KEY = "::unified_input_module_id"
+    UNIFIED_OUTPUT_MODULE_ID_KEY = "::unified_output_module_id"
  
     def __init__(self):
         self.config_dir = Path.home() / ".config" / "cable"
         self.node_positions_file = self.config_dir / "node_positions.json"
+        self.graph_settings_file = self.config_dir / "graph_settings.json"  # Separate file for graph settings
 
         # Ensure config directory exists
         self.config_dir.mkdir(parents=True, exist_ok=True)
  
-    def save_node_states(self, nodes_dict, graph_zoom_level=None):
-        """Save node positions, split states, fold states (including parts), and graph zoom level.
+    def save_node_states(self, nodes_dict, graph_zoom_level=None, current_untangle_setting=None):
+        """Save node positions, split states, fold states (including parts), graph zoom level, and current untangle setting.
  
         Args:
             nodes_dict: Dict of {client_name: NodeItem} from JackGraphScene.
             graph_zoom_level (float, optional): The current zoom level of the graph view.
+            current_untangle_setting (int, optional): The current untangle layout setting.
         """
         # Load existing data first to preserve old entries
         loaded_data = {}
@@ -107,12 +118,24 @@ class ConfigManager:
                 if node.split_output_node:
                     node_data[self.OUTPUT_PART_FOLDED_KEY] = node.split_output_node.output_part_folded
 
-            # 6. Save unified state
+            # 6. Save unified state (Legacy and New)
             if hasattr(node, 'is_unified') and node.is_unified:
+                # Legacy support: save as generic unified if it was generic
                 node_data[self.IS_UNIFIED_KEY] = True
                 node_data[self.UNIFIED_SINK_NAME_KEY] = node.unified_virtual_sink_name
                 node_data[self.UNIFIED_MODULE_ID_KEY] = node.unified_module_id
                 node_data[self.UNIFIED_PORTS_TYPE_KEY] = node.unified_ports_type
+
+            # New split unification state
+            if hasattr(node, 'is_input_unified') and node.is_input_unified:
+                node_data[self.IS_INPUT_UNIFIED_KEY] = True
+                node_data[self.UNIFIED_INPUT_SINK_NAME_KEY] = node.unified_input_sink_name
+                node_data[self.UNIFIED_INPUT_MODULE_ID_KEY] = node.unified_input_module_id
+            
+            if hasattr(node, 'is_output_unified') and node.is_output_unified:
+                node_data[self.IS_OUTPUT_UNIFIED_KEY] = True
+                node_data[self.UNIFIED_OUTPUT_SINK_NAME_KEY] = node.unified_output_sink_name
+                node_data[self.UNIFIED_OUTPUT_MODULE_ID_KEY] = node.unified_output_module_id
  
             # Store all collected data for this client_name
             data_to_save[client_name] = node_data
@@ -120,6 +143,10 @@ class ConfigManager:
         # Save graph zoom level at the top level of the JSON
         if graph_zoom_level is not None:
             data_to_save[self.GRAPH_ZOOM_LEVEL_KEY] = graph_zoom_level
+        
+        # Save current untangle setting to a separate file to maintain backward compatibility
+        if current_untangle_setting is not None:
+            self._save_graph_settings(current_untangle_setting)
 
 
         try:
@@ -138,10 +165,12 @@ class ConfigManager:
  
     def load_node_states(self):
         """Load node positions, split states, fold states (including parts), and graph zoom level.
+        
+        The current untangle setting is stored in the returned config dict under the key '::current_untangle_setting'.
  
         Returns:
             tuple: A tuple containing:
-                - loaded_node_config (dict): Dict of node configurations.
+                - loaded_node_config (dict): Dict of node configurations. May contain special key '::current_untangle_setting'.
                 - loaded_zoom_level (float or None): The loaded graph zoom level, or None if not found.
         """
         loaded_config = {}
@@ -182,22 +211,70 @@ class ConfigManager:
                     config[self.INPUT_PART_FOLDED_KEY] = bool(node_data.get(self.INPUT_PART_FOLDED_KEY, False))
                     config[self.OUTPUT_PART_FOLDED_KEY] = bool(node_data.get(self.OUTPUT_PART_FOLDED_KEY, False))
 
-                # Load unified state
+                # Load unified state (Legacy)
                 if self.IS_UNIFIED_KEY in node_data and node_data[self.IS_UNIFIED_KEY]:
                     config['is_unified'] = True
                     config['virtual_sink_name'] = node_data.get(self.UNIFIED_SINK_NAME_KEY)
                     config['unified_module_id'] = node_data.get(self.UNIFIED_MODULE_ID_KEY)
                     config['unified_ports_type'] = node_data.get(self.UNIFIED_PORTS_TYPE_KEY)
+
+                # Load unified state (New Split)
+                if self.IS_INPUT_UNIFIED_KEY in node_data and node_data[self.IS_INPUT_UNIFIED_KEY]:
+                    config['is_input_unified'] = True
+                    config['unified_input_sink_name'] = node_data.get(self.UNIFIED_INPUT_SINK_NAME_KEY)
+                    config['unified_input_module_id'] = node_data.get(self.UNIFIED_INPUT_MODULE_ID_KEY)
+
+                if self.IS_OUTPUT_UNIFIED_KEY in node_data and node_data[self.IS_OUTPUT_UNIFIED_KEY]:
+                    config['is_output_unified'] = True
+                    config['unified_output_sink_name'] = node_data.get(self.UNIFIED_OUTPUT_SINK_NAME_KEY)
+                    config['unified_output_module_id'] = node_data.get(self.UNIFIED_OUTPUT_MODULE_ID_KEY)
  
                 if config: # Only add if we loaded something
                     loaded_config[client_name] = config
  
+            # Load the untangle setting from separate file and store in config dict
+            untangle_setting = self._load_graph_settings()
+            if untangle_setting is not None:
+                loaded_config[self.CURRENT_UNTANGLE_SETTING_KEY] = untangle_setting
+            
             # print(f"Loaded configurations for {len(loaded_config)} nodes and zoom level {loaded_zoom_level} from {self.node_positions_file}")
             return loaded_config, loaded_zoom_level
         except Exception as e:
             print(f"Error loading node states: {e}")
             return {}, None # Return empty dict and None for zoom on error
 
+    def _save_graph_settings(self, current_untangle_setting):
+        """Save graph settings (like current untangle setting) to a separate file.
+        
+        Args:
+            current_untangle_setting (int): The current untangle layout setting.
+        """
+        try:
+            settings = {
+                'current_untangle_setting': current_untangle_setting
+            }
+            with open(self.graph_settings_file, 'w') as f:
+                json.dump(settings, f, indent=4)
+        except Exception as e:
+            print(f"Error saving graph settings: {e}")
+    
+    def _load_graph_settings(self):
+        """Load graph settings from the separate settings file.
+        
+        Returns:
+            int or None: The current untangle setting, or None if not found.
+        """
+        if not self.graph_settings_file.exists():
+            return None
+        
+        try:
+            with open(self.graph_settings_file, 'r') as f:
+                settings = json.load(f)
+                return settings.get('current_untangle_setting')
+        except Exception as e:
+            print(f"Error loading graph settings: {e}")
+            return None
+    
     def save_node_states_as_default(self, node_states, graph_zoom_level=None):
         """Save provided node states directly to the node_positions.json file.
         This is used for saving the current layout as the default.

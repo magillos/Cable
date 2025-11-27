@@ -212,7 +212,23 @@ class PresetHandler:
         
         # Initialize checkbox state from config
         initial_restore_layout = self.manager.config_manager.get_bool('load_preset_restore_layout', True)
-        restore_layout_checkbox.setChecked(initial_restore_layout)
+        
+        # Check if I/O layout is active (untangle setting == 0)
+        is_io_active = (
+            hasattr(self.manager, 'graph_main_window') and
+            self.manager.graph_main_window and
+            hasattr(self.manager.graph_main_window, 'current_untangle_setting') and
+            self.manager.graph_main_window.current_untangle_setting == 0
+        )
+        
+        effective_state = initial_restore_layout if not is_io_active else False
+        restore_layout_checkbox.setChecked(effective_state)
+        restore_layout_checkbox.setEnabled(not is_io_active)
+        
+        if is_io_active:
+            restore_layout_checkbox.setToolTip("Restore layout (Disabled during I/O layout - dynamic sorting)")
+        else:
+            restore_layout_checkbox.setToolTip("In Graph, loading a preset will also restore clients' positions, visibility, split and fold states, and the zoom level.")
         
         # Connect to a handler to save the state
         restore_layout_checkbox.toggled.connect(self._set_restore_layout_mode)
@@ -336,7 +352,8 @@ class PresetHandler:
                         layout_data = {
                             'node_states': node_states,
                             'graph_zoom_level': graph_zoom_level,
-                            'node_visibility': node_visibility_data
+                            'node_visibility': node_visibility_data,
+                            'split_audio_midi': self.manager.config_manager.get_bool('GRAPH_SPLIT_AUDIO_MIDI_CLIENTS', False)
                         }
                         
                         import json
@@ -787,6 +804,16 @@ class PresetHandler:
                         self.unified_clients = layout_data.get('unified_clients', {})
                         scene.apply_unified_states(self.unified_clients)
                         print("Applied unified clients from preset")
+            
+            # Apply split audio/midi setting if available
+            if 'split_audio_midi' in layout_data:
+                split_audio_midi = layout_data['split_audio_midi']
+                self.manager.config_manager.set_bool('GRAPH_SPLIT_AUDIO_MIDI_CLIENTS', split_audio_midi)
+                print(f"Applied split audio/midi setting from preset: {split_audio_midi}")
+                # We need to trigger a full refresh of the graph for this to take effect
+                if hasattr(self.manager, 'graph_main_window') and self.manager.graph_main_window:
+                    if hasattr(self.manager.graph_main_window, 'scene') and self.manager.graph_main_window.scene:
+                        self.manager.graph_main_window.scene.full_graph_refresh()
 
         except Exception as e:
             print(f"Error applying layout data: {e}")

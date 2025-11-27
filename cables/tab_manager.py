@@ -175,9 +175,6 @@ class TabManager:
             self.show_bottom_controls(False)
         elif current_tab_text == "Graph":
             self.show_bottom_controls(False)
-            # Disable global Alt+U shortcut when Graph tab is active to allow Graph-specific Alt+U handling
-            if hasattr(self.connection_manager, 'action_manager') and hasattr(self.connection_manager.action_manager, 'untangle_shortcut_action'):
-                self.connection_manager.action_manager.untangle_shortcut_action.setEnabled(False)
             if hasattr(self.connection_manager, 'graph_main_window') and self.connection_manager.graph_main_window:
                 if hasattr(self.connection_manager.graph_main_window, 'scene') and self.connection_manager.graph_main_window.scene:
                     self.connection_manager.graph_main_window.scene.full_graph_refresh()
@@ -197,11 +194,6 @@ class TabManager:
         # Stop ALSA mixer updates when switching away from the tab
         if self.tab_widget.tabText(self.last_active_tab) == "ALSA Mixer" and hasattr(self.connection_manager, 'alsa_mixer_app') and self.connection_manager.alsa_mixer_app:
             self.connection_manager.alsa_mixer_app.stop_updates()
-
-        # Re-enable global Alt+U shortcut when switching away from Graph tab
-        if self.tab_widget.tabText(self.last_active_tab) == "Graph":
-            if hasattr(self.connection_manager, 'action_manager') and hasattr(self.connection_manager.action_manager, 'untangle_shortcut_action'):
-                self.connection_manager.action_manager.untangle_shortcut_action.setEnabled(True)
 
         self.last_active_tab = index
         self.connection_manager.config_manager.set_int('last_active_tab', index)

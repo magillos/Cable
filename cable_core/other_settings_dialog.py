@@ -1,3 +1,4 @@
+import os
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QPushButton,
     QDialogButtonBox, QMessageBox, QFrame, QLineEdit, QCheckBox
@@ -116,7 +117,7 @@ class OtherSettingsDialog(QDialog):
         untangle_layout.addWidget(untangle_label)
 
         untangle_field = QLineEdit()
-        untangle_field.setToolTip("Enter comma-separated values (e.g., 4,5,6,7,2,3)")
+        untangle_field.setToolTip("Enter comma-separated values (e.g., 4,5,6,7,2,3)\n'0' dynamically arranges clients in columns according to their connections and type")
         untangle_layout.addWidget(untangle_field)
         self.text_fields["GRAPH_UNTANGLE_VALUES"] = untangle_field
 
@@ -133,6 +134,18 @@ class OtherSettingsDialog(QDialog):
         midi_matrix_layout.addStretch(1)
         midi_matrix_layout.addWidget(self.midi_matrix_checkbox)
         main_layout.addLayout(midi_matrix_layout)
+
+        # Add split audio/midi checkbox
+        self.split_audio_midi_layout = QHBoxLayout()
+        self.split_audio_midi_label = QLabel("Split Audio/MIDI clients in Graph")
+        self.split_audio_midi_label.setFixedWidth(max_label_width)
+        self.split_audio_midi_layout.addWidget(self.split_audio_midi_label)
+
+        self.split_audio_midi_checkbox = QCheckBox()
+        self.split_audio_midi_checkbox.setToolTip("Show clients with both, Audio and MIDI ports as separate nodes in Graph")
+        self.split_audio_midi_layout.addStretch(1)
+        self.split_audio_midi_layout.addWidget(self.split_audio_midi_checkbox)
+        main_layout.addLayout(self.split_audio_midi_layout)
 
         # Add separator after untangle values
         separator = QFrame()
@@ -178,6 +191,10 @@ class OtherSettingsDialog(QDialog):
         enable_midi_matrix = self.config_manager.get_bool('enable_midi_matrix', False)
         self.midi_matrix_checkbox.setChecked(enable_midi_matrix)
 
+        # Load split audio/midi setting
+        split_audio_midi = self.config_manager.get_bool('GRAPH_SPLIT_AUDIO_MIDI_CLIENTS', False)
+        self.split_audio_midi_checkbox.setChecked(split_audio_midi)
+
     def _show_restart_warning(self):
         msg_box = QMessageBox(self) # Re-add parent
         msg_box.setIcon(QMessageBox.Icon.Warning)
@@ -198,26 +215,43 @@ class OtherSettingsDialog(QDialog):
         # Save MIDI Matrix setting
         self.config_manager.set_bool('enable_midi_matrix', self.midi_matrix_checkbox.isChecked())
 
+        # Save split audio/midi setting
+        self.config_manager.set_bool('GRAPH_SPLIT_AUDIO_MIDI_CLIENTS', self.split_audio_midi_checkbox.isChecked())
+
     def _reset_to_defaults(self):
-        keys_to_clear = list(self.settings_map.keys())
-        keys_to_clear.append("GRAPH_UNTANGLE_VALUES")  # Add the untangle values key
-        keys_to_clear.append("enable_midi_matrix")
-        self.config_manager.clear_settings(keys_to_clear)
-
-        # Also reset "don't show again" confirmation dialog settings to show dialogs by default
-        # These settings are stored in the cables config, not cable_core config
-        try:
-            from cables.config.config_manager import ConfigManager as CablesConfigManager
-            cables_config = CablesConfigManager()
-            # Reset to show dialogs by default (True for show_hide and show_unload, False for preset_skip)
-            cables_config.set_bool('show_hide_node_confirmation', True)  # True = show confirmation
-            cables_config.set_bool('show_unload_all_sinks_confirmation', True)  # True = show confirmation
-            cables_config.set_bool('default_preset_skip_confirmation', False)  # False = show confirmation
-            print("Reset confirmation dialog preferences to show dialogs by default")
-        except Exception as e:
-            print(f"Warning: Could not reset confirmation dialog preferences: {e}")
-
-        self._load_settings_from_config() # Reload from app_config defaults
+        import shutil
+        config_dir = os.path.expanduser("~/.config/cable")
+        
+        # Show confirmation dialog
+        reply = QMessageBox.question(
+            self,
+            "Confirm Reset",
+            f"This will delete the entire Cable configuration directory:\n{config_dir}\n\nAll settings will be reset to defaults. Application restart required.\n\nContinue?",
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel
+        )
+        
+        if reply != QMessageBox.StandardButton.Ok:
+            return
+        
+        if os.path.exists(config_dir):
+            try:
+                shutil.rmtree(config_dir)
+                print(f"Deleted configuration directory: {config_dir}")
+                QMessageBox.information(
+                    self,
+                    "Reset Complete",
+                    "Configuration has been reset. Please restart the application."
+                )
+                self.accept()  # Close the dialog
+            except Exception as e:
+                print(f"Error: Could not delete configuration directory: {e}")
+                QMessageBox.critical(
+                    self,
+                    "Error",
+                    f"Failed to delete configuration directory:\n{e}"
+                )
+                return
 
     def _handle_button_click(self, button):
         if self.sender().buttonRole(button) == QDialogButtonBox.ButtonRole.ApplyRole:
@@ -228,6 +262,5 @@ class OtherSettingsDialog(QDialog):
             self.accept()  # Close dialog with accept
         elif self.sender().buttonRole(button) == QDialogButtonBox.ButtonRole.ResetRole: # RestoreDefaults button
             self._reset_to_defaults()
-            self._show_restart_warning() # Show warning on Default
         elif self.sender().buttonRole(button) == QDialogButtonBox.ButtonRole.RejectRole: # Cancel button
             self.reject()

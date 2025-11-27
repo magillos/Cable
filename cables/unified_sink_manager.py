@@ -87,15 +87,12 @@ class UnifiedSinkManager:
             jack_handler: JACK handler for making connections
             all_ports: List of all JACK ports
         """
-        if not node_item.is_unified or not node_item.unified_virtual_sink_name:
-            return
-
-        sink_client_name = f"{node_item.unified_virtual_sink_name} Audio/Sink sink"
-        connection_handler = jack_handler
-
-        if node_item.unified_ports_type == 'output':
+        if node_item.is_output_unified and node_item.unified_output_sink_name:
+            sink_client_name = f"{node_item.unified_output_sink_name} Audio/Sink sink"
             self._connect_output_ports(node_item, all_ports, sink_client_name, connection_handler)
-        elif node_item.unified_ports_type == 'input':
+            
+        if node_item.is_input_unified and node_item.unified_input_sink_name:
+            sink_client_name = f"{node_item.unified_input_sink_name} Audio/Sink sink"
             self._connect_input_ports(node_item, all_ports, sink_client_name, connection_handler)
 
     def _connect_output_ports(self, node_item, all_ports: List, sink_client_name: str, connection_handler) -> None:
@@ -152,10 +149,19 @@ class UnifiedSinkManager:
             all_ports: List of all JACK ports
             jack_connection_handler: Handler for making JACK connections
         """
-        if not port_item.parentItem().unified_virtual_sink_name:
-            return
+        # Determine which sink to connect to based on port type
+        sink_name_base = None
+        if port_item.is_input:
+             # Input port added -> connect to input unified sink (monitor)
+             if port_item.parentItem().is_input_unified:
+                 sink_name_base = port_item.parentItem().unified_input_sink_name
+        else:
+             # Output port added -> connect to output unified sink (playback)
+             if port_item.parentItem().is_output_unified:
+                 sink_name_base = port_item.parentItem().unified_output_sink_name
 
-        sink_name_base = port_item.parentItem().unified_virtual_sink_name
+        if not sink_name_base:
+            return
 
         # Find sink input ports
         sink_inputs = self._find_sink_ports(all_ports, sink_name_base, is_input=True, legacy_mode=True)
@@ -446,7 +452,15 @@ class UnifiedSinkManager:
     def _original_client_exists(self, current_client_names: set, sink_name: str) -> bool:
         """Check if the original client exists for a unified sink."""
         # The sink name format is "unified-<original_client_name_with_underscores>"
-        original_client_name = sink_name.replace('unified-', '', 1)
+        # Or "unified-input-..." / "unified-output-..."
+        
+        original_client_name = sink_name
+        if sink_name.startswith('unified-input-'):
+            original_client_name = sink_name.replace('unified-input-', '', 1)
+        elif sink_name.startswith('unified-output-'):
+            original_client_name = sink_name.replace('unified-output-', '', 1)
+        elif sink_name.startswith('unified-'):
+            original_client_name = sink_name.replace('unified-', '', 1)
 
         # Try the derived name first (with underscores)
         if original_client_name in current_client_names:

@@ -767,7 +767,23 @@ class JackConnectionManager(QMainWindow):
                 self.client_removed.emit(client_name)
             
             self.client_registered.emit(client_name, register)
-            self.graph_updated.emit()
+            
+            # Only emit graph_updated if client has audio/MIDI ports (skip desktop/video clients)
+            has_relevant_ports = False
+            try:
+                # Check for audio or MIDI ports belonging to this client
+                audio_ports = jack_utils.get_all_jack_ports(self.client, name_pattern=f"{client_name}:*", is_audio=True)
+                midi_ports = jack_utils.get_all_jack_ports(self.client, name_pattern=f"{client_name}:*", is_midi=True)
+                has_relevant_ports = bool(audio_ports or midi_ports)
+            except Exception as port_check_e:
+                print(f"Warning: Could not check ports for '{client_name}': {port_check_e}")
+                has_relevant_ports = True  # Safe fallback: emit if check fails
+            
+            if has_relevant_ports:
+                self.graph_updated.emit()
+            else:
+                print(f"Skipping graph_updated for non-audio/MIDI client '{client_name}'")
+                
         except Exception as e:
             print(f"Client registration callback error: {type(e).__name__}: {e}")
             self.graph_updated.emit()

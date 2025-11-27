@@ -559,13 +559,14 @@ class ActionManager:
             return
 
         current_index = tab_widget.currentIndex()
-
-        if current_index in [0, 1]:  # Audio or MIDI tabs
+        current_tab_text = tab_widget.tabText(current_index)
+    
+        if current_tab_text in ["Audio", "MIDI"]:
             self.state_manager.increase_font_size()
-        elif current_index == 2:  # MIDI Matrix Tab - zoom matrix
+        elif current_tab_text == "MIDI Matrix":
             if 'midi_matrix_widget' in self.ui and self.ui['midi_matrix_widget']:
                 self.ui['midi_matrix_widget'].zoom_in()
-        elif current_index == 3: # Graph Tab
+        elif current_tab_text == "Graph":
             graph_mw = self.ui.get('graph_main_window')
             if graph_mw and hasattr(graph_mw, 'view') and hasattr(graph_mw.view, 'zoom_in'):
                 graph_mw.view.zoom_in()
@@ -583,13 +584,14 @@ class ActionManager:
             return
 
         current_index = tab_widget.currentIndex()
-
-        if current_index in [0, 1]:  # Audio or MIDI tabs
+        current_tab_text = tab_widget.tabText(current_index)
+    
+        if current_tab_text in ["Audio", "MIDI"]:
             self.state_manager.decrease_font_size()
-        elif current_index == 2:  # MIDI Matrix Tab - zoom matrix
+        elif current_tab_text == "MIDI Matrix":
             if 'midi_matrix_widget' in self.ui and self.ui['midi_matrix_widget']:
                 self.ui['midi_matrix_widget'].zoom_out()
-        elif current_index == 3: # Graph Tab
+        elif current_tab_text == "Graph":
             graph_mw = self.ui.get('graph_main_window')
             if graph_mw and hasattr(graph_mw, 'view') and hasattr(graph_mw.view, 'zoom_out'):
                 graph_mw.view.zoom_out()
@@ -626,7 +628,7 @@ class ActionManager:
         if current_index in [0, 1]:  # Audio or MIDI Tab
             if self.state_manager:
                 self.state_manager._handle_untangle_shortcut()
-        elif current_index == 2:  # Graph Tab
+        elif current_index == 3:  # Graph Tab
             graph_mw = self.ui.get('graph_main_window')
             if graph_mw and hasattr(graph_mw, 'untangle_action'):
                 if hasattr(graph_mw, 'untangle_button'):

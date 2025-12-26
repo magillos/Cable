@@ -88,6 +88,10 @@ class JackGraphScene(QGraphicsScene):
         # Initialize the graph layouter
         self.layouter = GraphLayouter(self)
 
+        # Pending node positions (e.g. virtual sinks created from the view context menu)
+        # Keyed by the *sink base name* (the name passed to pactl sink_name=...)
+        self._pending_node_positions: dict[str, QPointF] = {}
+
         # Connect signals from JackConnectionManager
         # Old signals disconnected, new detailed signals connected below
         # self.connection_manager.port_registered.connect(self.handle_port_registered) # OLD
@@ -110,6 +114,58 @@ class JackGraphScene(QGraphicsScene):
     def _schedule_full_refresh(self):
         """Schedule a debounced full graph refresh."""
         self._refresh_debounce_timer.start(100)  # 100ms debounce for rapid JACK events
+
+    def register_pending_node_position(self, sink_name: str, scene_pos: QPointF) -> None:
+        """Register a pending position for a node expected to appear soon.
+
+        This is used to place newly-created virtual sinks/sources at the user's click position.
+        """
+        if not sink_name:
+            return
+        self._pending_node_positions[sink_name] = scene_pos
+
+    def unregister_pending_node_position(self, sink_name: str) -> None:
+        """Remove a pending position (e.g. if creation failed)."""
+        if not sink_name:
+            return
+        self._pending_node_positions.pop(sink_name, None)
+
+    def _pop_pending_position_for_client(self, client_name: str) -> QPointF | None:
+        """Return and remove a pending position matching this JACK client name."""
+        if not client_name or not self._pending_node_positions:
+            return None
+
+        # For virtual sinks created via pactl, the JACK/pipewire client name is typically
+        # "<sink_name> Audio/Sink sink". We match on prefix "<sink_name> ".
+        for sink_name, pos in list(self._pending_node_positions.items()):
+            if client_name == sink_name or client_name.startswith(sink_name + ' '):
+                self._pending_node_positions.pop(sink_name, None)
+                return pos
+
+        return None
+
+    def _apply_pending_position_if_any(self, node: 'NodeItem') -> bool:
+        """If a pending position exists for this node, apply it and return True."""
+        if not node:
+            return False
+
+        pending_pos = self._pop_pending_position_for_client(node.client_name)
+        if pending_pos is None:
+            return False
+
+        # Place node centered at the click position (after layout so size is accurate)
+        br = node.boundingRect()
+        x = pending_pos.x() - br.width() / 2.0
+        y = pending_pos.y() - br.height() / 2.0
+
+        if self.layouter:
+            x, y = self.layouter.find_non_overlapping_position(node, x, y)
+
+        node.setPos(QPointF(x, y))
+
+        # Push away any nodes still overlapping (deferred so geometry is settled)
+        QTimer.singleShot(0, lambda n=node: self._apply_push_away_for_node(n))
+        return True
     
     @pyqtSlot()
     def _deferred_full_refresh(self):
@@ -145,6 +201,10 @@ class JackGraphScene(QGraphicsScene):
 
             # Refresh connection visibility for all connections
             self._refresh_all_connection_visibility()
+            
+            # Clean up orphaned unified sinks after synchronization
+            # This ensures sinks are removed when their owner nodes disappear
+            self._cleanup_orphaned_unified_sinks(all_ports)
 
             # Clear the flag before emitting signal
             self._in_full_refresh = False
@@ -156,8 +216,6 @@ class JackGraphScene(QGraphicsScene):
             is_first_refresh = not hasattr(self, '_first_refresh_done')
             if is_first_refresh:
                 self._first_refresh_done = True
-                # Clean up orphaned unified sinks after synchronization, but only on first load
-                self._cleanup_orphaned_unified_sinks(all_ports)
                 self.scene_fully_loaded.emit()
                 print("Scene fully loaded signal emitted")
 
@@ -220,26 +278,63 @@ class JackGraphScene(QGraphicsScene):
                     'original_client_name': client_name
                 }
 
+        # Track which clients are actually present in JACK (independent of visibility filtering)
+        present_clients_to_process = dict(clients_to_process)
+
         # Filter clients based on visibility settings
         if hasattr(self, 'node_visibility_manager') and self.node_visibility_manager:
             visible_clients = {}
+            visible_owner_bases: set[str] = set()
+
+            # Pass 1: decide visibility for non-sink clients and collect bases
             for client_name, client_info in clients_to_process.items():
                 # Determine if this is a MIDI client based on its ports
                 is_midi = False
                 ports = client_info['ports']
                 if ports:
-                    # Check if any port is a MIDI port
                     for port_obj in ports.values():
                         if hasattr(port_obj, 'is_midi') and port_obj.is_midi:
                             is_midi = True
                             break
-                
-                # Check visibility
+
+                is_unified_sink_client = client_name.endswith(' Audio/Sink sink') and (
+                    client_name.startswith('unified-input-')
+                    or client_name.startswith('unified-output-')
+                    or client_name.startswith('unified_input-')
+                    or client_name.startswith('unified_output-')
+                )
+
+                if is_unified_sink_client:
+                    continue
+
                 if self.node_visibility_manager.is_node_visible(client_name, is_midi=is_midi):
                     visible_clients[client_name] = client_info
+                    owner_base = (client_info.get('original_client_name') or client_name).replace(' ', '_')
+                    visible_owner_bases.add(owner_base)
+
+            # Pass 2: include unified sink clients only if their owner is visible
+            for client_name, client_info in clients_to_process.items():
+                is_unified_sink_client = client_name.endswith(' Audio/Sink sink') and (
+                    client_name.startswith('unified-input-')
+                    or client_name.startswith('unified-output-')
+                    or client_name.startswith('unified_input-')
+                    or client_name.startswith('unified_output-')
+                )
+                if not is_unified_sink_client:
+                    continue
+
+                sink_base_name = client_name.replace(' Audio/Sink sink', '')
+                for prefix in ('unified-input-', 'unified-output-', 'unified_input-', 'unified_output-'):
+                    if sink_base_name.startswith(prefix):
+                        owner_base = sink_base_name[len(prefix):]
+                        if owner_base in visible_owner_bases:
+                            visible_clients[client_name] = client_info
+                        break
+
             clients_to_process = visible_clients
 
         current_client_names = set(clients_to_process.keys())
+        present_client_names = set(present_clients_to_process.keys())
         
         # Get the list of nodes we currently have
         existing_client_names = set(self.nodes.keys())
@@ -247,7 +342,8 @@ class JackGraphScene(QGraphicsScene):
         # Nodes to remove
         nodes_to_remove = existing_client_names - current_client_names
         for client_name in nodes_to_remove:
-            self.remove_node(client_name)
+            unload_unified_sinks = client_name not in present_client_names
+            self.remove_node(client_name, unload_unified_sinks=unload_unified_sinks)
 
         # Update existing nodes and add new ones
         new_node_y_offset = 0
@@ -258,12 +354,26 @@ class JackGraphScene(QGraphicsScene):
             if client_name in self.nodes:
                 # Existing node, update its ports
                 self._update_node_ports(client_name, ports_to_process)
+                
+                # Ensure unified sinks are verified and re-checked
+                # This fixes the issue where unified sink colors are lost after restart
+                # because the node might not have been recognized as a unified sink yet
+                if hasattr(self.nodes[client_name], 'check_if_virtual_sink'):
+                    self.nodes[client_name].check_if_virtual_sink(client_name)
+                    # Force update to apply colors
+                    self.nodes[client_name].update()
+                    
+                if hasattr(self.nodes[client_name], 'ensure_unified_sink_exists'):
+                    self.nodes[client_name].ensure_unified_sink_exists()
             else:
                 # New node
                 node = self.add_node(client_name, ports_to_process, original_client_name)
                 if node:
                     config = self.node_configs.get(client_name, {})
                     node.apply_configuration(config)
+
+                    # If this node corresponds to a pending UI-created sink, place it at the click location.
+                    self._apply_pending_position_if_any(node)
                     
                     # Defer push-away check until after node is fully laid out
                     # This handles cases where config has overlapping positions
@@ -553,45 +663,38 @@ class JackGraphScene(QGraphicsScene):
             traceback.print_exc()
             return None
 
-    def remove_node(self, client_name):
+    def remove_node(self, client_name, unload_unified_sinks: bool = False):
         node = self.nodes.pop(client_name, None)
         if node:
             print(f"Removing node: {client_name}")
 
-            # For unified nodes, unload the unified sink before removing the node
-            # Handle split unification
-            if hasattr(node, 'is_input_unified') and node.is_input_unified:
-                print(f"Unloading input unified sink for node {client_name} before removal")
-                try:
-                    node._unload_unified_sink(is_input=True)
-                except Exception as e:
-                    print(f"Error unloading input unified sink: {e}")
+            if unload_unified_sinks:
+                if hasattr(node, 'is_input_unified') and node.is_input_unified:
+                    print(f"Unloading input unified sink for node {client_name} before removal")
+                    try:
+                        node._unload_unified_sink(is_input=True)
+                    except Exception as e:
+                        print(f"Error unloading input unified sink: {e}")
 
-            if hasattr(node, 'is_output_unified') and node.is_output_unified:
-                print(f"Unloading output unified sink for node {client_name} before removal")
-                try:
-                    node._unload_unified_sink(is_input=False)
-                except Exception as e:
-                    print(f"Error unloading output unified sink: {e}")
+                if hasattr(node, 'is_output_unified') and node.is_output_unified:
+                    print(f"Unloading output unified sink for node {client_name} before removal")
+                    try:
+                        node._unload_unified_sink(is_input=False)
+                    except Exception as e:
+                        print(f"Error unloading output unified sink: {e}")
 
-            # Legacy check
-            if hasattr(node, 'is_unified') and node.is_unified:
-                print(f"Unloading legacy unified sink for node {client_name} before removal")
-                try:
-                    # Try to determine type or just pass False/True if specific legacy method exists
-                    # Since we updated _unload_unified_sink to require is_input, we need to be careful.
-                    # If is_unified is True but split flags are False, it might be an old state.
-                    # We can try both or check unified_ports_type if it still exists.
-                    if hasattr(node, 'unified_ports_type'):
-                        if node.unified_ports_type == 'input':
-                            node._unload_unified_sink(is_input=True)
-                        elif node.unified_ports_type == 'output':
-                            node._unload_unified_sink(is_input=False)
-                        else:
-                             # Fallback or generic
-                             pass
-                except Exception as e:
-                    print(f"Error unloading legacy unified sink: {e}")
+                if hasattr(node, 'is_unified') and node.is_unified:
+                    print(f"Unloading legacy unified sink for node {client_name} before removal")
+                    try:
+                        if hasattr(node, 'unified_ports_type'):
+                            if node.unified_ports_type == 'input':
+                                node._unload_unified_sink(is_input=True)
+                            elif node.unified_ports_type == 'output':
+                                node._unload_unified_sink(is_input=False)
+                            else:
+                                pass
+                    except Exception as e:
+                        print(f"Error unloading legacy unified sink: {e}")
 
             # Check if this is a split origin node - if so, also remove its split parts
             if node.is_split_origin:
@@ -751,6 +854,9 @@ class JackGraphScene(QGraphicsScene):
                 if node:
                     config = self.node_configs.get(client_name, {})
                     node.apply_configuration(config)
+
+                    # If this node corresponds to a pending UI-created sink, place it at the click location.
+                    self._apply_pending_position_if_any(node)
                     
                     # Check for overlaps even if we loaded a position from config
                     if self.layouter:
@@ -800,7 +906,7 @@ class JackGraphScene(QGraphicsScene):
     def _handle_client_removed(self, client_name: str):
         """Handles the client_removed signal from JackConnectionManager."""
         print(f"GraphScene: Client removed - Name: {client_name}")
-        self.remove_node(client_name)
+        self.remove_node(client_name, unload_unified_sinks=True)
 
     @pyqtSlot(str, str)
     def _handle_connection_made(self, out_port_name: str, in_port_name: str):

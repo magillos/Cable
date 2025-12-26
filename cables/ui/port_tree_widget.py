@@ -3,6 +3,7 @@ PortTreeWidget - Tree widget for displaying ports with collapsible groups
 """
 
 import re
+import jack
 from PyQt6.QtWidgets import QTreeWidget, QTreeWidgetItem, QMenu, QSizePolicy, QApplication, QMessageBox, QDialog, QCheckBox, QVBoxLayout, QDialogButtonBox, QLabel
 from PyQt6.QtCore import Qt, QSize, QPoint, pyqtSignal
 from PyQt6.QtGui import QBrush, QDrag, QPixmap, QPainter, QFontMetrics, QAction, QPalette, QFont
@@ -213,7 +214,7 @@ class PortTreeWidget(QTreeWidget):
                  is_midi=is_midi,
                  is_audio=not is_midi
              )
-        except main_window.client.JackError as e: # Use main_window.client.JackError
+        except jack.JackError as e:
              print(f"Warning: Error fetching all system primary ports: {e}")
 
         all_primary_group_names = set()

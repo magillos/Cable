@@ -1,7 +1,7 @@
 import os
 from PyQt6.QtWidgets import QGraphicsView, QMenu, QDialog, QVBoxLayout, QDialogButtonBox, QLabel, QCheckBox, QFileDialog, QHBoxLayout, QPushButton, QButtonGroup, QRadioButton
 from PyQt6.QtGui import QPainter, QCursor, QMouseEvent, QPixmap, QBrush, QFont # Import QMouseEvent
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QPointF
 
 # Import JackGraphScene for type hinting
 from .gui_scene import JackGraphScene
@@ -129,7 +129,8 @@ class JackGraphView(QGraphicsView):
 
     def mousePressEvent(self, event: QMouseEvent):
         """Override mouse press to set closed hand cursor during drag or initiate panning."""
-        if event.button() == Qt.MouseButton.LeftButton and (event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
+        if event.button() == Qt.MouseButton.MiddleButton or \
+           (event.button() == Qt.MouseButton.LeftButton and (event.modifiers() & (Qt.KeyboardModifier.ShiftModifier | Qt.KeyboardModifier.ControlModifier))):
             self._is_panning = True
             self._last_pan_pos = event.pos()
             self.viewport().setCursor(Qt.CursorShape.OpenHandCursor) # Indicate grabbable
@@ -158,7 +159,7 @@ class JackGraphView(QGraphicsView):
 
     def mouseReleaseEvent(self, event: QMouseEvent):
         """Override mouse release to reset cursor after drag or panning."""
-        if self._is_panning and event.button() == Qt.MouseButton.LeftButton:
+        if self._is_panning and (event.button() == Qt.MouseButton.LeftButton or event.button() == Qt.MouseButton.MiddleButton):
             self._is_panning = False
             self._last_pan_pos = None
             self.viewport().setCursor(Qt.CursorShape.ArrowCursor) # Reset to arrow
@@ -288,7 +289,10 @@ class JackGraphView(QGraphicsView):
             wallpaper_action = menu.addAction("Wallpaper")
 
             # Connect to handlers
-            create_combined_action.triggered.connect(self._show_combined_sink_dialog)
+            clicked_scene_pos = self.mapToScene(event.pos())
+            create_combined_action.triggered.connect(
+                lambda checked=False, pos=clicked_scene_pos: self._show_combined_sink_dialog(pos)
+            )
             unload_all_sinks_action.triggered.connect(self._unload_all_sinks)
             save_layout_action.triggered.connect(self._request_save_layout)
             wallpaper_action.triggered.connect(self._show_wallpaper_dialog)
@@ -299,14 +303,14 @@ class JackGraphView(QGraphicsView):
             # If there's an item, pass the event to the parent implementation
             super().contextMenuEvent(event)
             
-    def _show_combined_sink_dialog(self):
+    def _show_combined_sink_dialog(self, scene_pos: QPointF | None = None):
         """Show the dialog for creating a combined virtual sink/source."""
         dialog = CombinedSinkSourceDialog(self)
         result = dialog.exec()
 
         if result == QDialog.DialogCode.Accepted:
             sink_name, channel_map = dialog.get_values()
-            self._create_combined_sink_source(sink_name, channel_map)
+            self._create_combined_sink_source(sink_name, channel_map, scene_pos)
 
     def _show_wallpaper_dialog(self):
         """Show a dialog to select wallpaper image and set it as background."""
@@ -587,7 +591,7 @@ class JackGraphView(QGraphicsView):
 
         return result, checkbox.isChecked()
 
-    def _create_combined_sink_source(self, sink_name: str, channel_map: str):
+    def _create_combined_sink_source(self, sink_name: str, channel_map: str, scene_pos: QPointF | None = None):
         """Execute the pactl command to create the combined virtual sink/source."""
         import subprocess
         import json
@@ -606,6 +610,10 @@ class JackGraphView(QGraphicsView):
 
             command.extend([f"sink_name={sink_name}", f"channel_map={channel_map_param}"])
 
+        scene = self.scene()
+        if scene_pos is not None and scene is not None and hasattr(scene, 'register_pending_node_position'):
+            scene.register_pending_node_position(sink_name, scene_pos)
+
         try:
             result = subprocess.run(command, check=True, capture_output=True, text=True)
             module_id = result.stdout.strip()
@@ -616,6 +624,8 @@ class JackGraphView(QGraphicsView):
             print(f"Created combined virtual sink/source: {sink_name} with channel map {channel_map}")
             print(f"Module ID: {module_id}")
         except subprocess.CalledProcessError as e:
+            if scene_pos is not None and scene is not None and hasattr(scene, 'unregister_pending_node_position'):
+                scene.unregister_pending_node_position(sink_name)
             print(f"Error creating combined virtual sink/source: {e}")
 
     def _save_module_id(self, sink_name: str, module_id: str):

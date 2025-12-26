@@ -216,7 +216,21 @@ class NodeItem(QGraphicsItem):
                 pass
 
         # Check if this is a virtual sink (do this after initialization)
-        self._check_if_virtual_sink(client_name)
+        self.check_if_virtual_sink(client_name)
+
+        # Virtual sink nodes must never carry unification state.
+        # If they do, they can connect their own monitor/playback ports together.
+        if getattr(self, 'is_virtual_sink', False):
+            self.is_unified = False
+            self.is_input_unified = False
+            self.is_output_unified = False
+            self.unified_virtual_sink_name = None
+            self.unified_module_id = None
+            self.unified_ports_type = None
+            self.unified_input_sink_name = None
+            self.unified_output_sink_name = None
+            self.unified_input_module_id = None
+            self.unified_output_module_id = None
         print(f"DEBUG: Node {client_name} initialized - is_virtual_sink: {getattr(self, 'is_virtual_sink', False)}, is_unified_sink: {getattr(self, 'is_unified_sink', False)}")
 
     # --- Helper Methods ---
@@ -252,17 +266,17 @@ class NodeItem(QGraphicsItem):
             # Virtual sinks created by Unify toggle
             # Check if it's an input or output unified sink based on name
             if "unified-input" in self.client_name or "unified_input" in self.client_name:
-                # Input Unified Sink -> Green #344b29
+                # Input Unified Sink -> Purple #5a3246
                 if is_light_mode:
-                    title_bg_color = QColor(240, 190, 210) # Light green for light mode
+                    title_bg_color = QColor(240, 190, 210)
                 else:
-                    title_bg_color = QColor(90, 50, 70) # #344b29
+                    title_bg_color = QColor(90, 50, 70)
             else:
-                # Output Unified Sink -> Purple #5a3246
+                # Output Unified Sink -> Green #344b29
                 if is_light_mode:
-                    title_bg_color = QColor(180, 210, 160) # Light purple for light mode
+                    title_bg_color = QColor(180, 210, 160)
                 else:
-                    title_bg_color = QColor(41, 57, 38) # #5a3246
+                    title_bg_color = QColor(41, 57, 38)
         elif is_unified or self.is_input_unified or self.is_output_unified:
             # Regular unified nodes -> Blue #324664
             if is_light_mode:
@@ -839,6 +853,20 @@ class NodeItem(QGraphicsItem):
 
     def ensure_unified_sink_exists(self):
         """Check if the unified sinks exist and recreate them if not or if broken."""
+        if getattr(self, 'is_virtual_sink', False):
+            return
+
+        is_midi_node = False
+        is_audio_node = False
+        for port_list in (self.input_ports, self.output_ports):
+            for port_item in port_list.values():
+                if hasattr(port_item.port_obj, 'is_midi') and port_item.port_obj.is_midi:
+                    is_midi_node = True
+                if hasattr(port_item.port_obj, 'is_audio') and port_item.port_obj.is_audio:
+                    is_audio_node = True
+        if is_midi_node and not is_audio_node:
+            return
+
         # Check input unified sink
         if self.is_input_unified and self.unified_input_sink_name:
             self._ensure_specific_sink_exists(is_input=True)
@@ -880,16 +908,23 @@ class NodeItem(QGraphicsItem):
             # Test if the sink is functional by trying to make a test connection
             if self._test_sink_functionality(is_input=is_input):
                 print(f"Unified {'input' if is_input else 'output'} sink {sink_name} is functional, ensuring connections...")
+                # Disconnect any existing connections to prevent self-connections
+                self._disconnect_sink_self_connections(sink_client_name, all_ports)
                 self._connect_to_unified_sink(is_input=is_input)
             else:
                 print(f"Unified {'input' if is_input else 'output'} sink {sink_name} is broken, recreating...")
                 # First unload the broken sink if we can find the module ID
                 module_id = self.unified_input_module_id if is_input else self.unified_output_module_id
+                if not module_id:
+                    # Try to find it dynamically
+                    module_id = self._find_module_id_for_external_sink(sink_name)
+                
                 if module_id:
                     try:
                         import subprocess
                         subprocess.run(["pactl", "unload-module", str(module_id)],
                                      check=True, capture_output=True, text=True)
+                        print(f"Successfully unloaded broken unified sink with module ID {module_id}")
                     except Exception as e:
                         print(f"Warning: Could not unload broken unified sink: {e}")
 
@@ -937,8 +972,49 @@ class NodeItem(QGraphicsItem):
             print(f"Error testing sink functionality for {sink_name}: {e}")
             return False
 
+    def _disconnect_sink_self_connections(self, sink_client_name: str, all_ports: list):
+        """Disconnect any connections between the sink's own ports (monitor -> playback)."""
+        if not self.scene() or not hasattr(self.scene(), 'jack_connection_handler'):
+            return
+        
+        connection_handler = self.scene().jack_connection_handler
+        
+        # Find all sink ports
+        sink_outputs = [p for p in all_ports if p.is_output and p.name.startswith(sink_client_name + ':')]
+        sink_inputs = [p for p in all_ports if p.is_input and p.name.startswith(sink_client_name + ':')]
+        
+        # Check for and break any connections between sink's own ports
+        for sink_output in sink_outputs:
+            try:
+                # Get connections for this output port
+                connections = connection_handler.get_all_connections(sink_output.name)
+                for out_port, in_port in connections:
+                    # Check if the input port belongs to the same sink
+                    if in_port.startswith(sink_client_name + ':'):
+                        print(f"Breaking self-connection: {out_port} -> {in_port}")
+                        try:
+                            connection_handler.break_connection(out_port, in_port)
+                        except Exception as e:
+                            print(f"Error breaking self-connection: {e}")
+            except Exception as e:
+                print(f"Error checking connections for {sink_output.name}: {e}")
+
     def unify_from_preset(self, unify_data):
         """Applies the unified state to the node from a preset."""
+        if getattr(self, 'is_virtual_sink', False):
+            return
+
+        is_midi_node = False
+        is_audio_node = False
+        for port_list in (self.input_ports, self.output_ports):
+            for port_item in port_list.values():
+                if hasattr(port_item.port_obj, 'is_midi') and port_item.port_obj.is_midi:
+                    is_midi_node = True
+                if hasattr(port_item.port_obj, 'is_audio') and port_item.port_obj.is_audio:
+                    is_audio_node = True
+        if is_midi_node and not is_audio_node:
+            return
+
         # Handle legacy single unified state
         if unify_data.get('is_unified'):
             self.is_unified = True # Legacy
@@ -950,10 +1026,16 @@ class NodeItem(QGraphicsItem):
         if unify_data.get('is_input_unified'):
             self.is_input_unified = True
             self.unified_input_sink_name = unify_data.get('unified_input_sink_name')
+            if not self.unified_input_sink_name:
+                base_name = (self.original_client_name or self.client_name).replace(' ', '_')
+                self.unified_input_sink_name = f"unified-input-{base_name}"
         
         if unify_data.get('is_output_unified'):
             self.is_output_unified = True
             self.unified_output_sink_name = unify_data.get('unified_output_sink_name')
+            if not self.unified_output_sink_name:
+                base_name = (self.original_client_name or self.client_name).replace(' ', '_')
+                self.unified_output_sink_name = f"unified-output-{base_name}"
 
         # Skip sink creation here, ensure_unified_sink_exists will handle it
         self.update()
@@ -967,6 +1049,26 @@ class NodeItem(QGraphicsItem):
         if not sink_name:
             return
 
+        # First, check if a sink with this name already exists
+        try:
+            existing = subprocess.run(["pactl", "list", "short", "sinks"], capture_output=True, text=True, check=True)
+            for line in existing.stdout.splitlines():
+                parts = line.split('\t')
+                if len(parts) >= 2 and parts[1].strip() == sink_name:
+                    print(f"Sink {sink_name} already exists, finding its module ID...")
+                    module_id = self._find_module_id_for_external_sink(sink_name)
+                    if module_id:
+                        if is_input:
+                            self.unified_input_module_id = str(module_id)
+                        else:
+                            self.unified_output_module_id = str(module_id)
+                        self._save_unified_module_id(sink_name, str(module_id))
+                        print(f"Using existing sink {sink_name} with module ID {module_id}")
+                    return
+        except Exception as e:
+            print(f"Error checking for existing sinks: {e}")
+
+        # Sink doesn't exist, create it
         command = ["pactl", "load-module", "module-null-sink", f"sink_name={sink_name}", "channel_map=stereo"]
 
         try:
@@ -985,6 +1087,16 @@ class NodeItem(QGraphicsItem):
             print(f"Module ID: {module_id}")
         except subprocess.CalledProcessError as e:
             print(f"Error creating unified virtual sink: {e}")
+            # If creation failed, it might be because it already exists
+            # Try to find the module ID
+            module_id = self._find_module_id_for_external_sink(sink_name)
+            if module_id:
+                if is_input:
+                    self.unified_input_module_id = str(module_id)
+                else:
+                    self.unified_output_module_id = str(module_id)
+                self._save_unified_module_id(sink_name, str(module_id))
+                print(f"Found existing sink {sink_name} with module ID {module_id}")
 
     def _save_unified_module_id(self, sink_name: str, module_id: str):
         """Save the unified module ID to config file for later unloading."""
@@ -1016,6 +1128,19 @@ class NodeItem(QGraphicsItem):
 
         module_id = self.unified_input_module_id if is_input else self.unified_output_module_id
         sink_name = self.unified_input_sink_name if is_input else self.unified_output_sink_name
+
+        if not sink_name:
+            return
+
+        # Prefer resolving the CURRENT module id from pactl by sink name.
+        # Stored IDs can become stale across restarts and will cause unload to fail.
+        resolved_module_id = self._find_module_id_for_external_sink(sink_name)
+        if resolved_module_id:
+            module_id = str(resolved_module_id)
+            if is_input:
+                self.unified_input_module_id = module_id
+            else:
+                self.unified_output_module_id = module_id
 
         if not module_id:
             return
@@ -1263,6 +1388,10 @@ class NodeItem(QGraphicsItem):
     def _toggle_unify_input(self, checked):
         """Toggle unification for input ports."""
         try:
+            if getattr(self, 'is_virtual_sink', False):
+                if self.unify_input_action:
+                    self.unify_input_action.setChecked(False)
+                return
             if checked:
                 if not self.input_ports:
                     print("Node has no input ports, cannot unify inputs")
@@ -1270,7 +1399,8 @@ class NodeItem(QGraphicsItem):
                     return
 
                 self.is_input_unified = True
-                self.unified_input_sink_name = f"unified-input-{self.client_name.replace(' ', '_')}"
+                base_name = (self.original_client_name or self.client_name).replace(' ', '_')
+                self.unified_input_sink_name = f"unified-input-{base_name}"
                 self._create_unified_sink(is_input=True)
                 self._wait_for_sink_and_connect(is_input=True)
             else:
@@ -1292,6 +1422,10 @@ class NodeItem(QGraphicsItem):
     def _toggle_unify_output(self, checked):
         """Toggle unification for output ports."""
         try:
+            if getattr(self, 'is_virtual_sink', False):
+                if self.unify_output_action:
+                    self.unify_output_action.setChecked(False)
+                return
             if checked:
                 if not self.output_ports:
                     print("Node has no output ports, cannot unify outputs")
@@ -1299,7 +1433,8 @@ class NodeItem(QGraphicsItem):
                     return
 
                 self.is_output_unified = True
-                self.unified_output_sink_name = f"unified-output-{self.client_name.replace(' ', '_')}"
+                base_name = (self.original_client_name or self.client_name).replace(' ', '_')
+                self.unified_output_sink_name = f"unified-output-{base_name}"
                 self._create_unified_sink(is_input=False)
                 self._wait_for_sink_and_connect(is_input=False)
             else:
@@ -1321,6 +1456,8 @@ class NodeItem(QGraphicsItem):
     def _update_config_unified_state(self):
         """Updates the unified state in the saved configuration."""
         if hasattr(self, 'config_manager') and self.config_manager:
+            if getattr(self, 'is_virtual_sink', False):
+                return
             try:
                 import json
                 if self.config_manager.node_positions_file.exists():
@@ -1684,11 +1821,12 @@ class NodeItem(QGraphicsItem):
                     except Exception as e:
                         print(f"Error breaking output connection for {port_item.port_name} of {self.client_name}: {e}")
 
-    def _check_if_virtual_sink(self, client_name: str):
+    def check_if_virtual_sink(self, client_name: str):
         """Check if this node represents a virtual sink by looking at stored module IDs or detecting pattern."""
         try:
             from cable_core.config import ConfigManager
             config_manager = ConfigManager()
+            self.is_unified_sink = False
             module_ids_json = config_manager.get_str_setting('virtual_sink_module_ids', '{}')
 
             if module_ids_json:
@@ -1721,6 +1859,20 @@ class NodeItem(QGraphicsItem):
 
             # Check if this virtual sink was created by Unify toggle
             if self.is_virtual_sink:
+                sink_base_name = client_name.replace(' Audio/Sink sink', '')
+                normalized_sink_base = sink_base_name.replace(' ', '_').lower()
+                if (
+                    normalized_sink_base.startswith('unified-input-')
+                    or normalized_sink_base.startswith('unified_output-')
+                    or normalized_sink_base.startswith('unified-output-')
+                    or normalized_sink_base.startswith('unified_input-')
+                    or normalized_sink_base.startswith('unified-input_')
+                    or normalized_sink_base.startswith('unified-output_')
+                    or normalized_sink_base.startswith('unified_input_')
+                    or normalized_sink_base.startswith('unified_output_')
+                ):
+                    self.is_unified_sink = True
+
                 unified_sinks_json = config_manager.get_str_setting('unified_virtual_sinks', '{}')
                 if unified_sinks_json:
                     unified_sinks = json.loads(unified_sinks_json)
@@ -1731,13 +1883,16 @@ class NodeItem(QGraphicsItem):
                             self.is_unified_sink = True
                             print(f"Detected unified sink: {client_name} matches {unified_sink_name}")
                             break
-                                    # Check pattern by normalizing both names to use underscores for comparison
+
                         sink_base_from_client = client_name.replace(' Audio/Sink sink', '').replace(' ', '_').replace('-', '_')
                         unified_sink_name_normalized = unified_sink_name.replace(' ', '_').replace('-', '_')
                         if unified_sink_name_normalized.startswith(sink_base_from_client + '_'):
                             self.is_unified_sink = True
                             print(f"Detected unified sink (pattern match): {client_name} matches {unified_sink_name}")
                             break
+
+            if getattr(self, 'is_unified_sink', False):
+                self.update()
 
         except Exception as e:
             print(f"Error checking if node is virtual sink for {client_name}: {e}")

@@ -162,6 +162,29 @@ class OtherSettingsDialog(QDialog):
         button_box.clicked.connect(self._handle_button_click)
         main_layout.addWidget(button_box)
 
+        # Add version label at the very bottom
+        self.version_label = QLabel()
+        self.version_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.version_label.setTextFormat(Qt.TextFormat.RichText)
+        self.version_label.setOpenExternalLinks(True)
+        
+        # Get version info from parent if available
+        curr_version = app_config.APP_VERSION
+        update_available = False
+        latest_version = None
+        
+        if self.parent() and hasattr(self.parent(), 'update_manager'):
+            update_manager = self.parent().update_manager
+            update_available = update_manager.update_available
+            latest_version = update_manager.latest_version
+            
+        if update_available:
+            self.version_label.setText(f'<a href="https://github.com/magillos/Cable/releases" style="color: orange; text-decoration: none;">Version: {curr_version} (Update available: {latest_version})</a>')
+        else:
+            self.version_label.setText(f'<a href="https://github.com/magillos/Cable/releases" style="color: grey; text-decoration: none;">Version: {curr_version}</a>')
+            
+        main_layout.addWidget(self.version_label)
+
     def _update_value_label(self, key):
         def update():
             self.value_labels[key].setText(str(self.sliders[key].value()))

@@ -291,24 +291,34 @@ class UnifiedSinkManager:
         # Create a set of current JACK client names
         current_client_names = set()
         for port in all_ports:
-            client_name, port_short_name = port.name.split(':', 1)
-            current_client_names.add(client_name)
+            if ':' in port.name:
+                client_name, port_short_name = port.name.split(':', 1)
+                current_client_names.add(client_name)
 
-        print(f"DEBUG: Found {len(current_client_names)} JACK clients: {sorted(list(current_client_names))}")
+        print(f"DEBUG: Found {len(current_client_names)} JACK clients")
 
         # Check each configured unified sink
         sinks_to_remove = []
 
-        for sink_name, module_id in unified_sinks.items():
+        for sink_name, module_id in list(unified_sinks.items()):
             print(f"DEBUG: Checking orphan cleanup for sink {sink_name}")
+            
             # Check if this sink is orphaned (sink exists but original client doesn't)
             sink_has_ports = self._sink_has_ports(all_ports, sink_name)
             original_client_exists = self._original_client_exists(current_client_names, sink_name)
 
             # A sink is orphaned if it has ports but the original client is gone
             print(f"DEBUG: sink_has_ports={sink_has_ports}, original_client_exists={original_client_exists}")
+            
             if sink_has_ports and not original_client_exists:
                 print(f"Found orphaned unified sink {sink_name} (module ID: {module_id}), unloading...")
+                
+                # Try to resolve the current module ID dynamically
+                resolved_module_id = self.find_module_id_for_external_sink(sink_name)
+                if resolved_module_id:
+                    module_id = resolved_module_id
+                    print(f"Resolved current module ID: {module_id}")
+                
                 try:
                     result = subprocess.run(["pactl", "unload-module", str(module_id)],
                                           check=True, capture_output=True, text=True)
@@ -316,12 +326,17 @@ class UnifiedSinkManager:
                     sinks_to_remove.append(sink_name)
                 except subprocess.CalledProcessError as e:
                     print(f"Error unloading orphaned unified sink {sink_name}: {e}")
-                    # Still remove from config even if unload failed
+                    # Still remove from config even if unload failed (sink might already be gone)
                     sinks_to_remove.append(sink_name)
+            elif not sink_has_ports and not original_client_exists:
+                # Sink is already gone and client is gone, just clean up config
+                print(f"Sink {sink_name} and its client are both gone, cleaning up config")
+                sinks_to_remove.append(sink_name)
 
         # Remove unloaded sinks from config
         for sink_name in sinks_to_remove:
-            del unified_sinks[sink_name]
+            if sink_name in unified_sinks:
+                del unified_sinks[sink_name]
 
         # Save updated config
         if sinks_to_remove:

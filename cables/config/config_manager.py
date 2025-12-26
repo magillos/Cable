@@ -80,7 +80,11 @@ class ConfigManager:
         Returns:
             bool: The configuration value
         """
-        return self.config['DEFAULT'].getboolean(key, default)
+        config = self._get_config_parser()
+        try:
+            return config.getboolean('DEFAULT', key, fallback=default)
+        except Exception:
+            return default
     
     def set_bool(self, key, value):
         """
@@ -104,7 +108,11 @@ class ConfigManager:
         Returns:
             int: The configuration value
         """
-        return self.config['DEFAULT'].getint(key, default)
+        config = self._get_config_parser()
+        try:
+            return config.getint('DEFAULT', key, fallback=default)
+        except Exception:
+            return default
     
     def set_int(self, key, value):
         """
@@ -178,7 +186,11 @@ class ConfigManager:
         Returns:
             str: The configuration value
         """
-        return self.config['DEFAULT'].get(key, default)
+        config = self._get_config_parser()
+        try:
+            return config.get('DEFAULT', key, fallback=default)
+        except Exception:
+            return default
     
     def set_str(self, key, value):
         """

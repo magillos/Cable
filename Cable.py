@@ -437,20 +437,14 @@ class PipeWireSettingsApp(QWidget):
         self.restore_only_minimized_checkbox.setEnabled(False) # Initially disabled
         self.restore_only_minimized_checkbox.stateChanged.connect(self.config_manager.toggle_restore_only_minimized) # Use manager
 
-        # Add version label at the bottom right
+        # Add Settings button at the bottom right
         version_layout = QHBoxLayout()
-        version_layout.addStretch() # Push label to the right
-        self.version_label = QLabel()
-        self.version_label.setTextFormat(Qt.TextFormat.RichText) # Allow HTML links
-
-
-        self.version_label.setText(f'<a href="https://github.com/magillos/Cable/releases" style="color: grey; text-decoration: none;">{APP_VERSION}</a>')
-        self.version_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom)
-
-
-        version_layout.addWidget(self.version_label)
-        self.version_label.installEventFilter(self) # Add event filter for left-click menu
-        self.version_label.setToolTip("Click to access Settings") # Add tooltip for the menu trigger
+        version_layout.addStretch() # Push button to the right
+        self.settings_button = QPushButton("Settings")
+        self.settings_button.setToolTip("Click to access Settings")
+        self.settings_button.clicked.connect(lambda: self.tray_manager.show_version_context_menu(self.settings_button.rect().bottomLeft()))
+        
+        version_layout.addWidget(self.settings_button)
         main_layout.addLayout(version_layout) # Add to the main layout
 
 
@@ -467,13 +461,18 @@ class PipeWireSettingsApp(QWidget):
             event.accept() # Accept the event after initiating quit
 
     def eventFilter(self, obj, event):
-        """Handle left-clicks on the version label."""
-        if obj is self.version_label and event.type() == QEvent.Type.MouseButtonPress:
-            if event.button() == Qt.MouseButton.LeftButton:
-                self.tray_manager.show_version_context_menu(event.pos()) # Use tray_manager
-                return True # Event handled
-        # Pass the event on to the parent class if it's not for the version label or not a left-click
+        """Handle events."""
+        # Pass the event on to the parent class
         return super().eventFilter(obj, event)
+
+    def update_version_display(self):
+        """Updates the Settings button highlighting if a new version is available."""
+        if self.update_manager.update_available:
+            self.settings_button.setStyleSheet("color: orange; font-weight: bold;")
+            self.settings_button.setToolTip(f"New version available: {self.update_manager.latest_version}")
+        else:
+            self.settings_button.setStyleSheet("")
+            self.settings_button.setToolTip("Click to access Settings")
 
 
     def update_latency_display(self):

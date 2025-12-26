@@ -49,6 +49,8 @@ class MainWindow(QMainWindow):
         self.current_untangle_setting = self.untangle_values[0] if self.untangle_values else 6  # Default value
         # Track if untangle has been used at least once
         self.untangle_button_clicked = False
+        # Track if untangle button has been clicked in this session (for first-click behavior)
+        self.first_untangle_click_done = False
         
         # Will store the initial node positions
         self.initial_node_positions = None
@@ -232,6 +234,11 @@ class MainWindow(QMainWindow):
         # Also update undo/redo buttons when connections change in the scene
         self.scene.scene_connections_changed.connect(self.update_graph_connection_buttons_state)
         self.scene.scene_connections_changed.connect(self._update_graph_undo_redo_buttons_state)
+
+        # Reset untangle first-click tracking on layout changes
+        self.scene.node_states_changed.connect(self._reset_untangle_first_click)
+        self.connection_manager.client_added.connect(self._reset_untangle_first_click)
+        self.connection_manager.client_removed.connect(self._reset_untangle_first_click)
  
         # Connect view's zoom_changed signal to handle saving zoom state
         self.view.zoom_changed.connect(self.handle_zoom_changed)
@@ -432,6 +439,14 @@ class MainWindow(QMainWindow):
         # print(f"Handling zoom change event in MainWindow: {zoom_level}") # Silenced
         # Save node positions, zoom level, and untangle setting
         self.scene.save_node_states(graph_zoom_level=zoom_level, current_untangle_setting=self.current_untangle_setting)
+
+    @pyqtSlot()
+    def _reset_untangle_first_click(self, *args):
+        """Resets the untangle button first-click tracking when graph layout changes."""
+        # Only reset if we have actually clicked it once, to avoid unnecessary writes/logic if it's already False
+        if self.first_untangle_click_done:
+            self.first_untangle_click_done = False
+            # print("Graph layout changed, resetting untangle first-click tracking")
         
     def _handle_untangle(self):
         """Handles the untangle button action. Cycles through layouts, or reloads with Shift."""
@@ -439,7 +454,7 @@ class MainWindow(QMainWindow):
         modifiers = QApplication.keyboardModifiers()
         is_shift_pressed = modifiers == Qt.KeyboardModifier.ShiftModifier
 
-        if not is_shift_pressed:
+        if not is_shift_pressed and self.first_untangle_click_done:
             # Cycle to the next value if Shift is not held
             if not self.untangle_values:
                 self.untangle_values = app_config.DEFAULT_UNTANGLE_VALUES
@@ -486,6 +501,7 @@ class MainWindow(QMainWindow):
         # Update tooltip
         next_value = self._get_next_untangle_value()
         self.untangle_button_clicked = True
+        self.first_untangle_click_done = True
         
         if current_setting == ORIGINAL_LAYOUT:
             current_display = "original layout (saved)" if self.initial_node_positions else "original layout"

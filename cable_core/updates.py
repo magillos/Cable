@@ -11,6 +11,8 @@ class UpdateManager:
     def __init__(self, app, app_version): # Add app_version parameter
         self.app = app
         self.app_version = app_version # Store app_version
+        self.latest_version = None
+        self.update_available = False
 
     def _initial_update_check(self):
         """Performs the update check only if the setting is enabled."""
@@ -32,7 +34,10 @@ class UpdateManager:
             if not tags:
                 print("No tags found on GitHub.")
                 # Indicate check completed, no update found
-                self.app.version_label.setText(f'<a href="https://github.com/magillos/Cable/releases" style="color: grey; text-decoration: none;">{self.app_version}</a>') # Use self.app_version
+                self.update_available = False
+                self.latest_version = None
+                if hasattr(self.app, 'update_version_display'):
+                    self.app.update_version_display()
                 if manual_check:
                     show_timed_messagebox(self.app, QMessageBox.Icon.Information, "Update Check", "No new version found (no tags).", duration=1000)
                 return
@@ -54,20 +59,24 @@ class UpdateManager:
                 print(f"Current version: {current_app_version}, Latest GitHub version: {latest_version}")
                 if latest_version > current_app_version:
                     print("Newer version found!")
-                    # Update label style to orange and add update info
-                    self.app.version_label.setText(f'<a href="https://github.com/magillos/Cable/releases" style="color: orange; text-decoration: none;">{self.app_version} (Update available: {latest_version})</a>') # Use self.app_version
-                    # QMessageBox.information(self.app, "Update Available", f"A newer version ({latest_version}) is available!") # Changed self to self.app
+                    self.update_available = True
+                    self.latest_version = latest_version
                 else:
                     print("Application is up to date.")
-                    # Ensure label is default color (grey) if already up-to-date
-                    self.app.version_label.setText(f'<a href="https://github.com/magillos/Cable/releases" style="color: grey; text-decoration: none;">{self.app_version}</a>') # Use self.app_version
+                    self.update_available = False
+                    self.latest_version = latest_version
                     if manual_check:
                         show_timed_messagebox(self.app, QMessageBox.Icon.Information, "Update Check", "Application is up to date.", duration=1000)
             else:
                 print("Could not determine the latest version from tags.")
-                self.app.version_label.setText(f'<a href="https://github.com/magillos/Cable/releases" style="color: grey; text-decoration: none;">{self.app_version}</a>') # Use self.app_version
+                self.update_available = False
+                self.latest_version = None
                 if manual_check:
                     show_timed_messagebox(self.app, QMessageBox.Icon.Warning, "Update Check", "Could not determine the latest version.", duration=1000)
+
+            # Update the UI display if the method exists
+            if hasattr(self.app, 'update_version_display'):
+                self.app.update_version_display()
 
 
         except requests.exceptions.RequestException as e:

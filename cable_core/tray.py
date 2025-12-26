@@ -1,6 +1,7 @@
 import os
 import sys
-from PyQt6.QtWidgets import QSystemTrayIcon, QMenu, QApplication, QMessageBox
+from PyQt6.QtWidgets import (QSystemTrayIcon, QMenu, QApplication, QMessageBox, 
+                             QLabel, QWidgetAction)
 from PyQt6.QtGui import QIcon, QAction, QActionGroup
 from PyQt6.QtCore import Qt, QProcess
 
@@ -283,6 +284,26 @@ class TrayManager:
         # Add separator between restore settings and update options
         context_menu.addSeparator()
 
+        # Add version label above check for updates
+        version_container = QLabel()
+        version_container.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        version_container.setContentsMargins(10, 5, 10, 5)
+        
+        curr_version = self.app.update_manager.app_version
+        if self.app.update_manager.update_available:
+            latest = self.app.update_manager.latest_version
+            version_text = f'<a href="https://github.com/magillos/Cable/releases" style="color: orange; text-decoration: none;">Version: {curr_version} (Update: {latest})</a>'
+        else:
+            version_text = f'<a href="https://github.com/magillos/Cable/releases" style="color: grey; text-decoration: none;">Version: {curr_version}</a>'
+        
+        version_container.setText(version_text)
+        version_container.setOpenExternalLinks(True)
+        version_container.setTextFormat(Qt.TextFormat.RichText)
+
+        version_widget_action = QWidgetAction(self.app)
+        version_widget_action.setDefaultWidget(version_container)
+        context_menu.addAction(version_widget_action)
+
         check_now_action = QAction("Check for new version", self.app)
         # Use lambda to pass manual_check=True
         check_now_action.triggered.connect(lambda: self.app.update_manager.check_for_updates(manual_check=True))
@@ -301,13 +322,34 @@ class TrayManager:
         
         context_menu.addSeparator() # Add separator before "Other Settings"
 
-        # Add "Other Settings" menu item at the very bottom
+        # Add "Other Settings" menu item
         other_settings_action = QAction("Other Settings", self.app)
         other_settings_action.triggered.connect(self._show_other_settings_dialog)
         context_menu.addAction(other_settings_action)
 
+        context_menu.addSeparator()
+
+
+
+        context_menu.addSeparator()
+
+        # Add Buy Me a Coffee link at the very bottom
+        coffee_container = QLabel()
+        coffee_container.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        coffee_container.setContentsMargins(10, 0, 10, 10)
+        
+        coffee_text = '<a href="https://buymeacoffee.com/magillos" style="color: #FF813F; text-decoration: none; font-weight: bold;">☕ Buy me a coffee</a>'
+        
+        coffee_container.setText(coffee_text)
+        coffee_container.setOpenExternalLinks(True)
+        coffee_container.setTextFormat(Qt.TextFormat.RichText)
+        
+        coffee_widget_action = QWidgetAction(self.app)
+        coffee_widget_action.setDefaultWidget(coffee_container)
+        context_menu.addAction(coffee_widget_action)
+
         # Show the menu at the global position of the click
-        context_menu.exec(self.app.version_label.mapToGlobal(pos)) # Use app's label
+        context_menu.exec(self.app.settings_button.mapToGlobal(pos)) # Use app's settings button
 
     def _show_other_settings_dialog(self):
         """Opens the Other Settings dialog."""

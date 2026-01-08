@@ -223,11 +223,14 @@ class MIDIMatrixWidget(QWidget):
                         continue
 
                 if client_name not in client_ports:
-                    client_ports[client_name] = {'inputs': [], 'outputs': [], 'color': self._generate_client_color(client_name)}
+                    client_ports[client_name] = {'inputs': [], 'outputs': []}
                 client_ports[client_name]['inputs' if port.is_input else 'outputs'].append(port.name)
 
             # Sort clients
             sorted_clients = sorted(client_ports.keys())
+
+            # Assign colors
+            self._assign_client_colors(sorted_clients, client_ports)
 
             # Organize ports for matrix display
             for client_name in sorted_clients:
@@ -277,20 +280,38 @@ class MIDIMatrixWidget(QWidget):
         except Exception as e:
             print(f"Error loading connections: {e}")
 
-    def _generate_client_color(self, client_name):
-        """Generate a consistent color for a client."""
-        # Use client name to generate consistent color
-        hash_value = hash(client_name) + self.color_seed_offset
-        self.color_generator.seed(hash_value)
-
-        # Determine if we're in dark mode or light mode
+    def _assign_client_colors(self, sorted_clients, client_ports):
+        """Assign unique colors to clients."""
+        # Determine mode
         window_color = self.palette().color(QPalette.ColorRole.Window)
-        brightness = (window_color.red() + window_color.green() + window_color.blue()) / 3
+        # Check brightness
+        is_dark_mode = (window_color.red() + window_color.green() + window_color.blue()) / 3 < 128
 
-        if brightness < 128:  # Dark mode - use high contrast colors against dark backgrounds
-            # Predefined set of bright, high-contrast colors for dark mode
-            # These colors provide excellent readability on dark backgrounds
-            dark_mode_colors = [
+        palette = self._get_color_palette(is_dark_mode)
+        used_indices = set()
+
+        for client_name in sorted_clients:
+            # Generate a consistent starting index for this client
+            hash_value = hash(client_name) + self.color_seed_offset
+            # Ensure positive index
+            start_index = abs(hash_value) % len(palette)
+
+            index = start_index
+            # Linear probe to find unused color
+            attempts = 0
+            while index in used_indices and attempts < len(palette):
+                index = (index + 1) % len(palette)
+                attempts += 1
+
+            # Assign color
+            client_ports[client_name]['color'] = palette[index]
+            used_indices.add(index)
+
+    def _get_color_palette(self, is_dark_mode):
+        """Get the color palette based on the theme."""
+        if is_dark_mode:
+            # Extended palette for dark mode
+            return [
                 QColor(255, 128, 0),   # Bright orange
                 QColor(255, 255, 0),   # Bright yellow
                 QColor(0, 255, 0),     # Bright green
@@ -303,16 +324,27 @@ class MIDIMatrixWidget(QWidget):
                 QColor(144, 238, 144), # Light green
                 QColor(255, 182, 193), # Light pink
                 QColor(240, 230, 140), # Khaki
+                # Additional colors to reduce collisions
+                QColor(255, 215, 0),   # Gold
+                QColor(255, 99, 71),   # Tomato
+                QColor(127, 255, 212), # Aquamarine
+                QColor(220, 20, 60),   # Crimson
+                QColor(173, 255, 47),  # GreenYellow
+                QColor(255, 105, 180), # HotPink
+                QColor(0, 250, 154),   # MediumSpringGreen
+                QColor(255, 140, 0),   # DarkOrange
             ]
-            # Use hash to consistently select from the color set
-            color_index = hash_value % len(dark_mode_colors)
-            return dark_mode_colors[color_index]
-        else:  # Light mode - use dark colors
-            # Generate darker HSV colors for light backgrounds
-            hue = self.color_generator.randint(0, 359)
-            saturation = 180 + self.color_generator.randint(0, 75)  # 180-255 for good saturation
-            value = 50 + self.color_generator.randint(0, 100)      # 50-150 for dark colors
-            return QColor.fromHsv(hue, saturation, value)
+        else:
+            # Generate a fixed palette for light mode to ensure distinctness
+            # while maintaining the dark/rich feel suitable for light backgrounds
+            colors = []
+            count = 20
+            for i in range(count):
+                hue = int(i * 360 / count)
+                saturation = 200 + (i % 3) * 20
+                value = 80 + (i % 2) * 50
+                colors.append(QColor.fromHsv(hue, saturation, value))
+            return colors
 
     def is_connected(self, output_port, input_port):
         """Check if two ports are connected."""

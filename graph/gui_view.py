@@ -130,7 +130,7 @@ class JackGraphView(QGraphicsView):
     def mousePressEvent(self, event: QMouseEvent):
         """Override mouse press to set closed hand cursor during drag or initiate panning."""
         if event.button() == Qt.MouseButton.MiddleButton or \
-           (event.button() == Qt.MouseButton.LeftButton and (event.modifiers() & (Qt.KeyboardModifier.ShiftModifier | Qt.KeyboardModifier.ControlModifier))):
+           (event.button() == Qt.MouseButton.LeftButton and (event.modifiers() & Qt.KeyboardModifier.ShiftModifier)):
             self._is_panning = True
             self._last_pan_pos = event.pos()
             self.viewport().setCursor(Qt.CursorShape.OpenHandCursor) # Indicate grabbable

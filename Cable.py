@@ -20,6 +20,7 @@ from cable_core.pipewire import PipewireManager # Added import
 from cable_core.process import ProcessManager
 from cable_core.updates import UpdateManager # Added import
 from cable_core.app_config import APP_VERSION # Import APP_VERSION
+from cable_core.embedded_settings_panel import EmbeddedSettingsPanel # Import embedded settings panel
 from cable_core import app_config
 from cables.config.preset_manager import PresetManager
 from PyQt6.QtCore import Qt, QTimer, QFile, QMargins, QProcess, QEvent
@@ -28,7 +29,7 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                              QComboBox, QLineEdit, QPushButton, QLabel,
                              QSpacerItem, QSizePolicy, QMessageBox, QGroupBox,
                              QCheckBox, QSystemTrayIcon, QMenu, QDialog, QDialogButtonBox,
-                             QScrollArea, QWidgetAction)
+                             QScrollArea, QWidgetAction, QSplitter)
 
 # -------------------------
 
@@ -57,9 +58,10 @@ class PipeWireSettingsApp(QWidget):
     DEFAULT_SAMPLE_RATE_VALUES = [44100, 48000, 88200, 96000, 176400, 192000]
     # Comment block to ensure it stays in config.ini
 
-    def __init__(self, is_minimized_startup=False): # Add parameter
-        super().__init__()
+    def __init__(self, is_minimized_startup=False, embedded=False, parent=None):
+        super().__init__(parent)
         self.is_minimized_startup = is_minimized_startup # Store the flag
+        self.embedded = embedded # Store embedded mode flag
         self.flatpak_env = os.path.exists('/.flatpak-info')
         self.appimage_path = self._detect_appimage_path()  # Detect AppImage path
         self.tray_icon = None  # Initialize tray_icon here
@@ -70,7 +72,7 @@ class PipeWireSettingsApp(QWidget):
         self.cables_executable_path = None  # Will be set during init
         # Initialize autostart manager (will be updated after config is loaded)
         self.autostart_manager = AutostartManager(self.flatpak_env, self.appimage_path)
-        # Instantiate ConfigManager *after* UI elements and AutostartManager are initialized
+        # Instantiate ConfigManager
         self.config_manager = ConfigManager(self)
         self.system_manager = SystemManager(self) # Instantiate SystemManager
         self.tray_manager = TrayManager(self) # Instantiate TrayManager
@@ -131,6 +133,13 @@ class PipeWireSettingsApp(QWidget):
 
         # Conditionally check for updates shortly after startup
         QTimer.singleShot(2000, self.update_manager._initial_update_check) # Check after 2 seconds if enabled (using UpdateManager)
+        
+        # Timer for debouncing splitter save (embedded mode)
+        self._splitter_save_timer = QTimer(self)
+        self._splitter_save_timer.setSingleShot(True)
+        self._splitter_save_timer.setInterval(500)
+        self._splitter_save_timer.timeout.connect(self._perform_save_embedded_splitter_position)
+        self._pending_splitter_pos = None
 
     def _detect_appimage_path(self):
         """Detect if the application is running from an AppImage and return the path."""
@@ -161,7 +170,7 @@ class PipeWireSettingsApp(QWidget):
 
         return group
 
-    def _create_audio_setting_section(self, title, combo_box, apply_button, reset_button, refresh_button, apply_slot, reset_slot, refresh_slot, default_values_key, default_values_list):
+    def _create_audio_setting_section(self, title, combo_box, apply_button, reset_button, refresh_button, apply_slot, reset_slot, refresh_slot, default_values_key, default_values_list, vertical_buttons=False):
         """Helper method to create UI sections for Quantum and Sample Rate."""
         layout = QVBoxLayout()
         select_layout = QHBoxLayout()
@@ -179,7 +188,12 @@ class PipeWireSettingsApp(QWidget):
 
         layout.addLayout(select_layout)
 
-        buttons_layout = QHBoxLayout()
+        # Use vertical or horizontal button layout based on parameter
+        if vertical_buttons:
+            buttons_layout = QVBoxLayout()
+        else:
+            buttons_layout = QHBoxLayout()
+        
         apply_button.setText(f"Apply {title}")
         apply_button.clicked.connect(apply_slot)
         buttons_layout.addWidget(apply_button)
@@ -226,33 +240,23 @@ class PipeWireSettingsApp(QWidget):
             print(f"Dialog accepted for {title}. Selected values: {selected_values}")
 
             # Update the config file
-            config = configparser.ConfigParser(allow_no_value=True)
-            try:
-                # Read existing config first to preserve other settings
-                config.read(config_path)
-                if 'DEFAULT' not in config:
-                    config['DEFAULT'] = {} # Should not happen due to ensure_config_lists, but safety first
+            # Construct the new comma-separated string, commenting out unselected values
+            new_value_parts = []
+            for val in all_values:  # Use all_values instead of default_values_list
+                if val in selected_values:
+                    new_value_parts.append(str(val))
+                else:
+                    new_value_parts.append(f"#{val}") # Comment out unselected values
 
-                # Construct the new comma-separated string, commenting out unselected values
-                new_value_parts = []
-                for val in all_values:  # Use all_values instead of default_values_list
-                    if val in selected_values:
-                        new_value_parts.append(str(val))
-                    else:
-                        new_value_parts.append(f"#{val}") # Comment out unselected values
+            self.config_manager.set_str_setting(config_key, ','.join(new_value_parts))
+            self.config_manager.flush()
+            print(f"Updated '{config_key}' in {config_path}")
 
-                config['DEFAULT'][config_key] = ','.join(new_value_parts)
+            # Refresh the UI to reflect changes
+            self.refresh_all_settings()
 
-                # Write the updated config back using the manager's helper
-                self.config_manager._write_config(config)
-                print(f"Updated '{config_key}' in {config_path}")
+            # No exception handling needed here as ConfigManager handles internal errors, but keeping UI refresh is good.
 
-                # Refresh the UI to reflect changes
-                self.refresh_all_settings()
-
-            except Exception as e:
-                print(f"Error updating config file {config_path} for key '{config_key}': {e}")
-                QMessageBox.critical(self, "Config Error", f"Failed to update configuration file:\n{e}")
 
     def edit_quantum_list(self):
         """Opens the dialog to edit the quantum values list."""
@@ -277,6 +281,9 @@ class PipeWireSettingsApp(QWidget):
         self.reset_sample_rate_button = QPushButton()
         self.refresh_sample_rate_button = QPushButton()
 
+        # Use vertical buttons in embedded mode
+        use_vertical_buttons = self.embedded
+
         # Quantum Section using helper
         quantum_group = self._create_audio_setting_section(
             title="Quantum",
@@ -288,10 +295,10 @@ class PipeWireSettingsApp(QWidget):
             reset_slot=self.pipewire_manager.reset_quantum_settings, # Use manager
             refresh_slot=self.refresh_all_settings,
             default_values_key='quantum_values',
-            default_values_list=self.DEFAULT_QUANTUM_VALUES
+            default_values_list=self.DEFAULT_QUANTUM_VALUES,
+            vertical_buttons=use_vertical_buttons
         )
         self.reset_quantum_button.setToolTip("Restores default quantum/buffer") # Add tooltip
-        main_layout.addWidget(quantum_group)
 
         # Sample Rate Section using helper
         sample_rate_group = self._create_audio_setting_section(
@@ -304,10 +311,10 @@ class PipeWireSettingsApp(QWidget):
             reset_slot=self.pipewire_manager.reset_sample_rate_settings, # Use manager
             refresh_slot=self.refresh_all_settings,
             default_values_key='sample_rate_values',
-            default_values_list=self.DEFAULT_SAMPLE_RATE_VALUES
+            default_values_list=self.DEFAULT_SAMPLE_RATE_VALUES,
+            vertical_buttons=use_vertical_buttons
         )
         self.reset_sample_rate_button.setToolTip("Restores default sample rate") # Add tooltip
-        main_layout.addWidget(sample_rate_group)
 
         # Audio Profile Section
         profile_layout = QVBoxLayout()
@@ -338,8 +345,7 @@ class PipeWireSettingsApp(QWidget):
         self.apply_profile_button.clicked.connect(self.pipewire_manager.apply_profile_settings) # Use manager
         profile_layout.addWidget(self.apply_profile_button)
 
-        main_layout.addWidget(self.create_section_group("Audio Profile", profile_layout))
-
+        profile_group = self.create_section_group("Audio Profile", profile_layout)
 
         # Latency Section
         latency_layout = QVBoxLayout()
@@ -364,7 +370,10 @@ class PipeWireSettingsApp(QWidget):
         self.apply_latency_button.clicked.connect(self.pipewire_manager.apply_latency_settings) # Use manager
 
         # Create a layout for the latency buttons
-        latency_buttons_layout = QHBoxLayout()
+        if use_vertical_buttons:
+            latency_buttons_layout = QVBoxLayout()
+        else:
+            latency_buttons_layout = QHBoxLayout()
 
         # Add the existing Apply button
         latency_buttons_layout.addWidget(self.apply_latency_button)
@@ -380,11 +389,16 @@ class PipeWireSettingsApp(QWidget):
 
         self.latency_input.returnPressed.connect(self.pipewire_manager.apply_latency_settings) # Use manager
 
-        main_layout.addWidget(self.create_section_group("Latency Offset", latency_layout))
+        latency_group = self.create_section_group("Latency Offset", latency_layout)
 
         # Restart Buttons Section
         restart_layout = QVBoxLayout()
-        restart_buttons_layout = QHBoxLayout()
+        # Use vertical layout for restart buttons in embedded mode
+        if self.embedded:
+            restart_buttons_layout = QVBoxLayout()
+        else:
+            restart_buttons_layout = QHBoxLayout()
+        
         self.restart_wireplumber_button = QPushButton("Restart Wireplumber")
         self.restart_wireplumber_button.clicked.connect(self.system_manager.confirm_restart_wireplumber) # Use system_manager
         self.set_button_style(self.restart_wireplumber_button)
@@ -396,14 +410,60 @@ class PipeWireSettingsApp(QWidget):
         restart_buttons_layout.addWidget(self.restart_pipewire_button)
 
         restart_layout.addLayout(restart_buttons_layout)
-        main_layout.addWidget(self.create_section_group("Restart Services", restart_layout))
+        restart_group = self.create_section_group("Restart Services", restart_layout)
+
+        # Layout arrangement depends on embedded mode
+        if self.embedded:
+            # Splitter layout: cable content (left) + spacer/settings panel (right)
+            self.embedded_splitter = QSplitter(Qt.Orientation.Horizontal)
+            
+            # Create cable content column
+            cable_column = QWidget()
+            cable_column.setMinimumWidth(50)
+            cable_layout = QVBoxLayout(cable_column)
+            cable_layout.setContentsMargins(0, 0, 0, 0)
+            cable_layout.addWidget(quantum_group)
+            cable_layout.addWidget(sample_rate_group)
+            cable_layout.addWidget(profile_group)
+            cable_layout.addWidget(latency_group)
+            cable_layout.addWidget(restart_group)
+            cable_layout.addStretch()
+            
+            self.embedded_splitter.addWidget(cable_column)
+            
+            # Add empty spacer widget (visible when settings hidden)
+            self.embedded_spacer = QWidget()
+            self.embedded_splitter.addWidget(self.embedded_spacer)
+            
+            # Create settings panel (hidden by default, will replace spacer when shown)
+            self.embedded_settings_panel = EmbeddedSettingsPanel(self)
+            self.embedded_settings_panel.setVisible(False)
+            self.embedded_splitter.addWidget(self.embedded_settings_panel)
+            
+            # Configure splitter
+            self.embedded_splitter.setCollapsible(0, False)
+            self.embedded_splitter.setHandleWidth(6)
+            self.embedded_splitter.setStyleSheet("QSplitter::handle { background: transparent; }")
+            self.embedded_splitter.splitterMoved.connect(self._save_embedded_splitter_position)
+            
+            # Mark for restore after first show
+            self._embedded_splitter_restored = False
+            
+            main_layout.addWidget(self.embedded_splitter)
+        else:
+            # Original vertical layout for standalone mode
+            main_layout.addWidget(quantum_group)
+            main_layout.addWidget(sample_rate_group)
+            main_layout.addWidget(profile_group)
+            main_layout.addWidget(latency_group)
+            main_layout.addWidget(restart_group)
 
 
 
         #Connections button
-        connections_button = QPushButton("Cables")
-        connections_button.clicked.connect(self.process_manager.open_cables)
-        main_layout.addWidget(connections_button)
+        self.cables_button = QPushButton("Cables")
+        self.cables_button.clicked.connect(self.process_manager.open_cables)
+        main_layout.addWidget(self.cables_button)
 
         self.setLayout(main_layout)
         self.setWindowTitle('Cable')
@@ -442,13 +502,87 @@ class PipeWireSettingsApp(QWidget):
         version_layout.addStretch() # Push button to the right
         self.settings_button = QPushButton("Settings")
         self.settings_button.setToolTip("Click to access Settings")
-        self.settings_button.clicked.connect(lambda: self.tray_manager.show_version_context_menu(self.settings_button.rect().bottomLeft()))
+        
+        # In embedded mode, toggle inline settings panel; otherwise show popup menu
+        if self.embedded:
+            self.settings_button.clicked.connect(self._toggle_embedded_settings)
+        else:
+            self.settings_button.clicked.connect(lambda: self.tray_manager.show_version_context_menu(self.settings_button.rect().bottomLeft()))
         
         version_layout.addWidget(self.settings_button)
         main_layout.addLayout(version_layout) # Add to the main layout
 
+        # Apply embedded mode UI modifications
+        self._apply_embedded_mode_ui()
 
+    def _apply_embedded_mode_ui(self):
+        """Hide UI elements that shouldn't appear when embedded in Cables window."""
+        if not self.embedded:
+            # When not embedded, check if integrated mode is enabled and hide Cables button
+            integrated = self.config_manager.get_bool('integrate_cable_and_cables', False)
+            if integrated and hasattr(self, 'cables_button'):
+                self.cables_button.hide()
+            return
+        
+        # In embedded mode, hide elements that would be redundant or problematic
+        # Keep settings_button visible for access to settings
+        if hasattr(self, 'cables_button'):
+            self.cables_button.hide()
+        if hasattr(self, 'tray_toggle_checkbox'):
+            self.tray_toggle_checkbox.hide()
 
+    def _toggle_embedded_settings(self):
+        """Toggle visibility of the embedded settings panel."""
+        if hasattr(self, 'embedded_settings_panel') and hasattr(self, 'embedded_splitter'):
+            is_visible = self.embedded_settings_panel.isVisible()
+            
+            # Preserve the left column width
+            sizes = self.embedded_splitter.sizes()
+            left_width = sizes[0]
+            total_width = self.embedded_splitter.width()
+            remaining = max(0, total_width - left_width)
+            
+            if is_visible:
+                # Hiding settings, show spacer
+                self.embedded_settings_panel.setVisible(False)
+                self.embedded_spacer.setVisible(True)
+                self.embedded_splitter.setSizes([left_width, remaining, 0])
+            else:
+                # Showing settings, hide spacer
+                self.embedded_spacer.setVisible(False)
+                self.embedded_settings_panel.setVisible(True)
+                self.embedded_settings_panel.refresh_settings()
+                self.embedded_splitter.setSizes([left_width, 0, remaining])
+
+    def _save_embedded_splitter_position(self, pos, index):
+        """Save the embedded splitter position to config with debounce."""
+        if hasattr(self, 'embedded_splitter'):
+            sizes = self.embedded_splitter.sizes()
+            if sizes[0] > 0:
+                self._pending_splitter_pos = sizes[0]
+                self._splitter_save_timer.start()
+
+    def _perform_save_embedded_splitter_position(self):
+        """Actually save the splitter position to config."""
+        if self._pending_splitter_pos is not None:
+            self.config_manager.set_int_setting("EMBEDDED_COLUMN_WIDTH", self._pending_splitter_pos)
+            self.config_manager.flush()
+
+    def showEvent(self, event):
+        """Handle show event to restore splitter size after widget is visible."""
+        super().showEvent(event)
+        if self.embedded and hasattr(self, '_embedded_splitter_restored') and not self._embedded_splitter_restored:
+            self._embedded_splitter_restored = True
+            QTimer.singleShot(0, self._restore_embedded_splitter_size)
+
+    def _restore_embedded_splitter_size(self):
+        """Restore the embedded splitter size from config."""
+        if hasattr(self, 'embedded_splitter'):
+            saved_width = self.config_manager.get_int_setting("EMBEDDED_COLUMN_WIDTH", 350)
+            total_width = self.embedded_splitter.width()
+            # Distribute remaining space between spacer and hidden settings panel
+            remaining = max(0, total_width - saved_width)
+            self.embedded_splitter.setSizes([saved_width, remaining, 0])
 
     def closeEvent(self, event):
         # If tray is enabled, hide the window instead of closing
@@ -633,8 +767,57 @@ class PipeWireSettingsApp(QWidget):
         """Clean up resources before quitting."""
         print("Performing cleanup before quitting...")
         # Stop the daemon directly
-        preset_manager = PresetManager() # Create an instance to access the stop method
+        preset_manager = PresetManager()
         preset_manager.stop_daemon_mode()
+        # Flush config to disk
+        if hasattr(self, 'config_manager') and self.config_manager:
+            self.config_manager.flush()
+
+def _check_integrated_mode():
+    """Check if integrated mode is enabled by reading config directly."""
+    config_path = os.path.expanduser("~/.config/cable/config.ini")
+    if os.path.exists(config_path):
+        try:
+            config = configparser.ConfigParser()
+            config.read(config_path, encoding='utf-8')
+            return config.getboolean('DEFAULT', 'integrate_cable_and_cables', fallback=False)
+        except (configparser.Error, ValueError):
+            pass
+    return False
+
+def _find_connection_manager():
+    """Find connection-manager.py in various possible locations."""
+    # Possible locations to search
+    search_paths = [
+        # Same directory as this script (development mode)
+        os.path.dirname(os.path.abspath(__file__)),
+        # System-wide installation locations
+        '/usr/share/cable',
+        '/usr/local/share/cable',
+        # Flatpak locations
+        '/app/bin',  # Flatpak installs to /app/bin
+        '/app/share/cable',
+        # User local installation
+        os.path.expanduser('~/.local/share/cable'),
+        os.path.expanduser('~/.local/bin'),
+    ]
+    
+    # Also check directories in sys.path (for pip-installed packages)
+    for sys_path in sys.path:
+        if sys_path and os.path.isdir(sys_path):
+            search_paths.append(sys_path)
+    
+    for path in search_paths:
+        candidate = os.path.join(path, 'connection-manager.py')
+        if os.path.exists(candidate):
+            return candidate
+    
+    # Also try using shutil.which to find it in PATH
+    result = shutil.which('connection-manager.py')
+    if result:
+        return result
+    
+    return None
 
 def main():
     # Parse command line arguments
@@ -642,6 +825,21 @@ def main():
     parser.add_argument('--minimized', action='store_true',
                       help='Start application minimized to tray')
     args = parser.parse_args(sys.argv[1:])  # Skip the first argument (script name)
+    
+    # Check if integrated mode is enabled - if so, launch connection-manager.py instead
+    if _check_integrated_mode():
+        print("Integrated mode enabled, launching Cables (connection-manager.py) instead...")
+        # Find the connection-manager.py script
+        connection_manager_path = _find_connection_manager()
+        
+        if connection_manager_path:
+            print(f"Found connection-manager.py at: {connection_manager_path}")
+            # Replace current process with connection-manager.py
+            os.execv(sys.executable, [sys.executable, connection_manager_path] + sys.argv[1:])
+        else:
+            print("Warning: connection-manager.py not found in any known location")
+            print(f"Searched in: {os.path.dirname(os.path.abspath(__file__))}, /usr/share/cable, /app/bin, etc.")
+            print("Falling back to standalone Cable mode.")
     
     # Create application instance
     app = CableApp(sys.argv)

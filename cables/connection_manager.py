@@ -101,7 +101,7 @@ class JackConnectionManager(QMainWindow):
         self.ui_manager = UIManager(self, self.config_manager)
 
         # Initialize Connection Visualizer
-        self.connection_visualizer = ConnectionVisualizer(self.client, self.ui_manager)
+        self.connection_visualizer = ConnectionVisualizer(self.client, self.ui_manager, self.config_manager)
         
         self.client.set_port_registration_callback(self._handle_port_registration)
         self.client.set_client_registration_callback(self._handle_client_registration)
@@ -230,6 +230,9 @@ class JackConnectionManager(QMainWindow):
         if hasattr(self, 'midi_presets_button') and self.midi_presets_button:
             self.midi_presets_button.clicked.connect(self.preset_handler._show_preset_menu)
         
+        # Connect JACK signals to connection view refresh for event-driven updates
+        self._connect_jack_signals_to_connection_views()
+        
         self.client.activate()
 
         # Clean up orphaned unified sinks immediately on startup (before any UI)
@@ -340,6 +343,70 @@ class JackConnectionManager(QMainWindow):
     def _setup_ui(self):
         # UI setup is now handled by UIManager
         pass
+
+    def closeEvent(self, event):
+        """Handle window close event - hide to tray if Cable is embedded and tray is enabled."""
+        # Check if Cable is embedded and has tray enabled
+        if hasattr(self, 'cable_widget') and self.cable_widget:
+            cable = self.cable_widget
+            if cable.tray_enabled and cable.tray_manager.tray_icon and cable.tray_manager.tray_icon.isVisible():
+                # Hide to tray instead of closing
+                event.ignore()
+                self.hide()
+                return
+        
+        # Stop aj-snapshot daemon on quit
+        self._cleanup_on_quit()
+        
+        # Otherwise, close normally
+        event.accept()
+    
+    def _cleanup_on_quit(self):
+        """Cleanup resources when the application is quitting."""
+        if hasattr(self, 'preset_manager') and self.preset_manager:
+            self.preset_manager.stop_daemon_mode()
+        if hasattr(self, 'config_manager') and self.config_manager:
+            self.config_manager.flush()
+        # Flush graph node positions
+        if hasattr(self, 'graph_scene') and self.graph_scene and hasattr(self.graph_scene, 'node_config_manager'):
+            self.graph_scene.node_config_manager.flush()
+    
+    def _connect_jack_signals_to_connection_views(self):
+        """
+        Connect JACK event signals to connection view refresh.
+        
+        This enables event-driven refresh when connections change,
+        ensuring the visualization updates without constant polling.
+        """
+        # Audio connection view: refresh on any connection change
+        if hasattr(self, 'connection_view') and self.connection_view:
+            self.connection_made.connect(
+                lambda out, inp: self.connection_view.request_refresh()
+            )
+            self.connection_broken.connect(
+                lambda out, inp: self.connection_view.request_refresh()
+            )
+            self.port_added.connect(
+                lambda *args: self.connection_view.request_refresh()
+            )
+            self.port_removed.connect(
+                lambda *args: self.connection_view.request_refresh()
+            )
+        
+        # MIDI connection view: refresh on any connection change
+        if hasattr(self, 'midi_connection_view') and self.midi_connection_view:
+            self.connection_made.connect(
+                lambda out, inp: self.midi_connection_view.request_refresh()
+            )
+            self.connection_broken.connect(
+                lambda out, inp: self.midi_connection_view.request_refresh()
+            )
+            self.port_added.connect(
+                lambda *args: self.midi_connection_view.request_refresh()
+            )
+            self.port_removed.connect(
+                lambda *args: self.midi_connection_view.request_refresh()
+            )
     
     def refresh_visualizations(self):
         if self.port_type == 'audio':

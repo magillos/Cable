@@ -35,16 +35,15 @@ class OtherSettingsDialog(QDialog):
                 "range": (600, 2000),
                 "default_key": "CONN_MANAGER_INITIAL_HEIGHT"
             },
-            "CONNECTION_VIEW_INITIAL_WIDTH": {
-                "label": "Connection area width\n"
-                "in Audio and MIDI tab",
-                "range": (100, 300),
-                "default_key": "CONNECTION_VIEW_INITIAL_WIDTH"
-            },
             "PWTOP_FONT_SIZE_PT": {
                 "label": "pw-top font size",
-                "range": (8, 20), # Reasonable range for font size
+                "range": (8, 20),
                 "default_key": "PWTOP_FONT_SIZE_PT"
+            },
+            "CONNECTION_LINE_THICKNESS": {
+                "label": "Cables thickness",
+                "range": (1, 6),
+                "default_key": "CONNECTION_LINE_THICKNESS"
             },
         }
 
@@ -98,7 +97,7 @@ class OtherSettingsDialog(QDialog):
             main_layout.addLayout(h_layout)
 
             # Add line separators after specific settings
-            if key in ["MAIN_WINDOW_INITIAL_HEIGHT", "CONN_MANAGER_INITIAL_HEIGHT", "CONNECTION_VIEW_INITIAL_WIDTH"]:
+            if key in ["MAIN_WINDOW_INITIAL_HEIGHT", "CONN_MANAGER_INITIAL_HEIGHT", "PWTOP_FONT_SIZE_PT"]:
                 separator = QFrame()
                 separator.setFrameShape(QFrame.Shape.HLine)
                 separator.setFrameShadow(QFrame.Shadow.Sunken)
@@ -135,6 +134,18 @@ class OtherSettingsDialog(QDialog):
         midi_matrix_layout.addWidget(self.midi_matrix_checkbox)
         main_layout.addLayout(midi_matrix_layout)
 
+        # Add straight lines checkbox
+        straight_lines_layout = QHBoxLayout()
+        straight_lines_label = QLabel("Use straight connection lines")
+        straight_lines_label.setFixedWidth(max_label_width)
+        straight_lines_layout.addWidget(straight_lines_label)
+
+        self.straight_lines_checkbox = QCheckBox()
+        self.straight_lines_checkbox.setToolTip("Use straight lines instead of curves in Audio/MIDI tabs")
+        straight_lines_layout.addStretch(1)
+        straight_lines_layout.addWidget(self.straight_lines_checkbox)
+        main_layout.addLayout(straight_lines_layout)
+
         # Add split audio/midi checkbox
         self.split_audio_midi_layout = QHBoxLayout()
         self.split_audio_midi_label = QLabel("Split Audio/MIDI clients in Graph")
@@ -147,7 +158,25 @@ class OtherSettingsDialog(QDialog):
         self.split_audio_midi_layout.addWidget(self.split_audio_midi_checkbox)
         main_layout.addLayout(self.split_audio_midi_layout)
 
-        # Add separator after untangle values
+        # Add separator before integrate option
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.HLine)
+        separator.setFrameShadow(QFrame.Shadow.Sunken)
+        main_layout.addWidget(separator)
+
+        # Add integrate Cable and Cables checkbox
+        integrate_layout = QHBoxLayout()
+        integrate_label = QLabel("Integrate Cable and Cables")
+        integrate_label.setFixedWidth(max_label_width)
+        integrate_layout.addWidget(integrate_label)
+
+        self.integrate_checkbox = QCheckBox()
+        self.integrate_checkbox.setToolTip("Show Cable as the first tab in Cables window.\nSimplifies tray menu to single 'Open' option.\nRequires application restart.")
+        integrate_layout.addStretch(1)
+        integrate_layout.addWidget(self.integrate_checkbox)
+        main_layout.addLayout(integrate_layout)
+
+        # Add separator after integrate option
         separator = QFrame()
         separator.setFrameShape(QFrame.Shape.HLine)
         separator.setFrameShadow(QFrame.Shadow.Sunken)
@@ -156,7 +185,6 @@ class OtherSettingsDialog(QDialog):
         button_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.RestoreDefaults |
             QDialogButtonBox.StandardButton.Apply |
-            QDialogButtonBox.StandardButton.Ok |
             QDialogButtonBox.StandardButton.Cancel
         )
         button_box.clicked.connect(self._handle_button_click)
@@ -214,9 +242,17 @@ class OtherSettingsDialog(QDialog):
         enable_midi_matrix = self.config_manager.get_bool('enable_midi_matrix', False)
         self.midi_matrix_checkbox.setChecked(enable_midi_matrix)
 
+        # Load straight lines setting
+        straight_lines = self.config_manager.get_bool('use_straight_lines', False)
+        self.straight_lines_checkbox.setChecked(straight_lines)
+
         # Load split audio/midi setting
         split_audio_midi = self.config_manager.get_bool('GRAPH_SPLIT_AUDIO_MIDI_CLIENTS', False)
         self.split_audio_midi_checkbox.setChecked(split_audio_midi)
+
+        # Load integrate Cable and Cables setting
+        integrate = self.config_manager.get_bool('integrate_cable_and_cables', False)
+        self.integrate_checkbox.setChecked(integrate)
 
     def _show_restart_warning(self):
         msg_box = QMessageBox(self) # Re-add parent
@@ -238,8 +274,14 @@ class OtherSettingsDialog(QDialog):
         # Save MIDI Matrix setting
         self.config_manager.set_bool('enable_midi_matrix', self.midi_matrix_checkbox.isChecked())
 
+        # Save straight lines setting
+        self.config_manager.set_bool('use_straight_lines', self.straight_lines_checkbox.isChecked())
+
         # Save split audio/midi setting
         self.config_manager.set_bool('GRAPH_SPLIT_AUDIO_MIDI_CLIENTS', self.split_audio_midi_checkbox.isChecked())
+
+        # Save integrate Cable and Cables setting
+        self.config_manager.set_bool('integrate_cable_and_cables', self.integrate_checkbox.isChecked())
 
     def _reset_to_defaults(self):
         import shutil
@@ -279,11 +321,8 @@ class OtherSettingsDialog(QDialog):
     def _handle_button_click(self, button):
         if self.sender().buttonRole(button) == QDialogButtonBox.ButtonRole.ApplyRole:
             self._save_settings_to_config()
-            self._show_restart_warning() # Show warning on Apply
-        elif self.sender().buttonRole(button) == QDialogButtonBox.ButtonRole.AcceptRole: # OK button
-            self._save_settings_to_config()  # Save settings on OK
-            self.accept()  # Close dialog with accept
-        elif self.sender().buttonRole(button) == QDialogButtonBox.ButtonRole.ResetRole: # RestoreDefaults button
+            self._show_restart_warning()
+        elif self.sender().buttonRole(button) == QDialogButtonBox.ButtonRole.ResetRole:
             self._reset_to_defaults()
-        elif self.sender().buttonRole(button) == QDialogButtonBox.ButtonRole.RejectRole: # Cancel button
+        elif self.sender().buttonRole(button) == QDialogButtonBox.ButtonRole.RejectRole:
             self.reject()

@@ -740,42 +740,90 @@ class GraphLayouter:
         pairs = [(0, 1), (2, 3), (4, 5), (6, 7)]
         
         for out_idx, in_idx in pairs:
+            if not groups[out_idx] and not groups[in_idx]:
+                continue
+            
+            # For connected pairs, use barycenter heuristic to minimize crossings
+            if out_idx in [0, 4] and groups[out_idx] and groups[in_idx]:
+                # Barycenter heuristic: iteratively sort each side by average position of connected nodes
+                
+                # Helper to calculate node heights for positioning
+                def get_node_heights(node_list):
+                    heights = {}
+                    for n in node_list:
+                        _, h = self._get_node_size(n)
+                        heights[n] = h
+                    return heights
+                
+                out_heights = get_node_heights(groups[out_idx])
+                in_heights = get_node_heights(groups[in_idx])
+                
+                # Helper to calculate Y center positions given an ordered list
+                def calc_y_centers(node_list, heights):
+                    y_centers = {}
+                    y = start_y
+                    for n in node_list:
+                        y_centers[n] = y + heights[n] / 2  # Use center of node
+                        y += heights[n] + self.min_vertical_spacing
+                    return y_centers
+                
+                # Build connection map: output_node -> set of input_nodes
+                out_to_in = {n: set() for n in groups[out_idx]}
+                in_to_out = {n: set() for n in groups[in_idx]}
+                
+                for out_node in groups[out_idx]:
+                    for port in out_node.output_ports.values():
+                        for conn in port.connections:
+                            in_node = conn.dest_port.parentItem()
+                            if in_node in in_to_out:
+                                out_to_in[out_node].add(in_node)
+                                in_to_out[in_node].add(out_node)
+                
+                # Barycenter iterations
+                for _ in range(5):  # Usually converges in 2-3 iterations
+                    # Calculate output Y centers based on current order
+                    out_y = calc_y_centers(groups[out_idx], out_heights)
+                    
+                    # Sort inputs by barycenter (average Y of connected outputs)
+                    def in_barycenter(in_node):
+                        connected = in_to_out[in_node]
+                        if connected:
+                            avg_y = sum(out_y[o] for o in connected) / len(connected)
+                            return (0, avg_y, in_node.client_name.lower())
+                        return (1, 0, in_node.client_name.lower())
+                    
+                    groups[in_idx].sort(key=in_barycenter)
+                    
+                    # Calculate input Y centers based on new order
+                    in_y = calc_y_centers(groups[in_idx], in_heights)
+                    
+                    # Sort outputs by barycenter (average Y of connected inputs)
+                    def out_barycenter(out_node):
+                        connected = out_to_in[out_node]
+                        if connected:
+                            avg_y = sum(in_y[i] for i in connected) / len(connected)
+                            return (0, avg_y, out_node.client_name.lower())
+                        return (1, 0, out_node.client_name.lower())
+                    
+                    groups[out_idx].sort(key=out_barycenter)
+            
             # --- Output Column ---
             max_w_out = 0
             current_y = start_y
-            
-            # Clear previous Y positions for the new set of inputs to align against *current* outputs?
-            # Actually, connected inputs (1) align to connected outputs (0).
-            # Connected MIDI inputs (5) align to connected MIDI outputs (4).
-            # Unconnected ones don't really align by connection.
-            
-            # We keep output_node_y_positions accumulating or reset? 
-            # Ideally we only care about alignment within the relevant block.
-            # But let's keep it simple: populate y positions for the current output group.
-            
-            current_output_y_positions = {}
             
             for node in groups[out_idx]:
                 node_width, node_height = self._get_node_size(node)
                 max_w_out = max(max_w_out, node_width)
                 node.setPos(current_x, current_y)
-                current_output_y_positions[node] = current_y
-                output_node_y_positions[node] = current_y # Update global map
+                output_node_y_positions[node] = current_y
                 current_y += node_height + self.min_vertical_spacing
-            
-            # If this group was empty, we still might need space if the next group exists?
-            # If both out and in are empty, we effectively skip this block visually, 
-            # but we should check if we need to advance X.
-            
-            if not groups[out_idx] and not groups[in_idx]:
-                continue
 
             # Advance X for Input Column
             input_col_x = current_x + max_w_out + col_spacing if groups[out_idx] else current_x
             
             # --- Input Column ---
-            # Re-sort inputs if they are connected types (1 or 5)
-            if in_idx in [1, 5]:
+            # Re-sort inputs if they are connected types (1 or 5) and not already sorted above
+            if in_idx in [1, 5] and out_idx not in [0, 4]:
                 groups[in_idx].sort(key=sort_key_connected_inputs)
             
             max_w_in = 0
@@ -788,9 +836,6 @@ class GraphLayouter:
                 current_y += node_height + self.min_vertical_spacing
             
             # Advance X for next pair
-            # Width of this block is roughly (max_w_out + col_spacing + max_w_in)
-            # But we just need to set current_x for the next loop
-            
             block_width = 0
             if groups[out_idx]:
                 block_width += max_w_out

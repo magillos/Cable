@@ -285,7 +285,7 @@ class JackGraphView(QGraphicsView):
             menu = QMenu(self)
             create_combined_action = menu.addAction("Create virtual sink/source")
             unload_all_sinks_action = menu.addAction("Unload all sinks")
-            save_layout_action = menu.addAction("Save current layout")
+            menu.addSeparator()
             wallpaper_action = menu.addAction("Wallpaper")
 
             # Connect to handlers
@@ -294,7 +294,6 @@ class JackGraphView(QGraphicsView):
                 lambda checked=False, pos=clicked_scene_pos: self._show_combined_sink_dialog(pos)
             )
             unload_all_sinks_action.triggered.connect(self._unload_all_sinks)
-            save_layout_action.triggered.connect(self._request_save_layout)
             wallpaper_action.triggered.connect(self._show_wallpaper_dialog)
 
             menu.exec(event.globalPos())

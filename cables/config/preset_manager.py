@@ -184,34 +184,47 @@ class PresetManager:
             return False
 
     def stop_daemon_mode(self):
-        if not os.path.exists(self.pid_file):
-            print("No aj-snapshot daemon PID file found.")
-            return True
-
-        try:
-            with open(self.pid_file, 'r') as f:
-                pid = int(f.read().strip())
-        except (IOError, ValueError) as e:
-            print(f"Error reading PID file: {e}")
-            os.remove(self.pid_file)
-            return False
-
-        print(f"Attempting to stop aj-snapshot daemon with PID: {pid}")
-        try:
-            os.killpg(os.getpgid(pid), signal.SIGTERM)
-            print(f"Sent SIGTERM to process group of PID {pid}.")
-        except ProcessLookupError:
-            print(f"Process with PID {pid} not found. It may have already been terminated.")
-        except Exception as e:
-            print(f"Error sending SIGTERM to process group {pid}: {e}")
-            try:
-                os.kill(pid, signal.SIGKILL)
-                print(f"Sent SIGKILL to PID {pid} as a fallback.")
-            except Exception as e2:
-                print(f"Failed to kill process with PID {pid}: {e2}")
-                
-        finally:
-            if os.path.exists(self.pid_file):
-                os.remove(self.pid_file)
+        stopped = False
         
-        return True
+        if os.path.exists(self.pid_file):
+            try:
+                with open(self.pid_file, 'r') as f:
+                    pid = int(f.read().strip())
+                print(f"Attempting to stop aj-snapshot daemon with PID: {pid}")
+                try:
+                    os.killpg(os.getpgid(pid), signal.SIGTERM)
+                    print(f"Sent SIGTERM to process group of PID {pid}.")
+                    stopped = True
+                except ProcessLookupError:
+                    print(f"Process with PID {pid} not found. It may have already been terminated.")
+                except Exception as e:
+                    print(f"Error sending SIGTERM to process group {pid}: {e}")
+                    try:
+                        os.kill(pid, signal.SIGTERM)
+                        print(f"Sent SIGTERM to PID {pid} directly.")
+                        stopped = True
+                    except ProcessLookupError:
+                        print(f"Process {pid} not found.")
+                    except Exception as e2:
+                        print(f"Failed to kill process with PID {pid}: {e2}")
+            except (IOError, ValueError) as e:
+                print(f"Error reading PID file: {e}")
+            finally:
+                if os.path.exists(self.pid_file):
+                    os.remove(self.pid_file)
+        else:
+            print("No aj-snapshot daemon PID file found.")
+        
+        # Fallback: kill any remaining aj-snapshot daemon processes
+        try:
+            result = subprocess.run(
+                ["pkill", "-f", "aj-snapshot.*-d"],
+                capture_output=True, text=True
+            )
+            if result.returncode == 0:
+                print("Killed remaining aj-snapshot daemon processes via pkill.")
+                stopped = True
+        except Exception as e:
+            print(f"pkill fallback failed: {e}")
+        
+        return stopped or True

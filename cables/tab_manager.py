@@ -210,6 +210,12 @@ class TabManager:
             self.show_bottom_controls(False)
         elif current_tab_text == "Cable":
             self.show_bottom_controls(False)
+            # Refresh Cable's pipewire settings when switching to Cable tab
+            if hasattr(self, 'cable_widget') and self.cable_widget:
+                self.cable_widget.pipewire_manager.load_current_settings()
+                self.cable_widget.pipewire_manager.load_devices()
+                self.cable_widget.pipewire_manager.load_nodes()
+                self.cable_widget.update_latency_display()
 
         # Stop ALSA mixer updates when switching away from the tab
         if self.tab_widget.tabText(self.last_active_tab) == "ALSA Mixer" and hasattr(self.connection_manager, 'alsa_mixer_app') and self.connection_manager.alsa_mixer_app:

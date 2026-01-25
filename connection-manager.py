@@ -4,7 +4,7 @@ import os
 import signal
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QTimer
-from PyQt6.QtGui import QGuiApplication
+from PyQt6.QtGui import QGuiApplication, QIcon
 
 
 class JackErrorFilter:
@@ -109,6 +109,34 @@ def main():
 
     app = QApplication(sys.argv)
     QGuiApplication.setDesktopFileName("com.github.magillos.cable")
+    
+    # Set window icon explicitly for title bar
+    icon_name = "jack-plug.svg"
+    icon_theme_name = "jack-plug"
+    app_icon = None
+    
+    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+        base_path = sys._MEIPASS
+        bundle_icon_path = os.path.join(base_path, icon_name)
+        if os.path.exists(bundle_icon_path):
+            app_icon = QIcon(bundle_icon_path)
+            if app_icon.isNull():
+                app_icon = None
+    else:
+        base_path = os.path.dirname(os.path.abspath(sys.argv[0]))
+        local_icon_path = os.path.join(base_path, icon_name)
+        if os.path.exists(local_icon_path):
+            app_icon = QIcon(local_icon_path)
+            if app_icon.isNull():
+                app_icon = None
+    
+    if app_icon is None:
+        theme_icon = QIcon.fromTheme(icon_theme_name)
+        if not theme_icon.isNull():
+            app_icon = theme_icon
+    
+    if app_icon:
+        app.setWindowIcon(app_icon)
 
     window = None
     if args.headless:

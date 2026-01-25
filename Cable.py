@@ -51,6 +51,41 @@ class CableApp(QApplication):
 
         # Set the application name to match the .desktop file
         self.setApplicationName("Cable")
+        
+        # Set window icon explicitly for title bar
+        self._set_application_icon()
+    
+    def _set_application_icon(self):
+        """Set the application window icon."""
+        icon_name = "jack-plug.svg"
+        icon_theme_name = "jack-plug"
+        app_icon = None
+        
+        # Determine base path - prioritize PyInstaller bundle path if available
+        if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+            base_path = sys._MEIPASS
+            bundle_icon_path = os.path.join(base_path, icon_name)
+            if os.path.exists(bundle_icon_path):
+                app_icon = QIcon(bundle_icon_path)
+                if app_icon.isNull():
+                    app_icon = None
+        else:
+            base_path = os.path.dirname(os.path.abspath(sys.argv[0]))
+            local_icon_path = os.path.join(base_path, icon_name)
+            if os.path.exists(local_icon_path):
+                app_icon = QIcon(local_icon_path)
+                if app_icon.isNull():
+                    app_icon = None
+        
+        # Try loading from theme if local/bundle icon not found
+        if app_icon is None:
+            theme_icon = QIcon.fromTheme(icon_theme_name)
+            if not theme_icon.isNull():
+                app_icon = theme_icon
+        
+        # Set the window icon
+        if app_icon:
+            self.setWindowIcon(app_icon)
 
 class PipeWireSettingsApp(QWidget):
 
@@ -762,6 +797,17 @@ class PipeWireSettingsApp(QWidget):
         finally:
             # Ensure signals are unblocked
             self.sample_rate_combo.blockSignals(False)
+
+    def changeEvent(self, event):
+        """Handle window state changes, refresh settings when gaining focus."""
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.ActivationChange and self.isActiveWindow():
+            # Refresh pipewire settings when window gains focus (non-embedded mode only)
+            if not self.embedded and self.values_initialized:
+                self.pipewire_manager.load_current_settings()
+                self.pipewire_manager.load_devices()
+                self.pipewire_manager.load_nodes()
+                self.update_latency_display()
 
     def cleanup_before_quit(self):
         """Clean up resources before quitting."""

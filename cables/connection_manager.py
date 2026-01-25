@@ -723,6 +723,16 @@ class JackConnectionManager(QMainWindow):
             if hasattr(self, 'ui_state_manager'):
                  self.ui_state_manager.handle_focus_change(is_focused)
 
+            # Refresh embedded Cable settings when window gains focus
+            if is_focused and hasattr(self, 'cable_widget') and self.cable_widget:
+                current_tab_index = self.ui_manager.tab_widget.currentIndex()
+                current_tab_text = self.ui_manager.tab_widget.tabText(current_tab_index)
+                if current_tab_text == "Cable":
+                    self.cable_widget.pipewire_manager.load_current_settings()
+                    self.cable_widget.pipewire_manager.load_devices()
+                    self.cable_widget.pipewire_manager.load_nodes()
+                    self.cable_widget.update_latency_display()
+
             # Manage ALSA mixer updates based on focus and active tab
             if hasattr(self.ui_manager, 'tab_widget') and hasattr(self.ui_manager, 'alsa_mixer_tab_widget') and hasattr(self, 'alsa_mixer_app'):
                 current_tab_index = self.ui_manager.tab_widget.currentIndex()

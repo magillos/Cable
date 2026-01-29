@@ -440,6 +440,7 @@ class NodeVisibilityDialog(QDialog):
         filter_label = QLabel("Filter:")
         self.filter_edit = QLineEdit()
         self.filter_edit.setPlaceholderText("Type to filter clients...")
+        self.filter_edit.setClearButtonEnabled(True)
         self.filter_edit.textChanged.connect(self._apply_filter)
         filter_layout.addWidget(filter_label)
         filter_layout.addWidget(self.filter_edit)

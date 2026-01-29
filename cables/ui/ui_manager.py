@@ -41,9 +41,11 @@ class UIManager:
         self.output_filter_edit = QLineEdit()
         self.output_filter_edit.setPlaceholderText("Filter outputs...")
         self.output_filter_edit.setToolTip("Use '-' prefix for exclusive filtering")
+        self.output_filter_edit.setClearButtonEnabled(True)
         self.input_filter_edit = QLineEdit()
         self.input_filter_edit.setPlaceholderText("Filter inputs...")
         self.input_filter_edit.setToolTip("Use '-' prefix for exclusive filtering")
+        self.input_filter_edit.setClearButtonEnabled(True)
 
         # Tab widget and manager
         self.tab_widget = QTabWidget()

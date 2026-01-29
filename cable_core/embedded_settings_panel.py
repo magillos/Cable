@@ -192,6 +192,11 @@ class EmbeddedSettingsPanel(QWidget):
         self.split_audio_midi_checkbox.setToolTip("Show clients with both Audio and MIDI ports as separate nodes")
         other_layout.addWidget(self.split_audio_midi_checkbox)
         
+        # Verbose output checkbox
+        self.verbose_output_checkbox = QCheckBox("Verbose output")
+        self.verbose_output_checkbox.setToolTip("Show debug messages in terminal when running from command line")
+        other_layout.addWidget(self.verbose_output_checkbox)
+        
         # Separator before integrate option
         separator = QFrame()
         separator.setFrameShape(QFrame.Shape.HLine)
@@ -322,6 +327,10 @@ class EmbeddedSettingsPanel(QWidget):
         self.split_audio_midi_checkbox.setChecked(self.config_manager.get_bool('GRAPH_SPLIT_AUDIO_MIDI_CLIENTS', False))
         self.split_audio_midi_checkbox.blockSignals(False)
         
+        self.verbose_output_checkbox.blockSignals(True)
+        self.verbose_output_checkbox.setChecked(self.config_manager.get_bool('verbose_output', True))
+        self.verbose_output_checkbox.blockSignals(False)
+        
         self.integrate_checkbox.blockSignals(True)
         self.integrate_checkbox.setChecked(self.config_manager.get_bool('integrate_cable_and_cables', False))
         self.integrate_checkbox.blockSignals(False)
@@ -395,6 +404,7 @@ class EmbeddedSettingsPanel(QWidget):
         self.config_manager.set_bool('enable_midi_matrix', self.midi_matrix_checkbox.isChecked())
         self.config_manager.set_bool('use_straight_lines', self.straight_lines_checkbox.isChecked())
         self.config_manager.set_bool('GRAPH_SPLIT_AUDIO_MIDI_CLIENTS', self.split_audio_midi_checkbox.isChecked())
+        self.config_manager.set_bool('verbose_output', self.verbose_output_checkbox.isChecked())
         self.config_manager.set_bool('integrate_cable_and_cables', self.integrate_checkbox.isChecked())
         
         from PyQt6.QtWidgets import QMessageBox

@@ -143,14 +143,14 @@ class CombinedSinkSourceDialog(QDialog):
         self.channel_group = QButtonGroup(self)
         self.channel_group.setExclusive(True)
 
-        # Mono radio button (top option, default)
+        # Mono radio button
         self.mono_radio = QRadioButton("Mono")
-        self.mono_radio.setChecked(True)
         self.channel_group.addButton(self.mono_radio, 0)
         layout.addWidget(self.mono_radio)
 
-        # Stereo radio button
+        # Stereo radio button (default)
         self.stereo_radio = QRadioButton("Stereo")
+        self.stereo_radio.setChecked(True)
         self.channel_group.addButton(self.stereo_radio, 1)
         layout.addWidget(self.stereo_radio)
 

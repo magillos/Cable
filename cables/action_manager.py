@@ -67,6 +67,30 @@ class ActionManager:
 
         self._define_all_actions()
 
+    def _is_graph_tab_active(self):
+        """Check if the Graph tab is currently active by comparing widgets."""
+        if hasattr(self.main_window, 'ui_manager'):
+            ui_mgr = self.main_window.ui_manager
+            if hasattr(ui_mgr, 'tab_widget') and hasattr(ui_mgr, 'graph_tab_widget'):
+                return ui_mgr.tab_widget.currentWidget() == ui_mgr.graph_tab_widget
+        return False
+
+    def _is_audio_tab_active(self):
+        """Check if the Audio tab is currently active by comparing widgets."""
+        if hasattr(self.main_window, 'ui_manager'):
+            ui_mgr = self.main_window.ui_manager
+            if hasattr(ui_mgr, 'tab_widget') and hasattr(ui_mgr, 'audio_tab_widget'):
+                return ui_mgr.tab_widget.currentWidget() == ui_mgr.audio_tab_widget
+        return False
+
+    def _is_midi_tab_active(self):
+        """Check if the MIDI tab is currently active by comparing widgets."""
+        if hasattr(self.main_window, 'ui_manager'):
+            ui_mgr = self.main_window.ui_manager
+            if hasattr(ui_mgr, 'tab_widget') and hasattr(ui_mgr, 'midi_tab_widget'):
+                return ui_mgr.tab_widget.currentWidget() == ui_mgr.midi_tab_widget
+        return False
+
     def _define_all_actions(self):
         """Define all QAction objects and their basic properties (text, shortcuts)."""
         # --- Global Shortcut Actions ---
@@ -260,40 +284,32 @@ class ActionManager:
 
     def _handle_global_connect_shortcut(self):
         """Handles the global 'C' key shortcut for connect."""
-        tab_widget = self.ui.get('tab_widget')
-        if not tab_widget: return
-        current_index = tab_widget.currentIndex()
-
-        if current_index == 0:  # Audio Tab
+        if self._is_audio_tab_active():
             if self.audio_connect_action: self.audio_connect_action.trigger()
-            audio_button = self.ui.get('connect_button') # This is manager.connect_button
+            audio_button = self.ui.get('connect_button')
             if audio_button: self._animate_button_press(audio_button)
-        elif current_index == 1:  # MIDI Tab
+        elif self._is_midi_tab_active():
             if self.midi_connect_action: self.midi_connect_action.trigger()
-            midi_button = self.ui.get('midi_connect_button') # This is manager.midi_connect_button
+            midi_button = self.ui.get('midi_connect_button')
             if midi_button: self._animate_button_press(midi_button)
-        elif current_index == 2:  # Graph Tab
+        elif self._is_graph_tab_active():
             if self.graph_connect_action: self.graph_connect_action.trigger()
             graph_mw = self.ui.get('graph_main_window')
-            if graph_mw and hasattr(graph_mw, 'connect_button'): # graph_mw.connect_button is the QToolButton
+            if graph_mw and hasattr(graph_mw, 'connect_button'):
                  self._animate_button_press(graph_mw.connect_button)
         # Ignore if on other tabs
 
     def _handle_global_disconnect_shortcut(self):
         """Handles the global 'D'/Delete key shortcut for disconnect."""
-        tab_widget = self.ui.get('tab_widget')
-        if not tab_widget: return
-        current_index = tab_widget.currentIndex()
-
-        if current_index == 0:  # Audio Tab
+        if self._is_audio_tab_active():
             if self.audio_disconnect_action: self.audio_disconnect_action.trigger()
             audio_button = self.ui.get('disconnect_button')
             if audio_button: self._animate_button_press(audio_button)
-        elif current_index == 1:  # MIDI Tab
+        elif self._is_midi_tab_active():
             if self.midi_disconnect_action: self.midi_disconnect_action.trigger()
             midi_button = self.ui.get('midi_disconnect_button')
             if midi_button: self._animate_button_press(midi_button)
-        elif current_index == 2:  # Graph Tab
+        elif self._is_graph_tab_active():
             if self.graph_disconnect_action: self.graph_disconnect_action.trigger()
             graph_mw = self.ui.get('graph_main_window')
             if graph_mw and hasattr(graph_mw, 'disconnect_button'):
@@ -302,10 +318,7 @@ class ActionManager:
 
     def _handle_global_undo_shortcut(self):
         """Handles the global Ctrl+Z shortcut for undo."""
-        tab_widget = self.ui.get('tab_widget')
-        current_index = tab_widget.currentIndex() if tab_widget else -1
-
-        if current_index == 2: # Graph Tab
+        if self._is_graph_tab_active():
             if self.graph_undo_action: self.graph_undo_action.trigger()
             graph_mw = self.ui.get('graph_main_window')
             if graph_mw and hasattr(graph_mw, 'undo_button'):
@@ -353,10 +366,7 @@ class ActionManager:
 
     def _handle_global_redo_shortcut(self):
         """Handles the global Ctrl+Y/Ctrl+Shift+Z shortcut for redo."""
-        tab_widget = self.ui.get('tab_widget')
-        current_index = tab_widget.currentIndex() if tab_widget else -1
-
-        if current_index == 2: # Graph Tab
+        if self._is_graph_tab_active():
             if self.graph_redo_action: self.graph_redo_action.trigger()
             graph_mw = self.ui.get('graph_main_window')
             if graph_mw and hasattr(graph_mw, 'redo_button'):
@@ -621,16 +631,12 @@ class ActionManager:
 
     def _handle_global_untangle_shortcut(self):
         """Handles the global 'Alt+U' key shortcut for untangle."""
-        tab_widget = self.ui.get('tab_widget')
-        if not tab_widget: return
-        current_index = tab_widget.currentIndex()
-
-        if current_index in [0, 1]:  # Audio or MIDI Tab
+        if self._is_audio_tab_active() or self._is_midi_tab_active():
             if self.state_manager:
                 self.state_manager._handle_untangle_shortcut()
-        elif current_index == 3:  # Graph Tab
+        elif self._is_graph_tab_active():
             graph_mw = self.ui.get('graph_main_window')
-            if graph_mw and hasattr(graph_mw, 'untangle_action'):
+            if graph_mw and hasattr(graph_mw, '_handle_untangle'):
                 if hasattr(graph_mw, 'untangle_button'):
                     self._animate_button_press(graph_mw.untangle_button)
-                graph_mw.untangle_action.trigger()
+                graph_mw._handle_untangle()

@@ -283,14 +283,16 @@ class PortManager:
     def _handle_filter_change(self):
         """Handles text changes in the shared filter boxes."""
         # Access tab_widget through ui_manager
-        current_index = self.connection_manager.ui_manager.tab_widget.currentIndex()
+        tab_widget = self.connection_manager.ui_manager.tab_widget
+        current_index = tab_widget.currentIndex()
+        current_tab_text = tab_widget.tabText(current_index)
         input_text = self.input_filter_edit.text()
         output_text = self.output_filter_edit.text()
 
-        # Use the tree references stored in self
-        if current_index == 0:  # Audio tab
+        # Use tab name to determine which trees to filter (handles integrated mode)
+        if current_tab_text == "Audio":
             self.filter_ports(self.input_tree, input_text)
             self.filter_ports(self.output_tree, output_text)
-        elif current_index == 1:  # MIDI tab
+        elif current_tab_text == "MIDI":
             self.filter_ports(self.midi_input_tree, input_text)
             self.filter_ports(self.midi_output_tree, output_text)

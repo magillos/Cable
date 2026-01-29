@@ -8,7 +8,7 @@ If you wonder what Latency Offset option does, look [here](https://pipewire.page
 
 
 ## Run
-To run, clone repository and start with `python Cable.py`. You will need python jack client, see [here](https://pypi.org/project/JACK-Client/0.5.1/), python PyQT6, jack_delay (or jack-example-tools), pyalsaaudio and aj-snapshot installed:
+To run, clone repository and start with `python Cable.py`. You will need python jack client, see [here](https://pypi.org/project/JACK-Client/), python PyQT6, jack_delay (or jack-example-tools), pyalsaaudio and aj-snapshot installed:
 `sudo apt install python3-jack-client libqt6svg6 jack-delay python3-pyqt6 python3-dbus python3-requests python3-packaging aj-snapshot python3-alsaaudio pipewire-jack` 
 
 
@@ -17,7 +17,7 @@ Various packages are available in [releases](https://github.com/magillos/Cable/r
 
 On Arch Linux, install using PKGBUILD or with Arch package. App is also available on AUR. 
 
-Packaging files (Flatpak, AppImage) are in [cable-packaging repo](https://github.com/magillos/cable-packaging).
+Packaging files (Flatpak, AppImage, Debian) are in [cable-packaging](https://github.com/magillos/cable-packaging) repository.
 
 With AppImage version 0.9.16, auto-start should work (toggle Autostart option off/on to recreate `.desktop` file).
 

@@ -158,6 +158,18 @@ class OtherSettingsDialog(QDialog):
         self.split_audio_midi_layout.addWidget(self.split_audio_midi_checkbox)
         main_layout.addLayout(self.split_audio_midi_layout)
 
+        # Add verbose output checkbox
+        verbose_layout = QHBoxLayout()
+        verbose_label = QLabel("Verbose output")
+        verbose_label.setFixedWidth(max_label_width)
+        verbose_layout.addWidget(verbose_label)
+
+        self.verbose_output_checkbox = QCheckBox()
+        self.verbose_output_checkbox.setToolTip("Show debug messages in terminal when running from command line")
+        verbose_layout.addStretch(1)
+        verbose_layout.addWidget(self.verbose_output_checkbox)
+        main_layout.addLayout(verbose_layout)
+
         # Add separator before integrate option
         separator = QFrame()
         separator.setFrameShape(QFrame.Shape.HLine)
@@ -250,6 +262,10 @@ class OtherSettingsDialog(QDialog):
         split_audio_midi = self.config_manager.get_bool('GRAPH_SPLIT_AUDIO_MIDI_CLIENTS', False)
         self.split_audio_midi_checkbox.setChecked(split_audio_midi)
 
+        # Load verbose output setting (default True)
+        verbose_output = self.config_manager.get_bool('verbose_output', True)
+        self.verbose_output_checkbox.setChecked(verbose_output)
+
         # Load integrate Cable and Cables setting
         integrate = self.config_manager.get_bool('integrate_cable_and_cables', False)
         self.integrate_checkbox.setChecked(integrate)
@@ -279,6 +295,9 @@ class OtherSettingsDialog(QDialog):
 
         # Save split audio/midi setting
         self.config_manager.set_bool('GRAPH_SPLIT_AUDIO_MIDI_CLIENTS', self.split_audio_midi_checkbox.isChecked())
+
+        # Save verbose output setting
+        self.config_manager.set_bool('verbose_output', self.verbose_output_checkbox.isChecked())
 
         # Save integrate Cable and Cables setting
         self.config_manager.set_bool('integrate_cable_and_cables', self.integrate_checkbox.isChecked())

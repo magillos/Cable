@@ -59,9 +59,15 @@ class JackConnectionManager(QMainWindow):
     client_registered = pyqtSignal(str, bool) # client_name, is_registered
     ports_connected = pyqtSignal(str, str, bool) # out_port_name, in_port_name, is_connected
     
-    def __init__(self):
-        """Initialize the JackConnectionManager."""
+    def __init__(self, load_startup_preset=False):
+        """Initialize the JackConnectionManager.
+        
+        Args:
+            load_startup_preset: If True, load the configured startup preset on init.
+                                 Should be True for --minimized and headless modes.
+        """
         super().__init__()
+        self._load_startup_preset = load_startup_preset
 
         self._graph_is_fullscreen = False
         self._widgets_original_visibility = {} # For storing visibility of main UI chrome
@@ -243,8 +249,8 @@ class JackConnectionManager(QMainWindow):
         if hasattr(self.action_manager, 'save_preset_action') and self.action_manager.save_preset_action:
             self.action_manager.save_preset_action.setEnabled(bool(self.preset_handler.current_preset_name))
 
-        # Load startup preset if configured
-        if self.preset_handler.startup_preset_name and self.preset_handler.startup_preset_name != 'None':
+        # Load startup preset if configured and requested (only for --minimized or headless modes)
+        if self._load_startup_preset and self.preset_handler.startup_preset_name and self.preset_handler.startup_preset_name != 'None':
             startup_preset = self.preset_handler.startup_preset_name
             print(f"Loading startup preset '{startup_preset}'...")
             # Load the preset without showing a success message (is_startup=True)

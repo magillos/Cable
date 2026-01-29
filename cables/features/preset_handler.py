@@ -75,8 +75,11 @@ class PresetHandler:
         self.manager = manager  # Reference to JackConnectionManager
         # Initialize preset state from config manager
         self.startup_preset_name = self.manager.config_manager.get_str('startup_preset')
-        # Initialize current_preset_name based on the last run's active preset
-        self.current_preset_name = self.manager.config_manager.get_str('active_preset')
+        # Don't restore active_preset from config on fresh start - preset must actually be loaded
+        # The active preset will be set when startup_preset is loaded or user loads a preset
+        self.current_preset_name = None
+        # Clear the stored active_preset since we're starting fresh
+        self.manager.config_manager.set_str('active_preset', None)
         # Temporary attribute for the save preset name line edit in the menu
         self._preset_menu_name_edit = None
 
@@ -657,23 +660,28 @@ class PresetHandler:
                                  "Preset Saved", f"Preset '{preset_name}' saved successfully.")
 
     def _set_strict_mode(self, checked):
-        """Sets the strict mode for preset loading in the config."""
+        """Sets the strict mode for preset loading in the config and reloads preset if active."""
         print(f"Setting strict mode for preset loading to: {checked}")
         self.manager.config_manager.set_bool('load_preset_strict_mode', checked)
+        
+        # Reload current preset to apply the new strict mode setting
+        if self.current_preset_name:
+            print(f"Reloading preset '{self.current_preset_name}' with strict={checked}")
+            self._load_selected_preset(self.current_preset_name)
 
     def _set_daemon_mode(self, checked):
         """Sets the daemon mode for preset loading in the config and starts/stops the daemon."""
         print(f"Setting daemon mode for preset loading to: {checked}")
         self.manager.config_manager.set_bool('load_preset_daemon_mode', checked)
 
-        if checked:
-            if self.current_preset_name:
-                strict_mode = self.manager.config_manager.get_bool('load_preset_strict_mode', False)
-                self.manager.preset_manager.start_daemon_mode(self.current_preset_name, strict_mode)
-            else:
-                print("No active preset to start daemon mode with.")
-        else:
+        if self.current_preset_name:
+            # Always stop existing daemon first
             self.manager.preset_manager.stop_daemon_mode()
+            # Reload preset with new daemon mode setting
+            print(f"Reloading preset '{self.current_preset_name}' with daemon={checked}")
+            self._load_selected_preset(self.current_preset_name)
+        elif checked:
+            print("No active preset to start daemon mode with.")
 
     def _unhide_all_nodes(self):
         """Unhide all nodes by resetting node visibility settings."""

@@ -2,6 +2,15 @@ import sys
 import argparse
 import os
 import signal
+
+# Initialize verbose mode before any other imports that might print
+# Add the script directory to path first so we can import cable_core
+script_dir = os.path.dirname(os.path.abspath(__file__))
+if script_dir not in sys.path:
+    sys.path.insert(0, script_dir)
+from cable_core.verbose import init_verbose_mode
+init_verbose_mode()
+
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QTimer
 from PyQt6.QtGui import QGuiApplication, QIcon
@@ -85,9 +94,6 @@ class JackErrorFilter:
 sys.stderr = JackErrorFilter(sys.stderr)
 
 try:
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    if script_dir not in sys.path:
-        sys.path.append(script_dir)
     from cables.connection_manager import JackConnectionManager
     from cables.config.preset_manager import PresetManager
 except ImportError as e:
@@ -141,23 +147,16 @@ def main():
     window = None
     if args.headless:
         print("Connection Manager starting in headless mode...")
-        headless_manager = JackConnectionManager()
+        headless_manager = JackConnectionManager(load_startup_preset=True)
         startup_preset = headless_manager.preset_handler.startup_preset_name
         if startup_preset and startup_preset != 'None':
-            print(f"Headless mode: Attempting to load startup preset '{startup_preset}'...")
-            success = headless_manager.preset_handler._load_selected_preset(startup_preset, is_startup=True)
-            if success:
-                print(f"Startup preset '{startup_preset}' loaded successfully.")
-            else:
-                print(f"Failed to load startup preset '{startup_preset}'.")
+            print(f"Headless mode: Startup preset '{startup_preset}' loaded.")
         else:
             print("Headless mode: No startup preset configured.")
-            headless_manager.config_manager.set_str('active_preset', None)
-            print("Headless: Cleared active_preset in config (no startup preset).")
         QTimer.singleShot(1000, QApplication.quit)
     elif args.minimized:
         print("Connection Manager starting minimized to tray...")
-        window = JackConnectionManager()
+        window = JackConnectionManager(load_startup_preset=True)
         window.start_startup_refresh()
         # Start minimized - enable tray if Cable tab exists and has tray functionality
         if hasattr(window, 'cable_widget') and window.cable_widget:
@@ -172,7 +171,7 @@ def main():
             # No Cable tab, just hide the window (no tray functionality without Cable)
             window.hide()
     else:
-        window = JackConnectionManager()
+        window = JackConnectionManager(load_startup_preset=False)
         window.start_startup_refresh()
         window.show()
 
@@ -182,6 +181,10 @@ def main():
     sig_timer = QTimer()
     sig_timer.start(100)
     sig_timer.timeout.connect(lambda: None)
+
+    # Ensure cleanup happens on quit (handles Ctrl+C, app.quit(), etc.)
+    if window:
+        app.aboutToQuit.connect(window._cleanup_on_quit)
 
     exit_code = app.exec()
     if args.headless:

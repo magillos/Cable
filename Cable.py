@@ -9,8 +9,14 @@ import configparser
 import argparse
 import shutil
 import requests
+import jack
 from packaging import version
 import webbrowser # Might not be needed if setOpenExternalLinks works directly
+
+# Initialize verbose mode before any other cable_core imports that might print
+from cable_core.verbose import init_verbose_mode
+init_verbose_mode()
+
 from cable_core.dialogs import ValueSelectorDialog
 from cable_core.autostart import AutostartManager
 from cable_core.config import ConfigManager
@@ -29,7 +35,7 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                              QComboBox, QLineEdit, QPushButton, QLabel,
                              QSpacerItem, QSizePolicy, QMessageBox, QGroupBox,
                              QCheckBox, QSystemTrayIcon, QMenu, QDialog, QDialogButtonBox,
-                             QScrollArea, QWidgetAction, QSplitter)
+                             QScrollArea, QWidgetAction, QSplitter, QProgressBar)
 
 # -------------------------
 
@@ -136,6 +142,11 @@ class PipeWireSettingsApp(QWidget):
         self.last_valid_quantum_index = 0
         self.last_valid_sample_rate_index = 0
         
+        # Xrun tracking
+        self.xrun_count = 0
+        self.jack_client = None
+        self._init_jack_client()
+        
         # Initialize UI first
         self.initUI()
         
@@ -169,6 +180,9 @@ class PipeWireSettingsApp(QWidget):
         # Conditionally check for updates shortly after startup
         QTimer.singleShot(2000, self.update_manager._initial_update_check) # Check after 2 seconds if enabled (using UpdateManager)
         
+        # Start DSP load monitoring timer
+        self._start_dsp_load_timer()
+        
         # Timer for debouncing splitter save (embedded mode)
         self._splitter_save_timer = QTimer(self)
         self._splitter_save_timer.setSingleShot(True)
@@ -184,6 +198,74 @@ class PipeWireSettingsApp(QWidget):
             print(f"Detected AppImage path: {appimage_path}")
             return appimage_path
         return None
+
+    def _init_jack_client(self):
+        """Initialize JACK client for xrun tracking."""
+        try:
+            self.jack_client = jack.Client('CableXrunMonitor')
+            self.jack_client.set_xrun_callback(self._on_xrun)
+            self.jack_client.activate()
+            print("JACK client initialized for xrun monitoring")
+        except jack.JackError as e:
+            print(f"Failed to create JACK client for xrun monitoring: {e}")
+            self.jack_client = None
+
+    def _on_xrun(self, delay_usecs):
+        """Callback invoked when an xrun occurs."""
+        self.xrun_count += 1
+        if hasattr(self, 'xrun_display_value'):
+            QTimer.singleShot(0, self._update_xrun_display)
+
+    def _update_xrun_display(self):
+        """Update the xrun display label (must be called from main thread)."""
+        if hasattr(self, 'xrun_display_value'):
+            self.xrun_display_value.setText(str(self.xrun_count))
+
+    def _reset_xrun_count(self, event=None):
+        """Reset the xrun counter to zero."""
+        self.xrun_count = 0
+        self._update_xrun_display()
+
+    def _start_dsp_load_timer(self):
+        """Start the timer for updating DSP load display."""
+        self._dsp_load_timer = QTimer(self)
+        self._dsp_load_timer.timeout.connect(self._update_dsp_load)
+        self._dsp_load_timer.start(300)
+
+    def _update_dsp_load(self):
+        """Update the DSP load display."""
+        if self.jack_client is None:
+            return
+        try:
+            load = int(self.jack_client.cpu_load())
+            load = max(0, min(100, load))
+            if hasattr(self, 'dsp_load_value'):
+                self.dsp_load_value.setText(f"{load}%")
+            if hasattr(self, 'dsp_load_bar'):
+                self.dsp_load_bar.setValue(load)
+                self._update_dsp_load_bar_color(load)
+        except Exception:
+            pass
+
+    def _update_dsp_load_bar_color(self, load):
+        """Update the progress bar color based on load level."""
+        if load < 50:
+            color = "#4CAF50"  # Green
+        elif load < 80:
+            color = "#FFC107"  # Yellow/Amber
+        else:
+            color = "#F44336"  # Red
+        self.dsp_load_bar.setStyleSheet(f"""
+            QProgressBar {{
+                border: 1px solid #555;
+                border-radius: 3px;
+                background-color: #333;
+            }}
+            QProgressBar::chunk {{
+                background-color: {color};
+                border-radius: 2px;
+            }}
+        """)
 
     # --- Method moved to PipewireManager ---
     # get_metadata_value (Removed)
@@ -245,14 +327,43 @@ class PipeWireSettingsApp(QWidget):
 
         layout.addLayout(buttons_layout)
 
-        # Special handling for Quantum section's latency display
+        # Special handling for Quantum section's latency display and xrun counter
         if title == "Quantum":
             latency_display_layout = QHBoxLayout()
             self.latency_display_label = QLabel("Latency:")
             self.latency_display_value = QLabel("0.00 ms")
+            
+            # Xrun counter display
+            self.xrun_display_label = QLabel("Xruns:")
+            self.xrun_display_label.setToolTip("Click to reset xrun count")
+            self.xrun_display_label.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.xrun_display_label.mousePressEvent = self._reset_xrun_count
+            self.xrun_display_value = QLabel("0")
+            self.xrun_display_value.setToolTip("Click to reset xrun count")
+            self.xrun_display_value.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.xrun_display_value.mousePressEvent = self._reset_xrun_count
+            
+            # DSP load display
+            self.dsp_load_label = QLabel("DSP load:")
+            self.dsp_load_value = QLabel("0%")
+            self.dsp_load_value.setMinimumWidth(35)
+            self.dsp_load_bar = QProgressBar()
+            self.dsp_load_bar.setRange(0, 100)
+            self.dsp_load_bar.setValue(0)
+            self.dsp_load_bar.setTextVisible(False)
+            self.dsp_load_bar.setFixedSize(60, 12)
+            self._update_dsp_load_bar_color(0)
+            
             latency_display_layout.addStretch()
             latency_display_layout.addWidget(self.latency_display_label)
             latency_display_layout.addWidget(self.latency_display_value)
+            latency_display_layout.addSpacing(15)
+            latency_display_layout.addWidget(self.xrun_display_label)
+            latency_display_layout.addWidget(self.xrun_display_value)
+            latency_display_layout.addSpacing(15)
+            latency_display_layout.addWidget(self.dsp_load_label)
+            latency_display_layout.addWidget(self.dsp_load_value)
+            latency_display_layout.addWidget(self.dsp_load_bar)
             layout.addLayout(latency_display_layout)
 
         return self.create_section_group(title, layout)
@@ -812,6 +923,15 @@ class PipeWireSettingsApp(QWidget):
     def cleanup_before_quit(self):
         """Clean up resources before quitting."""
         print("Performing cleanup before quitting...")
+        # Clean up JACK client for xrun monitoring
+        if self.jack_client is not None:
+            try:
+                self.jack_client.deactivate()
+                self.jack_client.close()
+                print("JACK xrun monitor client closed")
+            except jack.JackError as e:
+                print(f"Error closing JACK client: {e}")
+            self.jack_client = None
         # Stop the daemon directly
         preset_manager = PresetManager()
         preset_manager.stop_daemon_mode()

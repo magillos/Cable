@@ -1,28 +1,40 @@
 # gui_scene.py
+"""
+QGraphicsScene managing visual graph nodes, ports, and connections.
+
+JACK synchronization logic (querying, filtering, diffing) is handled by
+GraphStateManager, which emits signals that this scene responds to for
+adding/removing visual elements.
+"""
 import jack
 import traceback
-from collections import defaultdict
 import copy
 
-from PyQt6.QtWidgets import QGraphicsScene, QGraphicsPathItem
-from PyQt6.QtGui import QColor, QPen, QPainterPath
-from PyQt6.QtCore import Qt, QPointF, pyqtSlot, pyqtSignal, QRectF, QLineF, QObject, QTimer, QVariantAnimation, QEasingCurve
+import logging
+logger = logging.getLogger(__name__)
 
-from . import constants # Import the new constants module
-from .jack_handler import GraphJackHandler # Import the refactored class
+from PyQt6.QtWidgets import QGraphicsScene, QGraphicsSceneMouseEvent
+from PyQt6.QtCore import Qt, QPointF, pyqtSlot, pyqtSignal, QObject, QTimer, QEasingCurve
+
+from . import constants
+from .animations import NodeAnimator, GraphAnimationController
+from .jack_handler import GraphJackHandler
 from .layout import GraphLayouter  # Import the graph layouter
-from cables import jack_utils # Import the new jack_utils module
+from cables.jack_service import get_jack_service
 from .port_item import PortItem
 from .node_item import NodeItem
-# from cables.connection_manager import JackConnectionManager # For signals and client access - REMOVED to break cycle
 from .connection_item import ConnectionItem
 from .bulk_area_item import BulkAreaItem
-from .config_utils import ConfigManager # Import the config managermanager
+from .config_utils import GraphConfigManager
 from .graph_interaction_handler import GraphInteractionHandler # Import the new handler
-from typing import TYPE_CHECKING
-
+from .scene_connection_manager import SceneConnectionManager
+from .graph_state_manager import GraphStateManager
+from typing import TYPE_CHECKING, List, Dict, Optional, Any, Set, Tuple, Union
 if TYPE_CHECKING:
     from cables.connection_manager import JackConnectionManager
+    from cables.features.connection_history import ConnectionHistory
+    from .node_item import NodeItem
+    from cables.features.node_visibility_manager import NodeVisibilityManager
 
 class JackGraphScene(QGraphicsScene):
     """Manages the nodes, ports, and connections. Delegates interactions to GraphInteractionHandler."""
@@ -30,26 +42,11 @@ class JackGraphScene(QGraphicsScene):
     scene_fully_loaded = pyqtSignal() # Signal emitted when the scene is fully loaded initially
     node_states_changed = pyqtSignal() # Signal emitted when node positions/split/fold states change due to user action
     
-    def __init__(self, jack_client: jack.Client, connection_manager: 'JackConnectionManager', connection_history, parent=None):
+    def __init__(self, jack_client: jack.Client, connection_manager: 'JackConnectionManager', connection_history: 'ConnectionHistory', parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
         
-        # Debounce timer for full_graph_refresh to batch rapid JACK events (e.g., desktop clients)
-        self._refresh_debounce_timer = QTimer(self)
-        self._refresh_debounce_timer.setSingleShot(True)
-        self._refresh_debounce_timer.timeout.connect(self._deferred_full_refresh)
-
-    def __init__(self, jack_client: jack.Client, connection_manager: 'JackConnectionManager', connection_history, parent=None):
-        super().__init__(parent)
-        
-        # Debounce timer for full_graph_refresh to batch rapid JACK events (e.g., desktop clients)
-        self._refresh_debounce_timer = QTimer(self)
-        self._refresh_debounce_timer.setSingleShot(True)
-        self._refresh_debounce_timer.timeout.connect(self._deferred_full_refresh)
-        
-        self.jack_client = jack_client # The main jack.Client instance
-        self.connection_manager = connection_manager # For JACK event signals
-        # connection_history is used by GraphJackHandler for undo/redo
-        # parent is assumed to be the graph's MainWindow, used as main_window_ref for GraphJackHandler
+        self.jack_client = jack_client
+        self.connection_manager = connection_manager
         
         # Get the JackConnectionHandler instance from the connection_manager
         self.jack_connection_handler = self.connection_manager.jack_handler
@@ -57,19 +54,20 @@ class JackGraphScene(QGraphicsScene):
         self.graph_jack_handler = GraphJackHandler(
             jack_client=self.jack_client,
             connection_history_ref=connection_history,
-            main_window_ref=parent, # Assuming parent is the graph's MainWindow
-            jack_connection_handler_ref=self.jack_connection_handler # Pass the new handler
+            main_window_ref=parent,
+            jack_connection_handler_ref=self.jack_connection_handler
         )
 
-        self.nodes = {} # client_name: NodeItem (Stores the *original* NodeItem, even if hidden when split)
-        self.connections = {} # (out_port_name, in_port_name): ConnectionItem
-        self.node_configs = {} # Store loaded node configurations: client_name -> {pos, is_split, split_input_pos, ...}
-        # self.setBackgroundBrush(QColor(30, 30, 30)) # Allow theme to control background
+        self.nodes: Dict[str, 'NodeItem'] = {}
+        self.connections: Dict[tuple, 'ConnectionItem'] = {}
+        self.node_configs: Dict[str, dict] = {}
+        self._first_refresh_done = False
+        self._in_full_refresh = False
 
         # Initialize config manager for saving/loading node configurations
-        self.node_config_manager = ConfigManager()
+        self.node_config_manager = GraphConfigManager()
         self.main_config_manager = self.connection_manager.config_manager
-        self.initial_zoom_level = None # Initialize attribute
+        self.initial_zoom_level = None
  
         # Load saved node configurations and zoom level
         self.node_configs, self.initial_zoom_level = self.node_config_manager.load_node_states()
@@ -77,44 +75,42 @@ class JackGraphScene(QGraphicsScene):
         # Extract the untangle setting from the config dict if present
         self.initial_untangle_setting = self.node_configs.pop(self.node_config_manager.CURRENT_UNTANGLE_SETTING_KEY, None)
  
-        # Instantiate the interaction handler (pass scene, graph_jack_handler, config manager, and jack_connection_handler)
+        # Instantiate the interaction handler
         self.interaction_handler = GraphInteractionHandler(
             scene=self,
             jack_handler=self.graph_jack_handler,
             config_manager=self.node_config_manager,
-            jack_connection_handler=self.jack_connection_handler # Pass the new handler
+            jack_connection_handler=self.jack_connection_handler
         )
         
+        # Initialize the scene connection manager
+        self.connection_mgr = SceneConnectionManager(self)
+
         # Initialize the graph layouter
         self.layouter = GraphLayouter(self)
 
+        # Centralized animation helper (push-away + layout transitions)
+        self.node_animator = NodeAnimator(self)
+        self.animations = GraphAnimationController(self, self.node_animator)
+
         # Pending node positions (e.g. virtual sinks created from the view context menu)
-        # Keyed by the *sink base name* (the name passed to pactl sink_name=...)
         self._pending_node_positions: dict[str, QPointF] = {}
 
-        # Connect signals from JackConnectionManager
-        # Old signals disconnected, new detailed signals connected below
-        # self.connection_manager.port_registered.connect(self.handle_port_registered) # OLD
-        # self.connection_manager.client_registered.connect(self.handle_client_registered) # OLD
-        # self.connection_manager.ports_connected.connect(self.handle_ports_connected) # OLD
+        # Initialize the state manager (handles all JACK synchronization)
+        self.state_manager = GraphStateManager(
+            jack_client=self.jack_client,
+            connection_manager=self.connection_manager,
+            main_config_manager=self.main_config_manager,
+            parent=self,
+        )
+        self.state_manager.full_sync_ready.connect(self._on_full_sync_ready)
+        self.state_manager.jack_shutdown_detected.connect(self._on_jack_shutdown)
 
-        self.connection_manager.port_added.connect(self._handle_port_added)
-        self.connection_manager.port_removed.connect(self._handle_port_removed)
-        self.connection_manager.client_added.connect(self._handle_client_added)
-        self.connection_manager.client_removed.connect(self._handle_client_removed)
-        self.connection_manager.connection_made.connect(self._handle_connection_made)
-        self.connection_manager.connection_broken.connect(self._handle_connection_broken)
-        self.connection_manager.jack_shutdown_signal.connect(self._handle_jack_shutdown)
-        
-        self.connection_manager.graph_updated.connect(self._schedule_full_refresh) # Connect debounced full refresh
-
-        # Selection linking is now handled by PortItem and BulkAreaItem's itemChange methods
-        # self.selectionChanged.connect(self.interaction_handler.handle_selection_changed) # Removed
+        # Connection signals go directly to SceneConnectionManager (visual-only, no processing needed)
+        jack_service = get_jack_service()
+        jack_service.connection_made.connect(self.connection_mgr.handle_connection_made)
+        jack_service.connection_broken.connect(self.connection_mgr.handle_connection_broken)
  
-    def _schedule_full_refresh(self):
-        """Schedule a debounced full graph refresh."""
-        self._refresh_debounce_timer.start(100)  # 100ms debounce for rapid JACK events
-
     def register_pending_node_position(self, sink_name: str, scene_pos: QPointF) -> None:
         """Register a pending position for a node expected to appear soon.
 
@@ -136,12 +132,33 @@ class JackGraphScene(QGraphicsScene):
             return None
 
         # For virtual sinks created via pactl, the JACK/pipewire client name is typically
-        # "<sink_name> Audio/Sink sink". We match on prefix "<sink_name> ".
+        # "<sink_name> Audio/Sink sink" or similar patterns. We match on prefix "<sink_name> ".
+        # Also handle module-id suffixes like "<sink_name>-1" or "<sink_name>.1"
+        logger.debug(f"Looking for pending position for client: {client_name}, pending: {list(self._pending_node_positions.keys())}")
         for sink_name, pos in list(self._pending_node_positions.items()):
-            if client_name == sink_name or client_name.startswith(sink_name + ' '):
+            # Exact match
+            if client_name == sink_name:
+                logger.info(f"Found pending position for exact match: {sink_name} -> {pos}")
                 self._pending_node_positions.pop(sink_name, None)
                 return pos
+            # Prefix match with space (e.g., "my_sink " matches "my_sink Audio/Sink")
+            if client_name.startswith(sink_name + ' '):
+                logger.info(f"Found pending position for prefix match with space: {sink_name} -> {pos}")
+                self._pending_node_positions.pop(sink_name, None)
+                return pos
+            # Prefix match with module ID suffix (e.g., "my_sink-1" matches "my_sink-1")
+            if client_name.startswith(sink_name):
+                rest = client_name[len(sink_name):]
+                if rest and (rest[0] == '-' or rest[0] == '.') and len(rest) > 1 and rest[1:].isdigit():
+                    logger.info(f"Found pending position for module ID suffix match: {sink_name} -> {pos}")
+                    self._pending_node_positions.pop(sink_name, None)
+                    return pos
+                # Also handle just "-" or "." followed by digit(s)
+                if rest and (rest == '-' or rest == '.'):
+                    # This is just the sink name with no suffix, might be a false positive
+                    pass
 
+        logger.debug(f"No pending position found for client: {client_name}")
         return None
 
     def _apply_pending_position_if_any(self, node: 'NodeItem') -> bool:
@@ -152,6 +169,8 @@ class JackGraphScene(QGraphicsScene):
         pending_pos = self._pop_pending_position_for_client(node.client_name)
         if pending_pos is None:
             return False
+
+        logger.info(f"Applying pending position {pending_pos} to node {node.client_name}")
 
         # Place node centered at the click position (after layout so size is accurate)
         br = node.boundingRect()
@@ -168,180 +187,48 @@ class JackGraphScene(QGraphicsScene):
         return True
     
     @pyqtSlot()
-    def _deferred_full_refresh(self):
-        """Deferred full graph refresh after debounce."""
-        self.full_graph_refresh()
-    
-    @pyqtSlot()
-    def full_graph_refresh(self):
-        """
-        Perform a full refresh of the graph based on current JACK state.
-        This includes updating visibility based on NodeVisibilityManager settings.
-        Only shows audio and MIDI clients, filtering out video clients and other non-audio/MIDI clients.
-        """
-        print("Performing full graph refresh...")
+    def full_graph_refresh(self) -> None:
+        """Perform an immediate full refresh of the graph based on current JACK state.
 
+        Delegates to :class:`GraphStateManager` which queries JACK, filters
+        clients, and emits ``full_sync_ready`` — handled by
+        :meth:`_on_full_sync_ready` to apply visual changes.
+        """
+        self.state_manager.perform_sync()
+
+    @pyqtSlot(object, object, object)
+    def _on_full_sync_ready(self, clients_to_process: dict, present_client_names: set, all_ports: list) -> None:
+        """Apply sync data computed by GraphStateManager to the visual scene."""
+        logger.info("Applying full graph sync...")
         try:
-            # Set flag to indicate we're in a full refresh
             self._in_full_refresh = True
-            
-            # Get only audio and MIDI ports from JACK (filters out video clients, aj-snapshot, etc.)
-            all_ports = []
-            midi_ports = jack_utils.get_all_jack_ports(self.jack_client, is_midi=True)
-            audio_ports = jack_utils.get_all_jack_ports(self.jack_client, is_audio=True)
-            
-            if midi_ports:
-                all_ports.extend(midi_ports)
-            if audio_ports:
-                all_ports.extend(audio_ports)
-            
-            # Synchronize nodes and connections
-            self._synchronize_nodes_with_jack(all_ports)
-            self._synchronize_connections_with_jack(all_ports)
 
-            # Refresh connection visibility for all connections
-            self._refresh_all_connection_visibility()
-            
-            # Clean up orphaned unified sinks after synchronization
-            # This ensures sinks are removed when their owner nodes disappear
+            self._apply_node_sync(clients_to_process, present_client_names)
+            self.connection_mgr.synchronize_connections_with_jack(all_ports)
+            self.connection_mgr.refresh_all_connection_visibility()
             self._cleanup_orphaned_unified_sinks(all_ports)
 
-            # Clear the flag before emitting signal
             self._in_full_refresh = False
-            
-            # Emit signal that connections may have changed
             self.scene_connections_changed.emit()
 
-            # Check if this is the first refresh and emit scene_fully_loaded signal
-            is_first_refresh = not hasattr(self, '_first_refresh_done')
-            if is_first_refresh:
+            if not self._first_refresh_done:
                 self._first_refresh_done = True
                 self.scene_fully_loaded.emit()
-                print("Scene fully loaded signal emitted")
+                logger.info("Scene fully loaded signal emitted")
 
         except Exception as e:
-            print(f"Error during full graph refresh: {e}")
-            import traceback
+            logger.error(f"Error during full graph sync: {e}")
             traceback.print_exc()
         finally:
-            # Always clear the flag, even if there was an error
             self._in_full_refresh = False
 
-    def _synchronize_nodes_with_jack(self, all_ports: list):
-        """Adds new nodes from JACK and removes nodes not in JACK. Updates ports on existing nodes."""
-        print("Synchronizing nodes with JACK...")
-        
-        # Create a lookup of client_name -> list of ports
-        clients_ports = {}
-        for port in all_ports:
-            client_name, port_short_name = port.name.split(':', 1)
-            if client_name not in clients_ports:
-                clients_ports[client_name] = {}
-            clients_ports[client_name][port.name] = port
-
-        # Check if we need to split audio/midi clients
-        split_audio_midi = self.main_config_manager.get_bool('GRAPH_SPLIT_AUDIO_MIDI_CLIENTS', False)
-        
-        clients_to_process = {}
-        if split_audio_midi:
-            for client_name, ports in clients_ports.items():
-                has_audio = any(p.is_audio for p in ports.values())
-                has_midi = any(p.is_midi for p in ports.values())
-
-                if has_audio and has_midi:
-                    # Split into two virtual clients
-                    audio_ports = {p_name: p for p_name, p in ports.items() if p.is_audio}
-                    midi_ports = {p_name: p for p_name, p in ports.items() if p.is_midi}
-                    
-                    audio_client_name = f"{client_name} (Audio)"
-                    clients_to_process[audio_client_name] = {
-                        'ports': audio_ports,
-                        'original_client_name': client_name
-                    }
-                    
-                    midi_client_name = f"{client_name} (MIDI)"
-                    clients_to_process[midi_client_name] = {
-                        'ports': midi_ports,
-                        'original_client_name': client_name
-                    }
-                else:
-                    # Not a mixed client, add as is
-                    clients_to_process[client_name] = {
-                        'ports': ports,
-                        'original_client_name': client_name
-                    }
-        else:
-            # Not splitting, just format the dictionary as needed
-            for client_name, ports in clients_ports.items():
-                clients_to_process[client_name] = {
-                    'ports': ports,
-                    'original_client_name': client_name
-                }
-
-        # Track which clients are actually present in JACK (independent of visibility filtering)
-        present_clients_to_process = dict(clients_to_process)
-
-        # Filter clients based on visibility settings
-        if hasattr(self, 'node_visibility_manager') and self.node_visibility_manager:
-            visible_clients = {}
-            visible_owner_bases: set[str] = set()
-
-            # Pass 1: decide visibility for non-sink clients and collect bases
-            for client_name, client_info in clients_to_process.items():
-                # Determine if this is a MIDI client based on its ports
-                is_midi = False
-                ports = client_info['ports']
-                if ports:
-                    for port_obj in ports.values():
-                        if hasattr(port_obj, 'is_midi') and port_obj.is_midi:
-                            is_midi = True
-                            break
-
-                is_unified_sink_client = client_name.endswith(' Audio/Sink sink') and (
-                    client_name.startswith('unified-input-')
-                    or client_name.startswith('unified-output-')
-                    or client_name.startswith('unified_input-')
-                    or client_name.startswith('unified_output-')
-                )
-
-                if is_unified_sink_client:
-                    continue
-
-                if self.node_visibility_manager.is_node_visible(client_name, is_midi=is_midi):
-                    visible_clients[client_name] = client_info
-                    owner_base = (client_info.get('original_client_name') or client_name).replace(' ', '_')
-                    visible_owner_bases.add(owner_base)
-
-            # Pass 2: include unified sink clients only if their owner is visible
-            for client_name, client_info in clients_to_process.items():
-                is_unified_sink_client = client_name.endswith(' Audio/Sink sink') and (
-                    client_name.startswith('unified-input-')
-                    or client_name.startswith('unified-output-')
-                    or client_name.startswith('unified_input-')
-                    or client_name.startswith('unified_output-')
-                )
-                if not is_unified_sink_client:
-                    continue
-
-                sink_base_name = client_name.replace(' Audio/Sink sink', '')
-                for prefix in ('unified-input-', 'unified-output-', 'unified_input-', 'unified_output-'):
-                    if sink_base_name.startswith(prefix):
-                        owner_base = sink_base_name[len(prefix):]
-                        if owner_base in visible_owner_bases:
-                            visible_clients[client_name] = client_info
-                        break
-
-            clients_to_process = visible_clients
-
+    def _apply_node_sync(self, clients_to_process: dict, present_client_names: set) -> None:
+        """Add/remove/update scene nodes to match the desired state from GraphStateManager."""
         current_client_names = set(clients_to_process.keys())
-        present_client_names = set(present_clients_to_process.keys())
-        
-        # Get the list of nodes we currently have
         existing_client_names = set(self.nodes.keys())
-        
-        # Nodes to remove
-        nodes_to_remove = existing_client_names - current_client_names
-        for client_name in nodes_to_remove:
+
+        # Remove nodes no longer present
+        for client_name in existing_client_names - current_client_names:
             unload_unified_sinks = client_name not in present_client_names
             self.remove_node(client_name, unload_unified_sinks=unload_unified_sinks)
 
@@ -352,44 +239,42 @@ class JackGraphScene(QGraphicsScene):
             original_client_name = client_info['original_client_name']
 
             if client_name in self.nodes:
-                # Existing node, update its ports
                 self._update_node_ports(client_name, ports_to_process)
-                
-                # Ensure unified sinks are verified and re-checked
-                # This fixes the issue where unified sink colors are lost after restart
-                # because the node might not have been recognized as a unified sink yet
+
                 if hasattr(self.nodes[client_name], 'check_if_virtual_sink'):
                     self.nodes[client_name].check_if_virtual_sink(client_name)
-                    # Force update to apply colors
                     self.nodes[client_name].update()
-                    
+
                 if hasattr(self.nodes[client_name], 'ensure_unified_sink_exists'):
                     self.nodes[client_name].ensure_unified_sink_exists()
             else:
-                # New node
                 node = self.add_node(client_name, ports_to_process, original_client_name)
                 if node:
                     config = self.node_configs.get(client_name, {})
                     node.apply_configuration(config)
 
-                    # If this node corresponds to a pending UI-created sink, place it at the click location.
-                    self._apply_pending_position_if_any(node)
-                    
-                    # Defer push-away check until after node is fully laid out
-                    # This handles cases where config has overlapping positions
+                    # Try to apply pending position from context menu click
+                    pending_applied = self._apply_pending_position_if_any(node)
+
                     if self.layouter and not node.is_split_origin:
                         QTimer.singleShot(0, lambda n=node: self._apply_push_away_for_node(n))
-                    
-                    if not config.get('pos') and not node.is_split_origin and not node.is_split_part:
+
+                    # Only apply default grid position if:
+                    # 1. No saved config position exists
+                    # 2. No pending position was applied (new virtual sink at click location)
+                    if not config.get('pos') and not pending_applied and not node.is_split_origin and not node.is_split_part:
                         node.setPos(QPointF(20, 20 + new_node_y_offset))
                         new_node_y_offset += 100
-        
-        # The rest of the original logic for visibility/splitting is complex and might conflict.
-        # For now, focusing on the primary goal of splitting audio/midi.
-        # The original visibility logic might need to be adapted to this new structure.
-        # For simplicity, I'm omitting the complex visibility logic from the original function for now.
 
-    def _apply_node_configurations(self):
+                    # Apply preset unification for newly created nodes
+                    if hasattr(self.connection_manager, 'preset_handler') and self.connection_manager.preset_handler:
+                        unified_clients = self.connection_manager.preset_handler.unified_clients
+                        if client_name in unified_clients:
+                            node.unify_from_preset(unified_clients[client_name])
+
+        self._apply_split_part_visibility()
+
+    def _apply_node_configurations(self) -> None:
         """Applies stored configurations (position, split state) to all current nodes."""
         # print("Applying node configurations...") # Silenced
         new_node_y_offset = 0 # For default positioning of new nodes without config
@@ -428,34 +313,7 @@ class JackGraphScene(QGraphicsScene):
                         new_node_y_offset += 100
 
 
-    def _synchronize_connections_with_jack(self, all_ports: list):
-        """Adds new visual connections from JACK and removes those not in JACK."""
-        print("Synchronizing connections with JACK...")
-        # Clear existing visual connections first
-        for conn in list(self.connections.values()):
-            conn.destroy()
-        self.connections.clear()
-
-        # Rebuild connections by querying JACK
-        all_connections_set = set()
-        output_ports = [p for p in all_ports if p.is_output]
-
-        if output_ports:
-            for out_port in output_ports:
-                try:
-                    # Use GraphJackHandler for operations like get_all_connections
-                    jack_connections = self.graph_jack_handler.get_all_connections(out_port.name)
-                    for actual_out, actual_in in jack_connections:
-                        all_connections_set.add((actual_out, actual_in))
-                except Exception as e:
-                    print(f"Error fetching connections for {out_port.name}: {e}")
-
-        # Synchronize visual connections
-        for conn_key in all_connections_set: # Add all connections found in JACK
-            self.add_connection(*conn_key)
-        # Note: Removal of old connections was handled by clearing all connections first.
-
-    def filter_nodes(self, filter_text: str):
+    def filter_nodes(self, filter_text: str) -> None:
         """Filters nodes based on their client names.
         
         Args:
@@ -482,7 +340,7 @@ class JackGraphScene(QGraphicsScene):
             if excluded:
                 node.setVisible(False)
                 # Hide connections for this node
-                self._update_connections_visibility(node)
+                self.connection_mgr.update_connections_visibility(node)
                 continue
                 
             # Check inclusion terms (all must match)
@@ -491,24 +349,9 @@ class JackGraphScene(QGraphicsScene):
                 included = all(term in node_name_lower for term in include_terms)
                 
             node.setVisible(included)
-            self._update_connections_visibility(node)
+            self.connection_mgr.update_connections_visibility(node)
 
-    def _update_connections_visibility(self, node: 'NodeItem'):
-        """Updates visibility of connections for a node based on its visibility."""
-        if not node.isVisible():
-            # Hide all connections for this node's ports
-            for port in list(node.input_ports.values()) + list(node.output_ports.values()):
-                for conn in port.connections:
-                    conn.setVisible(False)
-        else:
-            # Show connections only if both nodes are visible
-            for port in list(node.input_ports.values()) + list(node.output_ports.values()):
-                for conn in port.connections:
-                    other_port = conn.source_port if port.is_input else conn.dest_port
-                    if other_port and other_port.parentItem().isVisible():
-                        conn.setVisible(True)
-
-    def _apply_push_away_for_node(self, node: 'NodeItem', animate: bool = None):
+    def _apply_push_away_for_node(self, node: 'NodeItem', animate: Optional[bool] = None) -> None:
         """Apply push-away behavior for a newly placed node if it overlaps with others.
         
         Args:
@@ -530,7 +373,7 @@ class JackGraphScene(QGraphicsScene):
         for victim in victims:
             if victim in moved_victims:
                 continue
-                
+
             # Find a new spot for the victim
             v_pos = victim.scenePos()
             new_x, new_y = self.layouter.find_non_overlapping_position(victim, v_pos.x(), v_pos.y())
@@ -545,8 +388,8 @@ class JackGraphScene(QGraphicsScene):
                     
                 moved_victims.add(victim)
                 self._update_config_for_moved_node(victim)
-    
-    def _animate_node_to_position(self, node: 'NodeItem', target_x: float, target_y: float):
+
+    def _animate_node_to_position(self, node: 'NodeItem', target_x: float, target_y: float) -> None:
         """Animate a node smoothly to a target position.
         
         Args:
@@ -554,36 +397,24 @@ class JackGraphScene(QGraphicsScene):
             target_x: Target X coordinate
             target_y: Target Y coordinate
         """
-        # Create animation using QVariantAnimation (works with QGraphicsItem)
-        animation = QVariantAnimation(self)
-        animation.setDuration(constants.PUSH_AWAY_ANIMATION_DURATION)
-        animation.setStartValue(node.pos())
-        animation.setEndValue(QPointF(target_x, target_y))
-        animation.setEasingCurve(QEasingCurve.Type.OutCubic)  # Smooth deceleration
-        
-        # Update node position during animation
-        animation.valueChanged.connect(lambda value: node.setPos(value))
-        
-        # Store animation reference to prevent garbage collection
-        if not hasattr(self, '_active_animations'):
-            self._active_animations = []
-        
-        # Clean up finished animations
-        self._active_animations = [anim for anim in self._active_animations if anim.state() == QVariantAnimation.State.Running]
-        
-        # Add new animation
-        self._active_animations.append(animation)
-        
-        # Start the animation
-        animation.start()
+        self.node_animator.animate_to(
+            node,
+            QPointF(target_x, target_y),
+            duration_ms=constants.PUSH_AWAY_ANIMATION_DURATION,
+            easing=QEasingCurve.Type.OutCubic,
+        )
 
-    def clear_graph(self):
+    def _animate_nodes_to_targets(self, targets: Dict['NodeItem', QPointF]) -> None:
+        self.animations.animate_nodes_to_targets(
+            targets,
+            update_config_for_item=self._update_config_for_moved_node,
+        )
+
+    def clear_graph(self) -> None:
         """Remove all items from the scene."""
-        print("Clearing graph visual.")
+        logger.debug("Clearing graph visual.")
         # Destroy connections first to avoid issues when nodes/ports are removed
-        for conn in list(self.connections.values()):
-            conn.destroy()
-        self.connections.clear()
+        self.connection_mgr.clear_all_connections()
 
         # Remove nodes (which should handle removing their ports)
         for node in list(self.nodes.values()):
@@ -593,7 +424,7 @@ class JackGraphScene(QGraphicsScene):
         self.clear() # Clears the underlying QGraphicsScene
 
 
-    def add_node(self, client_name, client_ports=None, original_client_name=None):
+    def add_node(self, client_name: str, client_ports: Optional[Dict[str, jack.Port]] = None, original_client_name: Optional[str] = None) -> Optional['NodeItem']:
         """
         Add a node representing a JACK client to the scene.
         
@@ -622,7 +453,7 @@ class JackGraphScene(QGraphicsScene):
         
         # Proceed with existing code
         if client_name in self.nodes:
-            print(f"Node {client_name} already exists")
+            logger.debug(f"Node {client_name} already exists")
             return self.nodes[client_name]
         
         try:
@@ -649,7 +480,7 @@ class JackGraphScene(QGraphicsScene):
                 if self.layouter:
                     x, y = self.layouter.find_non_overlapping_position(node, x, y)
                     
-                node.setPos(x, y)
+                node.setPos(QPointF(x, y))
                 
                 # Defer push-away check until after node is fully laid out
                 # This is especially important for complex nodes (like Ardour) with many ports
@@ -658,43 +489,32 @@ class JackGraphScene(QGraphicsScene):
             self.nodes[client_name] = node
             return node
         except Exception as e:
-            print(f"Error creating node for {client_name}: {e}")
+            logger.error(f"Error creating node for {client_name}: {e}")
             import traceback
             traceback.print_exc()
             return None
 
-    def remove_node(self, client_name, unload_unified_sinks: bool = False):
+    def remove_node(self, client_name: str, unload_unified_sinks: bool = False) -> None:
         node = self.nodes.pop(client_name, None)
         if node:
-            print(f"Removing node: {client_name}")
+            logger.debug(f"Removing node: {client_name}")
 
             if unload_unified_sinks:
                 if hasattr(node, 'is_input_unified') and node.is_input_unified:
-                    print(f"Unloading input unified sink for node {client_name} before removal")
+                    logger.debug(f"Unloading input unified sink for node {client_name} before removal")
                     try:
                         node._unload_unified_sink(is_input=True)
                     except Exception as e:
-                        print(f"Error unloading input unified sink: {e}")
+                        logger.error(f"Error unloading input unified sink: {e}")
 
                 if hasattr(node, 'is_output_unified') and node.is_output_unified:
-                    print(f"Unloading output unified sink for node {client_name} before removal")
+                    logger.debug(f"Unloading output unified sink for node {client_name} before removal")
                     try:
                         node._unload_unified_sink(is_input=False)
                     except Exception as e:
-                        print(f"Error unloading output unified sink: {e}")
+                        logger.error(f"Error unloading output unified sink: {e}")
 
-                if hasattr(node, 'is_unified') and node.is_unified:
-                    print(f"Unloading legacy unified sink for node {client_name} before removal")
-                    try:
-                        if hasattr(node, 'unified_ports_type'):
-                            if node.unified_ports_type == 'input':
-                                node._unload_unified_sink(is_input=True)
-                            elif node.unified_ports_type == 'output':
-                                node._unload_unified_sink(is_input=False)
-                            else:
-                                pass
-                    except Exception as e:
-                        print(f"Error unloading legacy unified sink: {e}")
+
 
             # Check if this is a split origin node - if so, also remove its split parts
             if node.is_split_origin:
@@ -735,206 +555,11 @@ class JackGraphScene(QGraphicsScene):
                     node.remove_port(port.port_name) # Clean internal refs and visual item
                 self.removeItem(node)
 
-    # New handlers for detailed signals from JackConnectionManager
-
-    @pyqtSlot(str, str, int, str, bool)
-    def _handle_port_added(self, port_name: str, client_name: str, flags: int, type_str: str, is_input: bool):
-        """Handles the port_added signal from JackConnectionManager."""
-        print(f"GraphScene: Port added - Name: {port_name}, Client: {client_name}, Input: {is_input}, Type: {type_str}, Flags: {flags}")
-        
-        # Only process audio and MIDI ports, skip video ports and others
-        # Check if the port is actually audio or MIDI by querying JACK
-        port_obj = self.graph_jack_handler.get_port_by_name(port_name)
-        if port_obj:
-            if not (port_obj.is_audio or port_obj.is_midi):
-                print(f"GraphScene: Skipping non-audio/MIDI port '{port_name}' of type '{type_str}'")
-                return
-        else:
-            # Fallback to type string check if we can't get the port object
-            if type_str not in ['32 bit float mono audio', 'MIDI', '8 bit raw midi']:
-                print(f"GraphScene: Skipping non-audio/MIDI port '{port_name}' of type '{type_str}'")
-                return
-            
-        node = self.nodes.get(client_name)
-        if not node:
-            print(f"GraphScene: Node '{client_name}' not found for adding port '{port_name}'. Adding node first.")
-            
-            # Fetch only audio and MIDI ports for this client (filters out video ports, etc.)
-            try:
-                client_ports = {}
-                # Get audio ports for this client
-                audio_ports = jack_utils.get_all_jack_ports(self.jack_client, name_pattern=f"{client_name}:*", is_audio=True)
-                # Get MIDI ports for this client  
-                midi_ports = jack_utils.get_all_jack_ports(self.jack_client, name_pattern=f"{client_name}:*", is_midi=True)
-                
-                all_ports = []
-                if audio_ports:
-                    all_ports.extend(audio_ports)
-                if midi_ports:
-                    all_ports.extend(midi_ports)
-                
-                for port in all_ports:
-                    client_ports[port.name] = port
-                
-                node = self.add_node(client_name, client_ports)
-                
-                # Apply any stored configuration for this new node
-                if node:
-                    config = self.node_configs.get(client_name, {})
-                    node.apply_configuration(config)
-                    if not config.get('pos') and not node.is_split_origin and not node.is_split_part:
-                        # Basic default positioning if no config, similar to full_graph_refresh
-                        x = 20.0
-                        y = 20.0 + len(self.nodes) * 50.0
-                        if self.layouter:
-                            x, y = self.layouter.find_non_overlapping_position(node, x, y)
-                        node.setPos(QPointF(x, y))
-                        # Defer push-away check until after node is fully laid out
-                        QTimer.singleShot(0, lambda n=node: self._apply_push_away_for_node(n))
-                
-                return  # Since we've added all ports, no need to add the individual port
-            except Exception as e:
-                print(f"Error fetching all ports for client {client_name}: {e}")
-                # Continue with single port addition as fallback
-        
-        if node:
-            # Fetch the port object from JACK
-            port_obj = self.graph_jack_handler.get_port_by_name(port_name)
-            if port_obj:
-                node.add_port(port_name, port_obj)
-            else:
-                print(f"GraphScene: Could not fetch jack.Port object for '{port_name}'. Port item might be incomplete.")
-                # We could try to create a mock port object here if absolutely necessary
-        else:
-            print(f"GraphScene: Failed to add/find node '{client_name}' for port '{port_name}'.")
-
-
-    @pyqtSlot(str, str)
-    def _handle_port_removed(self, port_name: str, client_name: str):
-        """Handles the port_removed signal from JackConnectionManager."""
-        print(f"GraphScene: Port removed - Name: {port_name}, Client: {client_name}")
-        node = self.nodes.get(client_name)
-        if node:
-            node.remove_port(port_name)
-        else:
-            print(f"GraphScene: Node '{client_name}' not found for removing port '{port_name}'.")
-
-    @pyqtSlot(str)
-    def _handle_client_added(self, client_name: str):
-        """Handles the client_added signal from JackConnectionManager."""
-        print(f"GraphScene: Client added - Name: {client_name}")
-        if client_name not in self.nodes:
-            # Fetch only audio and MIDI ports for this client (filters out video ports, etc.)
-            try:
-                client_ports = {}
-                # Get audio ports for this client
-                audio_ports = jack_utils.get_all_jack_ports(self.jack_client, name_pattern=f"{client_name}:*", is_audio=True)
-                # Get MIDI ports for this client
-                midi_ports = jack_utils.get_all_jack_ports(self.jack_client, name_pattern=f"{client_name}:*", is_midi=True)
-                
-                all_ports = []
-                if audio_ports:
-                    all_ports.extend(audio_ports)
-                if midi_ports:
-                    all_ports.extend(midi_ports)
-                
-                # If this client has no audio or MIDI ports, don't add it to the graph
-                if not all_ports:
-                    print(f"GraphScene: Client '{client_name}' has no audio or MIDI ports, skipping.")
-                    return
-                
-                # Organize ports by name
-                for port in all_ports:
-                    client_ports[port.name] = port
-                
-                # Add the node with the fetched ports
-                node = self.add_node(client_name, client_ports)
-                
-                # Apply configuration and default position
-                if node:
-                    config = self.node_configs.get(client_name, {})
-                    node.apply_configuration(config)
-
-                    # If this node corresponds to a pending UI-created sink, place it at the click location.
-                    self._apply_pending_position_if_any(node)
-                    
-                    # Check for overlaps even if we loaded a position from config
-                    if self.layouter:
-                        current_pos = node.scenePos()
-                        new_x, new_y = self.layouter.find_non_overlapping_position(node, current_pos.x(), current_pos.y())
-                        if new_x != current_pos.x() or new_y != current_pos.y():
-                            node.setPos(new_x, new_y)
-                        else:
-                            # Apply push-away behavior if the node overlaps with others
-                            self._apply_push_away_for_node(node)
-                            
-                    if not config.get('pos') and not node.is_split_origin and not node.is_split_part:
-                        # node.setPos(QPointF(20, 20 + len(self.nodes) * 50)) # Simple default - REMOVED, add_node handles this
-                        pass
-
-                    # Check if the client should be unified
-                    if hasattr(self.connection_manager, 'preset_handler') and self.connection_manager.preset_handler:
-                        unified_clients = self.connection_manager.preset_handler.unified_clients
-                        if client_name in unified_clients:
-                            node.unify_from_preset(unified_clients[client_name])
-            except Exception as e:
-                print(f"Error fetching ports for new client {client_name}: {e}")
-                # Fall back to just adding the node without ports
-                node = self.add_node(client_name)
-                if node:
-                    config = self.node_configs.get(client_name, {})
-                    node.apply_configuration(config)
-                    
-                    # Check for overlaps even if we loaded a position from config
-                    if self.layouter:
-                        current_pos = node.scenePos()
-                        new_x, new_y = self.layouter.find_non_overlapping_position(node, current_pos.x(), current_pos.y())
-                        if new_x != current_pos.x() or new_y != current_pos.y():
-                            node.setPos(new_x, new_y)
-                        else:
-                            # Defer push-away check until after node is fully laid out
-                            QTimer.singleShot(0, lambda n=node: self._apply_push_away_for_node(n))
-
-                    if not config.get('pos') and not node.is_split_origin and not node.is_split_part:
-                        # node.setPos(QPointF(20, 20 + len(self.nodes) * 50))
-                        pass
-        else:
-            print(f"GraphScene: Client '{client_name}' already exists.")
-
-
-    @pyqtSlot(str)
-    def _handle_client_removed(self, client_name: str):
-        """Handles the client_removed signal from JackConnectionManager."""
-        print(f"GraphScene: Client removed - Name: {client_name}")
-        self.remove_node(client_name, unload_unified_sinks=True)
-
-    @pyqtSlot(str, str)
-    def _handle_connection_made(self, out_port_name: str, in_port_name: str):
-        """Handles the connection_made signal from JackConnectionManager."""
-        print(f"GraphScene: Connection made - From: {out_port_name}, To: {in_port_name}")
-        self.add_connection(out_port_name, in_port_name)
-
-    @pyqtSlot(str, str)
-    def _handle_connection_broken(self, out_port_name: str, in_port_name: str):
-        """Handles the connection_broken signal from JackConnectionManager."""
-        print(f"GraphScene: Connection broken - From: {out_port_name}, To: {in_port_name}")
-        self.remove_connection(out_port_name, in_port_name)
-
     @pyqtSlot()
-    def _handle_jack_shutdown(self):
-        """Handles the jack_shutdown_signal from JackConnectionManager."""
-        print("GraphScene: JACK server shutdown detected. Clearing graph.")
+    def _on_jack_shutdown(self) -> None:
+        """Handle JACK server shutdown signal from GraphStateManager."""
+        logger.debug("GraphScene: JACK server shutdown detected. Clearing graph.")
         self.clear_graph()
-        # Optionally, display a message to the user in the graph view
-        # e.g., by adding a QGraphicsTextItem indicating JACK shutdown.
-
-    # Old handlers (to be removed or verified if still needed by other parts, though unlikely for these specific ones)
-    # @pyqtSlot(str, bool)
-    # def handle_client_registered(self, client_name: str, is_registered: bool): ...
-    # @pyqtSlot(str, bool)
-    # def handle_port_registered(self, port_name: str, is_registered: bool): ...
-    # @pyqtSlot(str, str, bool)
-    # def handle_ports_connected(self, out_port_name: str, in_port_name: str, is_connected: bool): ...
 
     def find_port_item(self, port_name: str) -> PortItem | None:
         """Find the VISIBLE PortItem QGraphicsItem corresponding to a full port name,
@@ -942,7 +567,7 @@ class JackGraphScene(QGraphicsScene):
         
         port_obj = self.graph_jack_handler.get_port_by_name(port_name)
         if not port_obj:
-            print(f"find_port_item: Could not get port object for '{port_name}'.")
+            logger.debug(f"find_port_item: Could not get port object for '{port_name}'.")
             return None
 
         client_name, short_port_name = port_name.split(':', 1)
@@ -963,7 +588,7 @@ class JackGraphScene(QGraphicsScene):
             node_to_search = self.nodes.get(client_name)
 
         if not node_to_search:
-            print(f"find_port_item: Node for client '{client_name}' not found.")
+            logger.debug(f"find_port_item: Node for client '{client_name}' not found.")
             return None
 
         # Now, handle manually split nodes (input/output parts)
@@ -974,43 +599,16 @@ class JackGraphScene(QGraphicsScene):
             elif not port_obj.is_input and node_to_search.split_output_node:
                 target_node = node_to_search.split_output_node
             else:
-                print(f"find_port_item: Port '{port_name}' not found on expected split part of '{node_to_search.client_name}'.")
+                logger.debug(f"find_port_item: Port '{port_name}' not found on expected split part of '{node_to_search.client_name}'.")
                 return None
         
         # Search for the port on the determined target node
         port_item = target_node.input_ports.get(port_name) or target_node.output_ports.get(port_name)
         return port_item
 
-    def add_connection(self, out_port_name: str, in_port_name: str):
-        conn_key = (out_port_name, in_port_name)
-        if conn_key in self.connections:
-            return # Already exists visually
-
-        source_port_item = self.find_port_item(out_port_name)
-        dest_port_item = self.find_port_item(in_port_name)
-
-        if source_port_item and dest_port_item:
-            # print(f"Adding visual connection: {out_port_name} -> {in_port_name}") # Commented out for less verbose logging
-            conn = ConnectionItem(source_port_item, dest_port_item)
-            self.addItem(conn)
-            self.connections[conn_key] = conn
-            self.scene_connections_changed.emit() # Emit signal
-        else:
-            print(f"Warning: Could not find port items for connection: {out_port_name} -> {in_port_name}")
-
-
-    def remove_connection(self, out_port_name: str, in_port_name: str):
-        conn_key = (out_port_name, in_port_name)
-        conn = self.connections.pop(conn_key, None)
-        if conn:
-             print(f"Removing visual connection: {out_port_name} -> {in_port_name}")
-             conn.destroy() # Removes from scene and port lists
-             self.scene_connections_changed.emit() # Emit signal
-
-
     # --- Mouse Events (Delegated to Handler) ---
 
-    def mousePressEvent(self, event):
+    def mousePressEvent(self, event: QGraphicsSceneMouseEvent) -> None:
         """Delegate press event to the interaction handler."""
         # Let handler process first (e.g., store potential drag item)
         self.interaction_handler.mousePressEvent(event)
@@ -1022,7 +620,7 @@ class JackGraphScene(QGraphicsScene):
         # print(f"Scene mousePress: Called super().") # Optional debug
 
 
-    def mouseMoveEvent(self, event):
+    def mouseMoveEvent(self, event: QGraphicsSceneMouseEvent) -> None:
         """Delegate move event to the interaction handler."""
         # Let handler process first (e.g., initiate drag, update line)
         consumed = self.interaction_handler.mouseMoveEvent(event)
@@ -1038,7 +636,7 @@ class JackGraphScene(QGraphicsScene):
         super().mouseMoveEvent(event)
 
 
-    def mouseReleaseEvent(self, event):
+    def mouseReleaseEvent(self, event: QGraphicsSceneMouseEvent) -> None:
         """Delegate release event to the interaction handler."""
         if self.interaction_handler._is_double_click:
             self.interaction_handler._is_double_click = False
@@ -1089,7 +687,7 @@ class JackGraphScene(QGraphicsScene):
                             
                         if victim in moved_victims:
                             continue # Already moved this one
-                            
+
                         # Find a new spot for the victim
                         # We start searching from the victim's current position
                         v_pos = victim.scenePos()
@@ -1132,7 +730,7 @@ class JackGraphScene(QGraphicsScene):
 
     # --- Other Methods ---
  
-    def save_node_states(self, graph_zoom_level=None, current_untangle_setting=None):
+    def save_node_states(self, graph_zoom_level: Optional[float] = None, current_untangle_setting: Optional[int] = None) -> None:
         """Save the current node configurations (positions, split states, fold states, zoom level, and untangle setting)
            using the ConfigManager.
         Args:
@@ -1143,7 +741,7 @@ class JackGraphScene(QGraphicsScene):
         # Pass the dictionary of original NodeItems, zoom level, and untangle setting to the config manager
         self.node_config_manager.save_node_states(self.nodes, graph_zoom_level=graph_zoom_level, current_untangle_setting=current_untangle_setting)
 
-    def request_specific_node_save(self, node_item: 'NodeItem'):
+    def request_specific_node_save(self, node_item: 'NodeItem') -> None:
         """Requests the ConfigManager to save the state of a specific node."""
         if not self.node_config_manager or not node_item:
             return
@@ -1158,7 +756,7 @@ class JackGraphScene(QGraphicsScene):
         # print(f"JackGraphScene: Requesting specific save for node '{client_name_key}'. Zoom: {current_zoom}") # DEBUG
         self.node_config_manager.save_node_states(nodes_to_save, graph_zoom_level=current_zoom)
 
-    def _update_config_for_moved_node(self, node_item: 'NodeItem'):
+    def _update_config_for_moved_node(self, node_item: 'NodeItem') -> None:
         """Helper to update the scene's node_configs dict after a node moves.
         Ensures configuration is saved under the original client name for split parts."""
         if not isinstance(node_item, NodeItem):
@@ -1184,16 +782,16 @@ class JackGraphScene(QGraphicsScene):
                     config_key_to_update = "split_output_pos"
                 elif has_inputs_only: # Fallback if suffix naming isn't strictly followed by client_name
                     config_key_to_update = "split_input_pos"
-                    print(f"Warning: Split part '{node_item.client_name}' identified as input by ports, not suffix.")
+                    logger.warning(f"Warning: Split part '{node_item.client_name}' identified as input by ports, not suffix.")
                 elif has_outputs_only: # Fallback
                     config_key_to_update = "split_output_pos"
-                    print(f"Warning: Split part '{node_item.client_name}' identified as output by ports, not suffix.")
+                    logger.warning(f"Warning: Split part '{node_item.client_name}' identified as output by ports, not suffix.")
                 else:
-                    print(f"Warning: Moved split part '{node_item.client_name}' for original '{original_client_name}'"
+                    logger.warning(f"Warning: Moved split part '{node_item.client_name}' for original '{original_client_name}'"
                           f" could not be identified as input or output part for config saving.")
                     return # Don't save if we can't determine the key
             else:
-                print(f"Warning: Moved split part '{node_item.client_name}' has no reference to its origin. Cannot save position.")
+                logger.warning(f"Warning: Moved split part '{node_item.client_name}' has no reference to its origin. Cannot save position.")
                 return # Don't save if no origin
 
         elif not node_item.is_split_origin and not node_item.is_split_part:
@@ -1211,9 +809,6 @@ class JackGraphScene(QGraphicsScene):
 
             # Store the new position
             self.node_configs[original_client_name][config_key_to_update] = new_pos
-            # print(f"Updated config for '{original_client_name}': {config_key_to_update} = {new_pos}") # Silenced
-        # else:
-            # print(f"Debug: No config update for {node_item.client_name} (is_split_part={node_item.is_split_part}, is_split_origin={node_item.is_split_origin})")
 
     def get_node_item_by_name(self, node_name: str) -> 'NodeItem | None':
         """
@@ -1222,18 +817,7 @@ class JackGraphScene(QGraphicsScene):
         """
         return self.nodes.get(node_name)
 
-    def update_all_connection_paths(self):
-        """
-        Iterates through all ConnectionItem instances in the scene
-        and calls their update_path() method to refresh their visual representation.
-        Useful after nodes have been moved, for example, when loading a preset.
-        """
-        # print("Updating all connection paths...") # Silenced
-        for connection_item in self.connections.values():
-            connection_item.update_path()
-        self.update() # Request a general scene update
-        
-    def untangle_graph(self, max_nodes_per_row=6):
+    def untangle_graph(self, max_nodes_per_row: int = 6) -> None:
         """
         Automatically organizes the graph nodes to reduce visual clutter.
         Delegates to the GraphLayouter class to perform the actual layout.
@@ -1242,15 +826,98 @@ class JackGraphScene(QGraphicsScene):
             max_nodes_per_row (int): Maximum number of nodes to place in a row before
                                      starting a new row. Default is 6.
         """
-        self.layouter.untangle_graph(max_nodes_per_row)
+        try:
+            before = {n: n.pos() for n in self.nodes.values()}
+            self.layouter.untangle_graph(max_nodes_per_row)
+            after = {n: n.pos() for n in self.nodes.values()}
+        except Exception as e:
+            logger.error("Error in untangle_graph: %s", e)
+            import traceback
+            logger.error("Traceback: %s", traceback.format_exc())
+            return
 
-    def untangle_graph_by_io(self):
+        targets: Dict[NodeItem, QPointF] = {}
+        for node, after_pos in after.items():
+            if before.get(node) != after_pos:
+                targets[node] = after_pos
+
+        for node, before_pos in before.items():
+            node.setPos(before_pos)
+
+        self._animate_nodes_to_targets(targets)
+
+    def untangle_graph_by_io(self) -> None:
         """
         Triggers the I/O-based untangle layout.
         """
-        self.layouter.untangle_graph_by_io()
+        from .node_item import NodeItem
 
-    def unsplit_all_nodes(self, save_state=True):
+        logger.debug("=== Starting untangle_graph_by_io ===")
+        logger.debug("Current nodes in scene (self.nodes): %d", len(self.nodes))
+        logger.debug("Current items in scene: %d", len(self.items()))
+
+        try:
+            logger.debug("Calling layouter.untangle_graph_by_io()")
+            self.layouter.untangle_graph_by_io()
+        except Exception as e:
+            logger.error("Error in untangle_graph_by_io: %s", e)
+            import traceback
+            logger.error("Traceback: %s", traceback.format_exc())
+            return
+
+        # After layout is complete, ensure all node positions are properly updated
+        self.connection_mgr.update_all_connection_paths()
+        logger.debug("=== Finished untangle_graph_by_io ===")
+
+    def untangle_graph_auto(self, auto_split: bool = True) -> bool:
+        """Triggers the Graphviz-based auto layout.
+
+        Args:
+            auto_split: If True, automatically split nodes for optimal layout.
+                If False, preserve the current split/unsplit state.
+
+        Returns:
+            True on success, False if graphviz is unavailable or layout fails.
+        """
+        from .node_item import NodeItem
+
+        before_items = [
+            item for item in self.items()
+            if isinstance(item, NodeItem) and item.isVisible() and not item.is_split_origin
+        ]
+        before_pos = {n: n.pos() for n in before_items}
+
+        try:
+            ok = self.layouter.untangle_graph_auto(auto_split=auto_split)
+        except Exception as e:
+            logger.error("Error in untangle_graph_auto: %s", e)
+            import traceback
+            logger.error("Traceback: %s", traceback.format_exc())
+            return False
+
+        if not ok:
+            return False
+
+        after_items = [
+            item for item in self.items()
+            if isinstance(item, NodeItem) and item.isVisible() and not item.is_split_origin
+        ]
+        after_pos = {n: n.pos() for n in after_items}
+
+        targets, start_pos = self.animations.compute_layout_transition_targets(
+            before_items=before_items,
+            before_pos=before_pos,
+            after_pos=after_pos,
+            origin_getter=lambda n: getattr(n, 'split_origin_node', None),
+        )
+
+        for node, pos in start_pos.items():
+            node.setPos(pos)
+
+        self._animate_nodes_to_targets(targets)
+        return True
+
+    def unsplit_all_nodes(self, save_state: bool = True) -> None:
         """
         Unsplits all currently split nodes in the scene.
         
@@ -1274,21 +941,22 @@ class JackGraphScene(QGraphicsScene):
                 node.split_handler.unsplit_node(save_state=False)  # Don't save state for each individual unsplit
                 unsplit_count += 1
             except Exception as e:
-                print(f"Error unsplitting node {node.client_name}: {e}")
+                logger.error(f"Error unsplitting node {node.client_name}: {e}")
         
         # Save state once at the end if requested
         if save_state and unsplit_count > 0:
             self.save_node_states()
         
         if unsplit_count > 0:
-            print(f"Unsplit {unsplit_count} nodes for untangle operation")
+            logger.debug(f"Unsplit {unsplit_count} nodes for untangle operation")
 
-    def set_node_visibility_manager(self, node_visibility_manager):
-        """Set the NodeVisibilityManager instance for this scene."""
+    def set_node_visibility_manager(self, node_visibility_manager: 'NodeVisibilityManager') -> None:
+        """Set the NodeVisibilityManager instance for this scene and state manager."""
         self.node_visibility_manager = node_visibility_manager
-        print("Node visibility manager set for graph scene")
+        self.state_manager.set_node_visibility_manager(node_visibility_manager)
+        logger.debug("Node visibility manager set for graph scene")
 
-    def _update_node_ports(self, client_name, port_dict):
+    def _update_node_ports(self, client_name: str, port_dict: Dict[str, jack.Port]) -> None:
         """Update ports within an existing node"""
         if client_name not in self.nodes:
             return
@@ -1312,48 +980,74 @@ class JackGraphScene(QGraphicsScene):
             port_obj = port_dict[port_name]
             node.add_port(port_name, port_obj)
 
-    def _update_node_connections_visibility(self, node: 'NodeItem', visible: bool):
+    def _apply_split_part_visibility(self) -> None:
         """
-        Update the visibility of all connections for a node.
+        Apply individual visibility settings to split node parts.
         
-        Args:
-            node: The node whose connections should be updated
-            visible: Whether the connections should be visible
+        This method handles the case where only the input or only the output part
+        of a split node should be visible. It checks the visibility settings and
+        hides/shows the appropriate split parts.
         """
-        if not node:
+        if not hasattr(self, 'node_visibility_manager') or not self.node_visibility_manager:
             return
-            
-        # For all ports of this node
-        for port_list in [node.input_ports, node.output_ports]:
-            for port_item in port_list.values():
-                # For all connections of this port
-                for conn in list(port_item.connections):
-                    if conn:
-                        conn.setVisible(visible)
-
-    def _refresh_all_connection_visibility(self):
-        """
-        Ensure all connections have proper visibility based on their connected ports.
-        A connection should only be visible if BOTH its source and destination ports 
-        are visible.
-        """
-        for conn_key, conn in list(self.connections.items()):
-            if not conn or not conn.source_port or not conn.dest_port:
+        
+        for node in list(self.nodes.values()):
+            # Only process split origin nodes
+            if not node.is_split_origin:
                 continue
-                
-            # Get the parent node items for both ports
-            source_node = conn.source_port.parentItem()
-            dest_node = conn.dest_port.parentItem()
             
-            # A connection is visible only if both its connected nodes are visible
-            should_be_visible = (source_node and dest_node and 
-                                source_node.isVisible() and 
-                                dest_node.isVisible())
+            # Get the base client name
+            client_name = node.client_name
             
-            # Update the connection visibility
-            conn.setVisible(should_be_visible)
+            # Determine if this is a MIDI node
+            is_midi = False
+            if node.split_input_node:
+                for port_item in node.split_input_node.input_ports.values():
+                    if hasattr(port_item.port_obj, 'is_midi') and port_item.port_obj.is_midi:
+                        is_midi = True
+                        break
+            if not is_midi and node.split_output_node:
+                for port_item in node.split_output_node.output_ports.values():
+                    if hasattr(port_item.port_obj, 'is_midi') and port_item.port_obj.is_midi:
+                        is_midi = True
+                        break
+            
+            # Check visibility settings for input and output parts
+            input_visible = self.node_visibility_manager.is_input_visible(client_name, is_midi=is_midi)
+            output_visible = self.node_visibility_manager.is_output_visible(client_name, is_midi=is_midi)
+            
+            logger.debug(f"Split part visibility for {client_name} (MIDI={is_midi}): input={input_visible}, output={output_visible}")
+            
+            # Apply visibility to split parts
+            if node.split_input_node:
+                should_hide = not input_visible
+                is_currently_hidden = not node.split_input_node.isVisible()
+                if should_hide != is_currently_hidden:
+                    if should_hide:
+                        node.split_input_node.hide()
+                        # Also hide connections for this part
+                        if hasattr(self, 'connection_mgr'):
+                            self.connection_mgr.update_node_connections_visibility(node.split_input_node, False)
+                    else:
+                        node.split_input_node.show()
+                        if hasattr(self, 'connection_mgr'):
+                            self.connection_mgr.update_node_connections_visibility(node.split_input_node, True)
+            
+            if node.split_output_node:
+                should_hide = not output_visible
+                is_currently_hidden = not node.split_output_node.isVisible()
+                if should_hide != is_currently_hidden:
+                    if should_hide:
+                        node.split_output_node.hide()
+                        # Also hide connections for this part
+                        if hasattr(self, 'connection_mgr'):
+                            self.connection_mgr.update_node_connections_visibility(node.split_output_node, False)
+                    else:
+                        node.split_output_node.show()
+                        if hasattr(self, 'connection_mgr'):
+                            self.connection_mgr.update_node_connections_visibility(node.split_output_node, True)
 
-    def _cleanup_orphaned_unified_sinks(self, all_ports: list):
+    def _cleanup_orphaned_unified_sinks(self, all_ports: List[jack.Port]) -> None:
         """
         Clean up unified virtual sinks that no longer have corresponding JACK clients.
         This handles the edge case where the graph app is closed and reopened, but some
@@ -1363,22 +1057,23 @@ class JackGraphScene(QGraphicsScene):
             try:
                 return self.connection_manager.unified_sink_manager.cleanup_orphaned_unified_sinks(all_ports)
             except Exception as e:
-                print(f"Error during unified sink cleanup: {e}")
+                logger.error(f"Error during unified sink cleanup: {e}")
                 return 0
         else:
-            print("UnifiedSinkManager not available for cleanup.")
-            print(f"Available attributes on connection_manager: {[attr for attr in dir(self.connection_manager) if not attr.startswith('_')]}")
+            logger.debug("UnifiedSinkManager not available for cleanup.")
+            logger.debug(f"Available attributes on connection_manager: {[attr for attr in dir(self.connection_manager) if not attr.startswith('_')]}")
             return 0
 
-    def get_unified_nodes(self):
+    def get_unified_nodes(self) -> List['NodeItem']:
         """Returns a list of all unified nodes in the scene."""
         unified_nodes = []
         for node in self.nodes.values():
-            if hasattr(node, 'is_unified') and node.is_unified:
+            if (hasattr(node, 'is_input_unified') and node.is_input_unified) or \
+               (hasattr(node, 'is_output_unified') and node.is_output_unified):
                 unified_nodes.append(node)
         return unified_nodes
 
-    def get_node_states(self):
+    def get_node_states(self) -> Dict[str, dict]:
         """
         Gets the current node states (positions, split states, fold states) for all nodes.
         Returns a deep copy of the node_configs dictionary.
@@ -1442,16 +1137,10 @@ class JackGraphScene(QGraphicsScene):
                 # Store manual split flag if available
                 if hasattr(node, 'config') and node.config and 'manual_split' in node.config:
                     current_configs[client_name]['manual_split'] = node.config['manual_split']
-
-                # Store unified state if available
-                if hasattr(node, 'is_unified') and node.is_unified:
-                    current_configs[client_name]['is_unified'] = True
-                    current_configs[client_name]['unified_virtual_sink_name'] = node.unified_virtual_sink_name
-                    current_configs[client_name]['unified_module_id'] = node.unified_module_id
         
         return copy.deepcopy(current_configs)
     
-    def apply_unified_states(self, unified_clients):
+    def apply_unified_states(self, unified_clients: Dict[str, Any]) -> None:
         """
         Applies unified states to nodes from a preset.
 
@@ -1466,7 +1155,7 @@ class JackGraphScene(QGraphicsScene):
             if node and hasattr(node, 'unify_from_preset'):
                 node.unify_from_preset(unify_data)
 
-    def restore_node_states(self, node_states):
+    def restore_node_states(self, node_states: Dict[str, dict]) -> None:
         """
         Restores node positions and states from the provided configuration.
         
@@ -1475,6 +1164,8 @@ class JackGraphScene(QGraphicsScene):
         """
         if not node_states:
             return
+
+        targets: Dict[NodeItem, QPointF] = {}
             
         # For each node in the configuration
         for client_name, config in node_states.items():
@@ -1490,7 +1181,7 @@ class JackGraphScene(QGraphicsScene):
                 
                 # Set the original node position if available
                 if 'pos' in config:
-                    node.setPos(config['pos'])
+                    targets[node] = config['pos']
                 
                 # Set manual_split flag if available
                 if 'manual_split' in config:
@@ -1501,10 +1192,10 @@ class JackGraphScene(QGraphicsScene):
                 
                 # Set positions for input and output parts
                 if 'split_input_pos' in config and node.split_input_node:
-                    node.split_input_node.setPos(config['split_input_pos'])
+                    targets[node.split_input_node] = config['split_input_pos']
                 
                 if 'split_output_pos' in config and node.split_output_node:
-                    node.split_output_node.setPos(config['split_output_pos'])
+                    targets[node.split_output_node] = config['split_output_pos']
                 
                 # Set fold states for split parts
                 if 'input_part_folded' in config and node.split_input_node:
@@ -1525,7 +1216,7 @@ class JackGraphScene(QGraphicsScene):
                 
                 # Set position for non-split node
                 if 'pos' in config:
-                    node.setPos(config['pos'])
+                    targets[node] = config['pos']
                 
                 # Preserve split position history for potential future splits
                 if hasattr(node, 'config'):
@@ -1551,13 +1242,12 @@ class JackGraphScene(QGraphicsScene):
                         # Toggle the state directly or use toggle_main_fold_state
                         node.fold_handler.toggle_main_fold_state()
         
-        # Update all connection paths to reflect the new node positions
-        self.update_all_connection_paths()
-        
-        # Force a scene update
-        self.update()
+        self._animate_nodes_to_targets(targets)
 
-    def keyPressEvent(self, event):
+        # Update all connection paths to reflect the new node positions
+        self.connection_mgr.update_all_connection_paths()
+
+    def keyPressEvent(self, event: QGraphicsSceneMouseEvent) -> None:
         """Handle keyboard shortcuts for graph operations."""
         key = event.key()
         

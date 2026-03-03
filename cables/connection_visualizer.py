@@ -3,13 +3,22 @@
 Connection visualization service for drawing JACK/PipeWire connection lines.
 """
 
-import random
 from PyQt6.QtCore import QPointF, QRectF, Qt
 from PyQt6.QtGui import QPainterPath, QColor, QPen
 from PyQt6.QtWidgets import QGraphicsPathItem
 import jack
 
-from cables import jack_utils
+import logging
+logger = logging.getLogger(__name__)
+
+from cables.jack_service import get_jack_service
+from cable_core import config_keys as keys
+from cables.utils.connection_colors import get_client_color, client_name_from_port
+
+from typing import TYPE_CHECKING, Optional, List, Any
+if TYPE_CHECKING:
+    from PyQt6.QtWidgets import QGraphicsScene, QGraphicsView, QTreeWidget
+    from cable_core.config import ConfigManager
 
 
 class ConnectionVisualizer:
@@ -20,20 +29,20 @@ class ConnectionVisualizer:
     including path calculation, color generation, and scene management.
     """
     
-    def __init__(self, jack_client, ui_manager, config_manager=None):
+    def __init__(self, jack_client: Any, ui_manager: Any, config_manager: Optional['ConfigManager'] = None) -> None:
         """
         Initialize the ConnectionVisualizer.
         
         Args:
-            jack_client: JACK client for accessing ports and connections
+            jack_client: JACK client (ignored, JackService is used)
             ui_manager: UI manager for accessing theme settings
             config_manager: Config manager for loading settings
         """
-        self.jack_client = jack_client
+        self._jack_service = get_jack_service()
         self.ui_manager = ui_manager
         self.config_manager = config_manager
     
-    def update_connection_graphics(self, scene, view, output_tree, input_tree, is_midi):
+    def update_connection_graphics(self, scene: 'QGraphicsScene', view: 'QGraphicsView', output_tree: 'QTreeWidget', input_tree: 'QTreeWidget', is_midi: bool) -> None:
         """
         Update the connection graphics for the given scene and trees.
         
@@ -53,16 +62,16 @@ class ConnectionVisualizer:
         try:
             relevant_output_ports: list[jack.Port] = []
             if is_midi:
-                relevant_output_ports = jack_utils.get_all_jack_ports(self.jack_client, is_output=True, is_midi=True)
+                relevant_output_ports = self._jack_service.get_ports(is_output=True, is_midi=True)
             else:
-                relevant_output_ports = jack_utils.get_all_jack_ports(self.jack_client, is_output=True, is_audio=True)
+                relevant_output_ports = self._jack_service.get_ports(is_output=True, is_audio=True)
 
             for output_port_obj in relevant_output_ports:
-                port_connections = jack_utils.get_all_jack_connections(self.jack_client, output_port_obj)
+                port_connections = self._jack_service.get_all_connections_as_tuples(output_port_obj)
                 connections.extend(port_connections)
 
         except jack.JackError as e:
-            print(f"Error getting connections via jack_utils: {e}")
+            logger.error(f"Error getting connections via JackService: {e}")
             return
         
         for output_name, input_name in connections:
@@ -76,7 +85,7 @@ class ConnectionVisualizer:
                 # Check if straight lines are enabled
                 use_straight = False
                 if self.config_manager:
-                    use_straight = self.config_manager.get_bool('use_straight_lines', False)
+                    use_straight = self.config_manager.get_bool(keys.USE_STRAIGHT_LINES, False)
                 
                 if use_straight:
                     path.lineTo(end_pos)
@@ -89,28 +98,27 @@ class ConnectionVisualizer:
                         end_pos
                     )
                 
-                base_name = output_name.rsplit(':', 1)[0]
-                
-                random.seed(base_name)
-                base_color = QColor(random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
-                
-                if self.ui_manager.dark_mode:
-                    h, s, v, a = base_color.getHsvF()
-                    s = min(1.0, s * 1.4)
-                    v = min(1.0, v * 1.3)
-                    base_color.setHsvF(h, s, v, a)
+                use_colored = False
+                if self.config_manager:
+                    use_colored = self.config_manager.get_bool(keys.GRAPH_COLORED_CONNECTIONS, False)
+
+                if use_colored:
+                    base_name = client_name_from_port(output_name)
+                    base_color = get_client_color(base_name, self.ui_manager.dark_mode)
+                else:
+                    base_color = self.ui_manager.connection_color
                 
                 # Get line thickness from config
                 line_thickness = 2
                 if self.config_manager:
-                    line_thickness = self.config_manager.get_int_setting('CONNECTION_LINE_THICKNESS', 2)
+                    line_thickness = self.config_manager.get_int_setting(keys.CONNECTION_LINE_THICKNESS, 2)
                 pen = QPen(base_color, line_thickness)
                 pen.setCosmetic(True)
                 path_item = QGraphicsPathItem(path)
                 path_item.setPen(pen)
                 scene.addItem(path_item)
     
-    def get_port_position(self, tree_widget, port_name, connection_view, is_output):
+    def get_port_position(self, tree_widget: 'QTreeWidget', port_name: str, connection_view: 'QGraphicsView', is_output: bool) -> Optional[QPointF]:
         """
         Get the scene position for a port in the tree widget.
         

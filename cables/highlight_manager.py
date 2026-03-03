@@ -1,14 +1,28 @@
 # cables/highlight_manager.py
+"""
+Manages visual highlighting of connected ports in Audio/MIDI tree widgets.
+"""
 
 import jack
 from PyQt6.QtGui import QColor, QBrush
 from PyQt6.QtWidgets import QTreeWidgetItem, QTreeWidget
 from PyQt6.QtCore import Qt
 
+import logging
+from typing import TYPE_CHECKING, Optional, List, Dict, Any, Tuple, Set
+
+if TYPE_CHECKING:
+    from cables.ui.port_tree_widget import PortTreeWidget
+
+logger = logging.getLogger(__name__)
+
+from cables.jack_service import get_jack_service
+
+
 class HighlightManager:
     """Manages highlighting of ports and groups in the tree widgets."""
 
-    def __init__(self, input_tree, output_tree, midi_input_tree, midi_output_tree, client, colors):
+    def __init__(self, input_tree: Optional['PortTreeWidget'], output_tree: Optional['PortTreeWidget'], midi_input_tree: Optional['PortTreeWidget'], midi_output_tree: Optional['PortTreeWidget'], client: Optional[jack.Client], colors: Dict[str, QColor]) -> None:
         """
         Initialize the HighlightManager.
 
@@ -17,14 +31,14 @@ class HighlightManager:
             output_tree: The output port tree widget (PortTreeWidget).
             midi_input_tree: The MIDI input port tree widget (PortTreeWidget).
             midi_output_tree: The MIDI output port tree widget (PortTreeWidget).
-            client: The jack.Client instance.
+            client: The jack.Client instance (ignored, JackService is used).
             colors: A dictionary containing color definitions.
         """
         self.input_tree = input_tree
         self.output_tree = output_tree
         self.midi_input_tree = midi_input_tree
         self.midi_output_tree = midi_output_tree
-        self.client = client
+        self._jack_service = get_jack_service()
         self.colors = colors # Expecting keys like 'highlight', 'auto_highlight', 'drag_highlight', 'text', 'background'
 
         # Store colors for easy access
@@ -34,7 +48,7 @@ class HighlightManager:
         self.auto_highlight_color = self.colors.get('auto_highlight', QColor(255, 140, 0)) # Default light mode auto-highlight
         self.drag_highlight_color = self.colors.get('drag_highlight', QColor(200, 200, 200)) # Default light mode drag highlight
 
-    def set_trees(self, input_tree, output_tree, midi_input_tree, midi_output_tree):
+    def set_trees(self, input_tree: 'PortTreeWidget', output_tree: 'PortTreeWidget', midi_input_tree: 'PortTreeWidget', midi_output_tree: 'PortTreeWidget') -> None:
         """
         Update tree references after they are created.
 
@@ -51,7 +65,7 @@ class HighlightManager:
 
     # --- Highlighting Methods Moved from JackConnectionManager ---
 
-    def _highlight_connected_outputs_for_input(self, input_name, is_midi):
+    def _highlight_connected_outputs_for_input(self, input_name: str, is_midi: bool) -> None:
         """
         Highlight output ports connected to the given input port.
 
@@ -61,13 +75,13 @@ class HighlightManager:
         """
         try:
             # Get only relevant output ports
-            output_ports = self.client.get_ports(is_output=True, is_midi=is_midi)
+            output_ports = self._jack_service.get_ports(is_output=True, is_midi=is_midi)
             for output_port in output_ports:
                 try:
                     # Check if output port exists before querying connections
-                    if not any(p.name == output_port.name for p in self.client.get_ports(is_output=True, is_midi=is_midi)):
+                    if not any(p.name == output_port.name for p in self._jack_service.get_ports(is_output=True, is_midi=is_midi)):
                         continue
-                    connections = self.client.get_all_connections(output_port)
+                    connections = self._jack_service.get_all_connections(output_port)
                     if input_name in [conn.name for conn in connections]:
                         if is_midi:
                             self.highlight_midi_output(output_port.name, auto_highlight=True)
@@ -76,9 +90,9 @@ class HighlightManager:
                 except jack.JackError:
                     continue # Ignore errors for individual ports
         except jack.JackError as e:
-            print(f"Error highlighting connected outputs: {e}")
+            logger.error(f"Error highlighting connected outputs: {e}")
 
-    def _highlight_connected_inputs_for_output(self, output_name, is_midi):
+    def _highlight_connected_inputs_for_output(self, output_name: str, is_midi: bool) -> None:
         """
         Highlight input ports connected to the given output port.
 
@@ -88,13 +102,13 @@ class HighlightManager:
         """
         try:
             # Get only relevant input ports
-            input_ports = self.client.get_ports(is_input=True, is_midi=is_midi)
+            input_ports = self._jack_service.get_ports(is_input=True, is_midi=is_midi)
             for input_port in input_ports:
                 try:
                     # Check if input port exists before querying connections
-                    if not any(p.name == input_port.name for p in self.client.get_ports(is_input=True, is_midi=is_midi)):
+                    if not any(p.name == input_port.name for p in self._jack_service.get_ports(is_input=True, is_midi=is_midi)):
                         continue
-                    connections = self.client.get_all_connections(input_port)
+                    connections = self._jack_service.get_all_connections(input_port)
                     if output_name in [c.name for c in connections]:
                         if is_midi:
                             self.highlight_midi_input(input_port.name, auto_highlight=True)
@@ -103,9 +117,9 @@ class HighlightManager:
                 except jack.JackError:
                     continue # Ignore errors for individual ports
         except jack.JackError as e:
-            print(f"Error highlighting connected inputs: {e}")
+            logger.error(f"Error highlighting connected inputs: {e}")
 
-    def _highlight_connected_output_groups_for_input_group(self, input_group_item, is_midi):
+    def _highlight_connected_output_groups_for_input_group(self, input_group_item: QTreeWidgetItem, is_midi: bool) -> None:
         """
         Finds and highlights output groups connected to the selected input group.
 
@@ -121,15 +135,15 @@ class HighlightManager:
 
         try:
             # Iterate through all output ports to find connections to any port in the input group
-            output_port_objects = self.client.get_ports(is_output=True, is_midi=is_midi)
+            output_port_objects = self._jack_service.get_ports(is_output=True, is_midi=is_midi)
             connected_output_groups = set()  # Store names of groups to highlight
 
             for output_port in output_port_objects:
                 try:
                     # Check if output port exists before querying
-                    if not any(p.name == output_port.name for p in self.client.get_ports(is_output=True, is_midi=is_midi)):
+                    if not any(p.name == output_port.name for p in self._jack_service.get_ports(is_output=True, is_midi=is_midi)):
                         continue
-                    connections = self.client.get_all_connections(output_port)
+                    connections = self._jack_service.get_all_connections(output_port)
                     # Check if this output port connects to *any* port in the selected input group
                     if any(conn.name in input_ports for conn in connections):
                         # Find the group this output port belongs to
@@ -144,9 +158,9 @@ class HighlightManager:
                 self._highlight_group_item(output_tree, group_name)
 
         except jack.JackError as e:
-            print(f"Error highlighting connected output groups: {e}")
+            logger.error(f"Error highlighting connected output groups: {e}")
 
-    def _highlight_connected_input_groups_for_output_group(self, output_group_item, is_midi):
+    def _highlight_connected_input_groups_for_output_group(self, output_group_item: QTreeWidgetItem, is_midi: bool) -> None:
         """
         Finds and highlights input groups connected to the selected output group.
 
@@ -167,10 +181,10 @@ class HighlightManager:
             for output_name in output_ports:
                 try:
                     # Check if output port exists before querying
-                    if not any(p.name == output_name for p in self.client.get_ports(is_output=True, is_midi=is_midi)):
+                    if not any(p.name == output_name for p in self._jack_service.get_ports(is_output=True, is_midi=is_midi)):
                         continue
                     # Get all connections *from* this specific output port
-                    connections = self.client.get_all_connections(output_name)
+                    connections = self._jack_service.get_all_connections(output_name)
                     for input_port in connections:
                         # Find the group this connected input port belongs to
                         input_item = input_tree.port_items.get(input_port.name)
@@ -184,9 +198,9 @@ class HighlightManager:
                 self._highlight_group_item(input_tree, group_name)
 
         except jack.JackError as e:
-            print(f"Error highlighting connected input groups: {e}")
+            logger.error(f"Error highlighting connected input groups: {e}")
 
-    def _get_ports_in_group(self, item):
+    def _get_ports_in_group(self, item: Optional[QTreeWidgetItem]) -> List[str]:
         """
         Get all ports in a group or just the single port if it's a port item.
 
@@ -210,23 +224,23 @@ class HighlightManager:
                     ports.append(port_name)
             return ports
 
-    def highlight_input(self, input_name, auto_highlight=False):
+    def highlight_input(self, input_name: str, auto_highlight: bool = False) -> None:
         """Highlight an input port."""
         self._highlight_tree_item_by_name(self.input_tree, input_name, auto_highlight)
 
-    def highlight_output(self, output_name, auto_highlight=False):
+    def highlight_output(self, output_name: str, auto_highlight: bool = False) -> None:
         """Highlight an output port."""
         self._highlight_tree_item_by_name(self.output_tree, output_name, auto_highlight)
 
-    def highlight_midi_input(self, input_name, auto_highlight=False):
+    def highlight_midi_input(self, input_name: str, auto_highlight: bool = False) -> None:
         """Highlight a MIDI input port."""
         self._highlight_tree_item_by_name(self.midi_input_tree, input_name, auto_highlight)
 
-    def highlight_midi_output(self, output_name, auto_highlight=False):
+    def highlight_midi_output(self, output_name: str, auto_highlight: bool = False) -> None:
         """Highlight a MIDI output port."""
         self._highlight_tree_item_by_name(self.midi_output_tree, output_name, auto_highlight)
 
-    def _highlight_tree_item_by_name(self, tree_widget, port_name, auto_highlight=False):
+    def _highlight_tree_item_by_name(self, tree_widget: Optional['PortTreeWidget'], port_name: str, auto_highlight: bool = False) -> None:
         """
         Highlight a specific port item in a tree widget by port name.
 
@@ -243,7 +257,7 @@ class HighlightManager:
             # Optionally, use setBackground for background highlighting:
             # port_item.setBackground(0, QBrush(color))
 
-    def _highlight_group_item(self, tree_widget, group_name):
+    def _highlight_group_item(self, tree_widget: Optional['PortTreeWidget'], group_name: str) -> None:
         """
         Highlight a specific group item in a tree widget.
 
@@ -258,17 +272,17 @@ class HighlightManager:
             # Optionally, use setBackground for background highlighting:
             # group_item.setBackground(0, QBrush(self.auto_highlight_color))
 
-    def clear_highlights(self):
+    def clear_highlights(self) -> None:
         """Clear highlights from audio port trees."""
         self._clear_tree_highlights(self.input_tree)
         self._clear_tree_highlights(self.output_tree)
 
-    def clear_midi_highlights(self):
+    def clear_midi_highlights(self) -> None:
         """Clear highlights from MIDI port trees."""
         self._clear_tree_highlights(self.midi_input_tree)
         self._clear_tree_highlights(self.midi_output_tree)
 
-    def _clear_tree_highlights(self, tree_widget):
+    def _clear_tree_highlights(self, tree_widget: Optional['PortTreeWidget']) -> None:
         """
         Clear highlights (foreground/background) from all group and port items in a tree widget.
 
@@ -289,7 +303,7 @@ class HighlightManager:
                 child_item.setForeground(0, QBrush(self.default_text_color))
                 child_item.setBackground(0, QBrush(self.default_background_color))
 
-    def highlight_drop_target_item(self, item: QTreeWidgetItem):
+    def highlight_drop_target_item(self, item: Optional[QTreeWidgetItem]) -> None:
         """
         Highlight an item when being dragged over (background).
 
@@ -299,7 +313,7 @@ class HighlightManager:
         if item:
             item.setBackground(0, QBrush(self.drag_highlight_color))
 
-    def clear_drop_target_highlight(self, tree_widget: QTreeWidget):
+    def clear_drop_target_highlight(self, tree_widget: Optional[QTreeWidget]) -> None:
         """
         Clear drop target highlighting (background) from all items in a tree.
 
@@ -316,7 +330,7 @@ class HighlightManager:
 
     # --- Helper to apply highlights based on selection ---
 
-    def apply_highlights_for_selection(self, clicked_item, clicked_tree, is_midi):
+    def apply_highlights_for_selection(self, clicked_item: Optional[QTreeWidgetItem], clicked_tree: Optional['PortTreeWidget'], is_midi: bool) -> None:
         """
         Applies appropriate highlights based on the selected item (port or group).
         This combines the logic previously in _on_port_clicked and refresh_ports.

@@ -1,3 +1,6 @@
+"""
+Helper functions for determining drag actions and visual feedback during port/bulk-area interactions.
+"""
 import typing
 from PyQt6.QtGui import QColor
 
@@ -6,10 +9,18 @@ from . import constants
 from .port_item import PortItem
 from .bulk_area_item import BulkAreaItem
 from .node_item import NodeItem
+from cables.utils.sort_utils import natural_sort_key_for_port_item as _port_sort_key
 
 if typing.TYPE_CHECKING:
     # These are already imported above but good for explicit type checking context
     pass
+
+
+def get_ports_in_visual_order(port_dict: dict[str, PortItem]) -> list[PortItem]:
+    """Return ports sorted in visual layout order: audio first (natural sort), then MIDI."""
+    audio = [p for p in port_dict.values() if not p.port_obj.is_midi]
+    midi = [p for p in port_dict.values() if p.port_obj.is_midi]
+    return sorted(audio, key=_port_sort_key) + sorted(midi, key=_port_sort_key)
 
 
 def determine_port_to_port_action(source_port: PortItem, target_port: PortItem, app_constants: typing.Any) -> tuple[typing.Optional[str], QColor]:
@@ -43,7 +54,7 @@ def determine_port_to_port_action(source_port: PortItem, target_port: PortItem, 
         return "connect", app_constants.PORT_DRAG_COLOR
 
 def determine_port_to_bulk_action(source_port: PortItem, target_bulk: BulkAreaItem, app_constants: typing.Any) -> tuple[typing.Optional[str], QColor]:
-    """Determines action and color for port-to-bulk drag."""
+    """Determines action and color for port-to-bulk drag (sequential mapping)."""
     if not source_port or not target_bulk or not target_bulk.parent_node:
         return None, app_constants.DEFAULT_DRAG_LINE_COLOR
 
@@ -51,35 +62,55 @@ def determine_port_to_bulk_action(source_port: PortItem, target_bulk: BulkAreaIt
     if parent_node == target_bulk.parent_node: # Self-connection attempt
         if parent_node and (parent_node.is_split_origin or parent_node.is_split_part):
             return None, app_constants.DEFAULT_DRAG_LINE_COLOR # Disallow if split
-        # If unsplit, proceed with type check
 
-    if source_port.is_input == target_bulk.is_input: # Must be different types (e.g., port OUT to bulk IN)
+    if source_port.is_input == target_bulk.is_input: # Must be different types
         return None, app_constants.DEFAULT_DRAG_LINE_COLOR
 
-    compatible_target_ports: list[PortItem] = []
-    if not source_port.is_input and target_bulk.is_input: # Source OUT, Target Bulk IN
-        compatible_target_ports.extend(p for p in target_bulk.parent_node.input_ports.values() if p.is_input)
-    elif source_port.is_input and not target_bulk.is_input: # Source IN, Target Bulk OUT
-        compatible_target_ports.extend(p for p in target_bulk.parent_node.output_ports.values() if not p.is_input)
+    # Get target ports from the bulk area (in visual order)
+    if not source_port.is_input and target_bulk.is_input:
+        target_ports = get_ports_in_visual_order(target_bulk.parent_node.input_ports)
+    elif source_port.is_input and not target_bulk.is_input:
+        target_ports = get_ports_in_visual_order(target_bulk.parent_node.output_ports)
+    else:
+        return None, app_constants.DEFAULT_DRAG_LINE_COLOR
 
-    if not compatible_target_ports:
-        return None, app_constants.DEFAULT_DRAG_LINE_COLOR # No compatible ports in target bulk
+    if not target_ports:
+        return None, app_constants.DEFAULT_DRAG_LINE_COLOR
 
-    num_already_connected_to_source = 0
-    for port_in_bulk in compatible_target_ports:
-        out_p_item, in_p_item = (source_port, port_in_bulk) if not source_port.is_input else (port_in_bulk, source_port)
-        if any((conn.source_port == out_p_item and conn.dest_port == in_p_item) for conn in out_p_item.connections):
-            num_already_connected_to_source += 1
+    # Get source port's siblings in visual order and find its index
+    if not source_port.is_input:
+        source_siblings = get_ports_in_visual_order(parent_node.output_ports)
+    else:
+        source_siblings = get_ports_in_visual_order(parent_node.input_ports)
 
-    if len(compatible_target_ports) > 0 and num_already_connected_to_source == len(compatible_target_ports):
-        # If source is connected to ALL compatible ports in target bulk, action is disconnect
+    try:
+        source_idx = source_siblings.index(source_port)
+    except ValueError:
+        return None, app_constants.DEFAULT_DRAG_LINE_COLOR
+
+    # Build sequential pairs and check connections
+    num_pairs = 0
+    num_already_connected = 0
+    for i, t_port in enumerate(target_ports):
+        s_idx = source_idx + i
+        if s_idx >= len(source_siblings):
+            break
+        num_pairs += 1
+        s_port = source_siblings[s_idx]
+        out_p, in_p = (s_port, t_port) if not s_port.is_input else (t_port, s_port)
+        if any(conn.source_port == out_p and conn.dest_port == in_p for conn in out_p.connections):
+            num_already_connected += 1
+
+    if num_pairs == 0:
+        return None, app_constants.DEFAULT_DRAG_LINE_COLOR
+
+    if num_already_connected == num_pairs:
         return "disconnect", app_constants.PORT_DISCONNECT_DRAG_COLOR
     else:
-        # Otherwise, action is connect (even if some are connected, intent is to connect others or the first one)
         return "connect", app_constants.PORT_DRAG_COLOR
 
 def determine_bulk_to_port_action(source_bulk: BulkAreaItem, target_port: PortItem, app_constants: typing.Any) -> tuple[typing.Optional[str], QColor]:
-    """Determines action and color for bulk-to-port drag."""
+    """Determines action and color for bulk-to-port drag (sequential mapping)."""
     if not source_bulk or not target_port or not source_bulk.parent_node:
         return None, app_constants.DEFAULT_DRAG_LINE_COLOR
 
@@ -87,28 +118,51 @@ def determine_bulk_to_port_action(source_bulk: BulkAreaItem, target_port: PortIt
     if parent_node == target_port.parent_node: # Self-connection attempt
         if parent_node and (parent_node.is_split_origin or parent_node.is_split_part):
             return None, app_constants.DEFAULT_DRAG_LINE_COLOR # Disallow if split
-        # If unsplit, proceed with type check
 
-    if source_bulk.is_input == target_port.is_input: # Must be different types (e.g., bulk OUT to port IN)
+    if source_bulk.is_input == target_port.is_input: # Must be different types
         return None, app_constants.DEFAULT_DRAG_LINE_COLOR
 
-    source_ports_to_consider = source_bulk.parent_node.input_ports.values() if source_bulk.is_input else source_bulk.parent_node.output_ports.values()
-    compatible_source_ports: list[PortItem] = [sp for sp in source_ports_to_consider if sp.is_input != target_port.is_input]
+    # Get source ports in visual order
+    if source_bulk.is_input:
+        source_ports = get_ports_in_visual_order(source_bulk.parent_node.input_ports)
+    else:
+        source_ports = get_ports_in_visual_order(source_bulk.parent_node.output_ports)
+    source_ports = [sp for sp in source_ports if sp.is_input != target_port.is_input]
 
-    if not compatible_source_ports:
+    if not source_ports:
         return None, app_constants.DEFAULT_DRAG_LINE_COLOR
 
-    num_already_connected_to_target = 0
-    for s_port in compatible_source_ports:
-        out_p, in_p = (s_port, target_port) if not s_port.is_input else (target_port, s_port)
+    # Get target port's siblings in visual order and find its index
+    target_node = target_port.parent_node
+    if target_port.is_input:
+        target_siblings = get_ports_in_visual_order(target_node.input_ports)
+    else:
+        target_siblings = get_ports_in_visual_order(target_node.output_ports)
+
+    try:
+        target_idx = target_siblings.index(target_port)
+    except ValueError:
+        return None, app_constants.DEFAULT_DRAG_LINE_COLOR
+
+    # Build sequential pairs and check connections
+    num_pairs = 0
+    num_already_connected = 0
+    for i, s_port in enumerate(source_ports):
+        t_idx = target_idx + i
+        if t_idx >= len(target_siblings):
+            break
+        num_pairs += 1
+        t_port = target_siblings[t_idx]
+        out_p, in_p = (s_port, t_port) if not s_port.is_input else (t_port, s_port)
         if any(conn.source_port == out_p and conn.dest_port == in_p for conn in out_p.connections):
-            num_already_connected_to_target += 1
+            num_already_connected += 1
 
-    if len(compatible_source_ports) > 0 and num_already_connected_to_target == len(compatible_source_ports):
-        # If ALL compatible source ports are connected to target_port, action is disconnect
+    if num_pairs == 0:
+        return None, app_constants.DEFAULT_DRAG_LINE_COLOR
+
+    if num_already_connected == num_pairs:
         return "disconnect", app_constants.PORT_DISCONNECT_DRAG_COLOR
     else:
-        # Otherwise, action is connect
         return "connect", app_constants.PORT_DRAG_COLOR
 
 def determine_bulk_to_bulk_action(source_bulk: BulkAreaItem, target_bulk: BulkAreaItem, app_constants: typing.Any) -> tuple[typing.Optional[str], QColor]:

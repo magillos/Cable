@@ -2,12 +2,25 @@
 PortTreeWidget - Tree widget for displaying ports with collapsible groups
 """
 
-import re
 import jack
 from PyQt6.QtWidgets import QTreeWidget, QTreeWidgetItem, QMenu, QSizePolicy, QApplication, QMessageBox, QDialog, QCheckBox, QVBoxLayout, QDialogButtonBox, QLabel
 from PyQt6.QtCore import Qt, QSize, QPoint, pyqtSignal
 from PyQt6.QtGui import QBrush, QDrag, QPixmap, QPainter, QFontMetrics, QAction, QPalette, QFont
 from PyQt6.QtCore import QMimeData
+from cables.utils.sort_utils import natural_sort_key_for_full_port_name
+from cables.jack_service import get_jack_service
+from cable_core import config_keys as keys
+
+import logging
+from typing import TYPE_CHECKING, Optional, List, Dict, Any, Tuple, Set, Union
+
+if TYPE_CHECKING:
+    from cables.highlight_manager import HighlightManager
+    from cables.connection_manager import JackConnectionManager
+    from PyQt6.QtGui import QDragEnterEvent, QDragMoveEvent, QDragLeaveEvent, QDropEvent, QMouseEvent
+    from PyQt6.QtWidgets import QWidget
+
+logger = logging.getLogger(__name__)
 
 class PortTreeWidget(QTreeWidget):
     """
@@ -19,7 +32,7 @@ class PortTreeWidget(QTreeWidget):
     
     itemDragged = pyqtSignal(QTreeWidgetItem)
 
-    def __init__(self, port_role, highlight_manager, parent=None):
+    def __init__(self, port_role: str, highlight_manager: 'HighlightManager', parent: Optional['QWidget'] = None) -> None:
         """
         Initialize the PortTreeWidget.
 
@@ -35,14 +48,14 @@ class PortTreeWidget(QTreeWidget):
         self.customContextMenuRequested.connect(self.show_context_menu)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMinimumWidth(100)
-        self._width = 150
-        self.current_drag_highlight_item = None
+        self._width: int = 150
+        self.current_drag_highlight_item: Optional[QTreeWidgetItem] = None
         self.setHeaderHidden(True)
         self.setIndentation(15)
-        self.port_groups = {}  # Maps group names to group items
-        self.port_items = {}   # Maps port names to port items
-        self.group_order = []  # Stores the *current visual* order of top-level group names
-        self.manual_group_order = None # Stores the user-defined or initial natural order
+        self.port_groups: Dict[str, QTreeWidgetItem] = {}  # Maps group names to group items
+        self.port_items: Dict[str, QTreeWidgetItem] = {}   # Maps port names to port items
+        self.group_order: List[str] = []  # Stores the *current visual* order of top-level group names
+        self.manual_group_order: Optional[List[str]] = None # Stores the user-defined or initial natural order
         self.setDragEnabled(True)
         # Allow selecting multiple items with Ctrl/Shift
         self.setSelectionMode(QTreeWidget.SelectionMode.ExtendedSelection)
@@ -52,11 +65,11 @@ class PortTreeWidget(QTreeWidget):
         # Add tracking to improve drag behavior
         self.setMouseTracking(True)
         # Remember initially selected item to improve selection during drag operations
-        self.initialSelection = None
+        self.initialSelection: Optional[QTreeWidgetItem] = None
         # Add storage for mouse press position
-        self.mousePressPos = None
+        self.mousePressPos: Optional[QPoint] = None
     
-    def sizeHint(self):
+    def sizeHint(self) -> QSize:
         """
         Get the recommended size for the widget.
         
@@ -65,7 +78,7 @@ class PortTreeWidget(QTreeWidget):
         """
         return QSize(self._width, 300)  # Default height
     
-    def get_current_group_order(self):
+    def get_current_group_order(self) -> List[str]:
         """
         Returns a list of the current top-level group item names in their visual order.
         
@@ -79,7 +92,7 @@ class PortTreeWidget(QTreeWidget):
                 order.append(item.text(0))
         return order
     
-    def _sort_items_naturally(self, items):
+    def _sort_items_naturally(self, items: List[str]) -> List[str]:
         """
         Sorts a list of strings using enhanced natural sorting that groups ports logically.
         
@@ -105,53 +118,10 @@ class PortTreeWidget(QTreeWidget):
         Returns:
             list: The sorted list
         """
-        def get_enhanced_sort_key(item_name):
-            # Treat None or non-string items gracefully if they somehow appear
-            if not isinstance(item_name, str):
-                return []  # Or handle as appropriate
-                
-            def tryint(text):
-                try:
-                    return int(text)
-                except ValueError:
-                    return text.lower()
-
-            # Split the port name into client and port parts
-            if ':' in item_name:
-                client_part, port_part = item_name.split(':', 1)
-            else:
-                client_part, port_part = '', item_name
-            
-            # Extract base name and suffix from port part
-            # Look for patterns like "input_FL-448" or "output_1-mono"
-            base_name = port_part
-            suffix = ''
-            
-            # Try to find a suffix pattern (dash followed by numbers/text)
-            suffix_match = re.search(r'[-_](\d+.*?)$', port_part)
-            if suffix_match:
-                suffix = suffix_match.group(1)
-                base_name = port_part[:suffix_match.start()]
-            
-            # Create sort key components
-            client_key = [tryint(part) for part in re.split(r'(\d+)', client_part.lower())]
-            base_name_key = [tryint(part) for part in re.split(r'(\d+)', base_name.lower())]
-            
-            # For the desired sorting behavior:
-            # 1. First show all base ports (no suffix) sorted by base name
-            # 2. Then show suffixed ports, grouped by suffix value, with base names sorted within each suffix group
-            if suffix:
-                suffix_key = [tryint(part) for part in re.split(r'(\d+)', suffix.lower())]
-                # For suffixed ports: sort by (client, suffix, base_name)
-                return (client_key, [1], suffix_key, base_name_key)  # [1] puts suffixed ports after base ports
-            else:
-                # For base ports: sort by (client, base_name)
-                return (client_key, [0], base_name_key, [])  # [0] puts base ports first
-        
         # Filter out None before sorting if necessary, though item_name should always be str here
-        return sorted([item for item in items if isinstance(item, str)], key=get_enhanced_sort_key)
+        return sorted([item for item in items if isinstance(item, str)], key=natural_sort_key_for_full_port_name)
 
-    def _calculate_untangled_order(self, all_ports, current_groups, ports_by_group, untangle_mode):
+    def _calculate_untangled_order(self, all_ports: List[str], current_groups: Set[str], ports_by_group: Dict[str, List[str]], untangle_mode: int) -> List[str]:
         """Calculates the group order based on connections.
         untangle_mode: 0=off, 1=normal (outputs drive inputs), 2=reversed (inputs drive outputs)
         """
@@ -161,7 +131,7 @@ class PortTreeWidget(QTreeWidget):
         # Access main window and client through self.window()
         main_window = self.window()
         if not main_window or not hasattr(main_window, 'client'):
-            print("Error: Cannot access main window or JACK client from PortTreeWidget.")
+            logger.error("Error: Cannot access main window or JACK client from PortTreeWidget.")
             return self._sort_items_naturally(list(current_groups)) # Fallback
 
         connections = main_window._get_current_connections() # Use main window method
@@ -208,14 +178,15 @@ class PortTreeWidget(QTreeWidget):
         all_system_primary_ports = []
         try:
              # Fetch ports matching the current type (audio/midi) based on primary role
-             all_system_primary_ports = main_window.client.get_ports(
+             jack_service = get_jack_service()
+             all_system_primary_ports = jack_service.get_ports(
                  is_output=primary_is_output,
                  is_input=not primary_is_output,
                  is_midi=is_midi,
                  is_audio=not is_midi
              )
         except jack.JackError as e:
-             print(f"Warning: Error fetching all system primary ports: {e}")
+             logger.warning(f"Warning: Error fetching all system primary ports: {e}")
 
         all_primary_group_names = set()
         for port in all_system_primary_ports:
@@ -300,7 +271,7 @@ class PortTreeWidget(QTreeWidget):
 
         return final_order
 
-    def populate_tree(self, all_ports, previous_group_order=None): # Keep previous_group_order for non-untangle modes
+    def populate_tree(self, all_ports: List[str], previous_group_order: Optional[List[str]] = None) -> None:
         """
         Clears and repopulates the tree, preserving group order or using untangle sort.
 
@@ -368,29 +339,23 @@ class PortTreeWidget(QTreeWidget):
         # 5. Update the internal group order state
         self.group_order = final_ordered_group_names
 
-    def expandCollapseGroup(self, group_name, expand):
-        """
-        Expand or collapse a specific group by name.
-        
-        Args:
-            group_name: The name of the group to expand or collapse
-            expand: True to expand, False to collapse
-        """
+    def expand_collapse_group(self, group_name: str, expand: bool) -> None:
+        """Expand or collapse a specific group by name."""
         group_item = self.port_groups.get(group_name)
         if group_item:
             group_item.setExpanded(expand)
     
-    def expandAllGroups(self):
+    def expand_all_groups(self) -> None:
         """Expand all port groups."""
         for group_item in self.port_groups.values():
             group_item.setExpanded(True)
     
-    def collapseAllGroups(self):
+    def collapse_all_groups(self) -> None:
         """Collapse all port groups."""
         for group_item in self.port_groups.values():
             group_item.setExpanded(False)
     
-    def show_context_menu(self, position):
+    def show_context_menu(self, position: QPoint) -> None:
         """
         Show the context menu for the item at the given position.
         
@@ -433,8 +398,8 @@ class PortTreeWidget(QTreeWidget):
             # Actions for all groups
             expand_all_action = QAction("Expand all", self)
             collapse_all_action = QAction("Collapse all", self)
-            expand_all_action.triggered.connect(self.expandAllGroups)
-            collapse_all_action.triggered.connect(self.collapseAllGroups)
+            expand_all_action.triggered.connect(self.expand_all_groups)
+            collapse_all_action.triggered.connect(self.collapse_all_groups)
             
             # Action to disconnect all ports within the selected group(s)
             disconnect_group_action = QAction(f"Disconnect group{'s' if len(target_group_items) > 1 else ''}", self)
@@ -476,7 +441,7 @@ class PortTreeWidget(QTreeWidget):
 
             menu.exec(self.mapToGlobal(position))
     
-    def _hide_group_node(self, group_name):
+    def _hide_group_node(self, group_name: str) -> None:
         """
         Hide a group node by updating the node visibility settings.
         
@@ -499,19 +464,26 @@ class PortTreeWidget(QTreeWidget):
             
             # Try to get the config from the config_manager
             if hasattr(main_window, 'config_manager') and main_window.config_manager:
-                show_dialog = main_window.config_manager.get_bool('show_hide_node_confirmation', default=True)
+                show_dialog = main_window.config_manager.get_bool(keys.SHOW_HIDE_NODE_CONFIRMATION, default=True)
             
             confirmed = True
             if show_dialog:
-                # Create and show custom dialog with checkbox
+                # Build message based on tree type
                 if is_input_tree:
                     message_type = "input" + (" MIDI" if is_midi else " audio")
                     message = f"Hide {group_name} input ports?"
                 else:
                     message_type = "output" + (" MIDI" if is_midi else " audio")
                     message = f"Hide {group_name} output ports?"
-                    
-                confirmed = self._show_hide_confirmation_dialog(group_name, message_type, message)
+
+                from cable_core.dialogs import show_hide_node_confirmation_dialog
+                confirmed = show_hide_node_confirmation_dialog(
+                    parent=self.window(),
+                    node_name=group_name,
+                    message_type=message_type,
+                    config_manager=main_window.config_manager if hasattr(main_window, 'config_manager') else None,
+                    custom_message=message
+                )
                 
             if not confirmed:
                 return
@@ -534,64 +506,10 @@ class PortTreeWidget(QTreeWidget):
             # Apply the new settings
             main_window.node_visibility_manager.apply_visibility_settings()
     
-    def _show_hide_confirmation_dialog(self, group_name, message_type, custom_message=None):
-        """
-        Show a confirmation dialog with 'don't show again' checkbox.
-        
-        Args:
-            group_name: The name of the group/node to hide
-            message_type: Type of the node (audio/MIDI)
-            custom_message: Optional custom message to show
-            
-        Returns:
-            bool: True if user confirmed, False otherwise
-        """
-        # Create a custom dialog
-        dialog = QDialog(self.window())
-        dialog.setWindowTitle("Hide Node")
-        dialog.setModal(True)
-        
-        # Create layout
-        layout = QVBoxLayout(dialog)
-        
-        # Add message
-        if custom_message:
-            message = f"{custom_message}\n\nYou can restore it later from the Node Visibility dialog."
-        else:
-            message = f"Hide {group_name} {message_type} node?\n\nYou can restore it later from the Node Visibility dialog."
-        
-        label = QLabel(message)
-        layout.addWidget(label)
-        
-        # Add checkbox
-        checkbox = QCheckBox("Don't show this message again")
-        layout.addWidget(checkbox)
-        
-        # Add buttons
-        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Yes | QDialogButtonBox.StandardButton.No)
-        button_box.accepted.connect(dialog.accept)
-        button_box.rejected.connect(dialog.reject)
-        layout.addWidget(button_box)
-        
-        # Execute dialog
-        result = dialog.exec() == QDialog.DialogCode.Accepted
-        
-        # Save checkbox state if accepted
-        if result and checkbox.isChecked():
-            # Try to get the config from the config_manager
-            main_window = self.window()
-            if hasattr(main_window, 'config_manager') and main_window.config_manager:
-                main_window.config_manager.set_bool('show_hide_node_confirmation', False)
-        
-        return result
+
     
-    def getSelectedPortNames(self):
-        """
-        Returns a list of port names for the currently selected port items.
-        
-        Returns:
-            list: The selected port names
-        """
+    def get_selected_port_names(self) -> List[str]:
+        """Returns a list of port names for the currently selected port items."""
         selected_ports = []
         for item in self.selectedItems():
             # Only include actual port items (leaves), not groups
@@ -601,19 +519,11 @@ class PortTreeWidget(QTreeWidget):
                     selected_ports.append(port_name)
         return selected_ports
     
-    def getPortItemByName(self, port_name):
-        """
-        Returns the tree item for a given port name.
-        
-        Args:
-            port_name: The name of the port to find
-            
-        Returns:
-            QTreeWidgetItem: The port item, or None if not found
-        """
+    def get_port_item_by_name(self, port_name: str) -> Optional[QTreeWidgetItem]:
+        """Returns the tree item for a given port name."""
         return self.port_items.get(port_name)
     
-    def dragEnterEvent(self, event):
+    def dragEnterEvent(self, event: 'QDragEnterEvent') -> None:
         """Accept drops only if the source role is the opposite of this tree's role."""
         mime_data = event.mimeData()
         has_role = mime_data.hasFormat("application/x-port-role")
@@ -632,7 +542,7 @@ class PortTreeWidget(QTreeWidget):
 
         event.ignore()
 
-    def dragMoveEvent(self, event):
+    def dragMoveEvent(self, event: 'QDragMoveEvent') -> None:
         """Provide visual feedback during drag, accepting if roles are compatible."""
         mime_data = event.mimeData()
         has_role = mime_data.hasFormat("application/x-port-role")
@@ -664,7 +574,7 @@ class PortTreeWidget(QTreeWidget):
                 self.current_drag_highlight_item = None
             event.ignore()
 
-    def dragLeaveEvent(self, event):
+    def dragLeaveEvent(self, event: 'QDragLeaveEvent') -> None:
         """
         Handle drag leave events.
         
@@ -675,7 +585,7 @@ class PortTreeWidget(QTreeWidget):
         self.current_drag_highlight_item = None
         super().dragLeaveEvent(event)
     
-    def mousePressEvent(self, event):
+    def mousePressEvent(self, event: 'QMouseEvent') -> None:
         """
         Handle mouse press events.
         
@@ -695,7 +605,7 @@ class PortTreeWidget(QTreeWidget):
             # Handle other mouse buttons (e.g., right-click for context menu)
             super().mousePressEvent(event)
     
-    def mouseMoveEvent(self, event):
+    def mouseMoveEvent(self, event: 'QMouseEvent') -> None:
         """
         Handle mouse move events.
         
@@ -708,7 +618,7 @@ class PortTreeWidget(QTreeWidget):
                 self.startDrag()  # Call the potentially overridden startDrag
         super().mouseMoveEvent(event)
     
-    def move_group_up(self, item):
+    def move_group_up(self, item: QTreeWidgetItem) -> None:
         """
         Moves the specified group item one position up in the tree.
         
@@ -732,7 +642,7 @@ class PortTreeWidget(QTreeWidget):
             # Ensure the tree widget has focus
             self.setFocus()
     
-    def move_group_down(self, item):
+    def move_group_down(self, item: QTreeWidgetItem) -> None:
         """
         Moves the specified group item one position down in the tree.
         
@@ -756,7 +666,33 @@ class PortTreeWidget(QTreeWidget):
             # Ensure the tree widget has focus
             self.setFocus()
     
-    def startDrag(self, supportedActions=None):
+    def _get_port_group_siblings(self, port_name: str) -> List[str]:
+        """Get all port names in the same group as the given port, in tree visual order."""
+        port_item = self.port_items.get(port_name)
+        if not port_item:
+            return []
+        parent_group = port_item.parent()
+        if not parent_group:
+            return []
+        siblings: List[str] = []
+        for i in range(parent_group.childCount()):
+            child = parent_group.child(i)
+            if child:
+                name = child.data(0, Qt.ItemDataRole.UserRole)
+                if name:
+                    siblings.append(name)
+        return siblings
+
+    def _get_source_tree(self) -> Optional['PortTreeWidget']:
+        """Get the source tree widget (the opposite tree from where the drop happened)."""
+        hm = self.highlight_manager
+        is_midi = (self is hm.midi_input_tree or self is hm.midi_output_tree)
+        if self.port_role == 'input':
+            return hm.midi_output_tree if is_midi else hm.output_tree
+        else:
+            return hm.midi_input_tree if is_midi else hm.input_tree
+
+    def startDrag(self, supportedActions: Optional[Qt.DropAction] = None) -> None:
         """
         Start drag operation, setting the correct port role based on self.port_role.
         
@@ -806,7 +742,7 @@ class PortTreeWidget(QTreeWidget):
             drag_text = group_name
         else:
             # If multiple groups or mix of groups/ports selected, maybe just return?
-            print("Drag cancelled: Invalid selection (mix of groups/ports or multiple groups).")
+            logger.debug("Drag cancelled: Invalid selection (mix of groups/ports or multiple groups).")
             return  # Invalid selection
         
         # --- Perform Drag ---
@@ -831,7 +767,7 @@ class PortTreeWidget(QTreeWidget):
         result = drag.exec(Qt.DropAction.CopyAction)
         self.initialSelection = None  # Clear selection after drag finishes
     
-    def dropEvent(self, event):
+    def dropEvent(self, event: 'QDropEvent') -> None:
         """
         Handle drop events.
         
@@ -879,54 +815,124 @@ class PortTreeWidget(QTreeWidget):
             self.current_drag_highlight_item = None
             return
         
-        # 4. Perform connection or disconnection based on target tree role and Ctrl key
-        ctrl_pressed = QApplication.keyboardModifiers() == Qt.KeyboardModifier.ControlModifier
-        is_midi = self.window().port_type == 'midi'
-
+        # 4. Determine actual output/input ports based on target tree role
         actual_output_ports = []
         actual_input_ports = []
 
-        if self.port_role == 'output': # Target is Output tree, Source was Input tree
+        if self.port_role == 'output':  # Target is Output tree, Source was Input tree
             actual_output_ports = target_ports
             actual_input_ports = source_ports
-        elif self.port_role == 'input': # Target is Input tree, Source was Output tree
+        elif self.port_role == 'input':  # Target is Input tree, Source was Output tree
             actual_output_ports = source_ports
             actual_input_ports = target_ports
         else:
-            print(f"Error: Unknown port_role '{self.port_role}' in dropEvent")
+            logger.error(f"Error: Unknown port_role '{self.port_role}' in dropEvent")
             event.ignore()
             self.highlight_manager.clear_drop_target_highlight(self)
             self.current_drag_highlight_item = None
             return
 
-        if ctrl_pressed:
-            print(f"Drop Event (Disconnect): Outputs={actual_output_ports}, Inputs={actual_input_ports}, MIDI={is_midi}")
-            for out_p in actual_output_ports:
-                for in_p in actual_input_ports:
+        # 5. Determine operation based on existing connections
+        is_midi = self.window().port_type == 'midi'
+        current_connections = self.window()._get_current_connections()
+
+        # 5a. Check for sequential mapping: group/list→port or port→group
+        source_is_multi = has_group or has_list
+        target_is_port = target_item.childCount() == 0
+        sequential_pairs: Optional[List[Tuple[str, str]]] = None  # (output, input) pairs
+
+        if source_is_multi and target_is_port and len(source_ports) > 1:
+            # Group/list dragged to a single port → sequential mapping from target port
+            target_port_name = target_item.data(0, Qt.ItemDataRole.UserRole)
+            if target_port_name:
+                siblings = self._get_port_group_siblings(target_port_name)
+                if target_port_name in siblings:
+                    target_idx = siblings.index(target_port_name)
+                    sequential_pairs = []
+                    for i, s_port in enumerate(source_ports):
+                        t_idx = target_idx + i
+                        if t_idx >= len(siblings):
+                            break
+                        if self.port_role == 'input':  # target tree is input, source is output
+                            sequential_pairs.append((s_port, siblings[t_idx]))
+                        else:  # target tree is output, source is input
+                            sequential_pairs.append((siblings[t_idx], s_port))
+
+        elif not source_is_multi and target_is_group and len(source_ports) == 1:
+            # Single port dragged to a group → sequential mapping from source port
+            source_tree = self._get_source_tree()
+            if source_tree:
+                siblings = source_tree._get_port_group_siblings(source_ports[0])
+                if source_ports[0] in siblings:
+                    source_idx = siblings.index(source_ports[0])
+                    sequential_pairs = []
+                    for i, t_port in enumerate(target_ports):
+                        s_idx = source_idx + i
+                        if s_idx >= len(siblings):
+                            break
+                        if self.port_role == 'input':  # target tree is input, source is output
+                            sequential_pairs.append((siblings[s_idx], t_port))
+                        else:  # target tree is output, source is input
+                            sequential_pairs.append((t_port, siblings[s_idx]))
+
+        if sequential_pairs is not None:
+            # Sequential mapping: check if ALL pairs are already connected → disconnect, else connect missing
+            conn_type_filter = 'midi' if is_midi else 'audio'
+            conn_set = {(c.get('output', ''), c.get('input', ''))
+                        for c in current_connections if c.get('type', 'audio') == conn_type_filter}
+
+            num_connected = sum(1 for out_p, in_p in sequential_pairs if (out_p, in_p) in conn_set)
+
+            if num_connected == len(sequential_pairs):
+                logger.debug(f"Drop Event (Sequential Disconnect): pairs={sequential_pairs}, MIDI={is_midi}")
+                for out_p, in_p in sequential_pairs:
                     if is_midi:
-                        self.window().break_midi_connection(out_p, in_p)
+                        self.window().jack_handler.break_midi_connection(out_p, in_p)
                     else:
-                        self.window().break_connection(out_p, in_p)
+                        self.window().jack_handler.break_connection(out_p, in_p)
+            else:
+                logger.debug(f"Drop Event (Sequential Connect): pairs={sequential_pairs}, MIDI={is_midi}")
+                for out_p, in_p in sequential_pairs:
+                    if (out_p, in_p) not in conn_set:
+                        if is_midi:
+                            self.window().jack_handler.make_midi_connection(out_p, in_p)
+                        else:
+                            self.window().jack_handler.make_connection(out_p, in_p)
         else:
-            # Original connection logic
-            if self.port_role == 'output':
-                print(f"Drop Event (Connect Output Tree): Outputs(Target)={target_ports}, Inputs(Source)={source_ports}")
-                self.window().make_multiple_connections(target_ports, source_ports)
-            elif self.port_role == 'input':
-                print(f"Drop Event (Connect Input Tree): Outputs(Source)={source_ports}, Inputs(Target)={target_ports}")
-                self.window().make_multiple_connections(source_ports, target_ports)
-            # The 'else' for unknown port_role is handled above
+            # Standard logic for group→group, port→port, etc.
+            # Check if there's already an existing connection between any source and target port
+            existing_connection = False
+            for out_port in actual_output_ports:
+                for in_port in actual_input_ports:
+                    for conn in current_connections:
+                        conn_out = conn.get('output', '')
+                        conn_in = conn.get('input', '')
+                        conn_type = conn.get('type', 'audio')
+                        if conn_out == out_port and conn_in == in_port:
+                            if (is_midi and conn_type == 'midi') or (not is_midi and conn_type == 'audio'):
+                                existing_connection = True
+                                break
+                    if existing_connection:
+                        break
+                if existing_connection:
+                    break
 
-        # Ensure this 'else' block for unknown port_role is not duplicated if we refactor the above.
-        # The initial check for port_role validity now covers this.
-        # else:
-        #     # Should not happen
-        #     print(f"Error: Unknown port_role '{self.port_role}' in dropEvent")
-            event.ignore()
-            self.highlight_manager.clear_drop_target_highlight(self)
-            self.current_drag_highlight_item = None
-            return
-        
+            if existing_connection:
+                logger.debug(f"Drop Event (Disconnect): Outputs={actual_output_ports}, Inputs={actual_input_ports}, MIDI={is_midi}")
+                for out_p in actual_output_ports:
+                    for in_p in actual_input_ports:
+                        if is_midi:
+                            self.window().jack_handler.break_midi_connection(out_p, in_p)
+                        else:
+                            self.window().jack_handler.break_connection(out_p, in_p)
+            else:
+                if self.port_role == 'output':
+                    logger.debug(f"Drop Event (Connect Output Tree): Outputs(Target)={target_ports}, Inputs(Source)={source_ports}")
+                    self.window().jack_handler.make_multiple_connections(target_ports, source_ports)
+                elif self.port_role == 'input':
+                    logger.debug(f"Drop Event (Connect Input Tree): Outputs(Source)={source_ports}, Inputs(Target)={target_ports}")
+                    self.window().jack_handler.make_multiple_connections(source_ports, target_ports)
+
         event.acceptProposedAction()
         
         # Find the target item again *after* potential refresh and set selection
@@ -942,7 +948,7 @@ class PortTreeWidget(QTreeWidget):
                 new_target_item = self.port_items.get(target_identifier)
         if new_target_item:
             self.setCurrentItem(new_target_item)
-        # 5. Finalize
+        # 6. Finalize
         self.highlight_manager.clear_drop_target_highlight(self)
         self.current_drag_highlight_item = None
 
@@ -952,7 +958,7 @@ class DragPortTreeWidget(PortTreeWidget):
     A PortTreeWidget for output ports (source role: output).
     """
 
-    def __init__(self, highlight_manager, parent=None):
+    def __init__(self, highlight_manager: 'HighlightManager', parent: Optional['QWidget'] = None) -> None:
         """
         Initialize the DragPortTreeWidget.
 
@@ -969,7 +975,7 @@ class DropPortTreeWidget(PortTreeWidget):
     A PortTreeWidget for input ports (source role: input).
     """
 
-    def __init__(self, highlight_manager, parent=None):
+    def __init__(self, highlight_manager: 'HighlightManager', parent: Optional['QWidget'] = None) -> None:
         """
         Initialize the DropPortTreeWidget.
 

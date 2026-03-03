@@ -1,16 +1,47 @@
 # cable_core/app_config.py
+"""
+Application constants, version, and shared configuration values.
+"""
+
+import os
+import sys
+from typing import Optional
+
+from PyQt6.QtGui import QIcon
 
 # --- Application Version ---
-APP_VERSION = "0.9.28"
-# Main App Window (Cable.py)
-MAIN_WINDOW_MIN_WIDTH = 300
-MAIN_WINDOW_MIN_HEIGHT = 600
+APP_VERSION = "0.10.0"
+
+# --- Shared Constants ---
+EDIT_LIST_TEXT = "Edit List..."
+
+
+def load_app_icon(icon_name: str = "jack-plug.svg", theme_name: str = "jack-plug") -> Optional[QIcon]:
+    """Load the application icon, checking frozen/script dir then theme."""
+    app_icon = None
+
+    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+        base_path = sys._MEIPASS
+    else:
+        base_path = os.path.dirname(os.path.abspath(sys.argv[0]))
+
+    local_icon_path = os.path.join(base_path, icon_name)
+    if os.path.exists(local_icon_path):
+        app_icon = QIcon(local_icon_path)
+        if app_icon.isNull():
+            app_icon = None
+
+    if app_icon is None:
+        theme_icon = QIcon.fromTheme(theme_name)
+        if not theme_icon.isNull():
+            app_icon = theme_icon
+
+    return app_icon
+# Main App Window (Cable.py) — first-launch defaults
 MAIN_WINDOW_INITIAL_WIDTH = 474
 MAIN_WINDOW_INITIAL_HEIGHT = 855
 
-# Connection Manager Window (cables/connection_manager.py)
-CONN_MANAGER_INITIAL_X = 100
-CONN_MANAGER_INITIAL_Y = 100
+# Connection Manager Window (cables/connection_manager.py) — first-launch defaults
 CONN_MANAGER_INITIAL_WIDTH = 1368
 CONN_MANAGER_INITIAL_HEIGHT = 1000
 
@@ -26,4 +57,4 @@ PWTOP_FONT_SIZE_PT = 13
 CONNECTION_LINE_THICKNESS = 2
 
 # Graph View Settings (graph/main_window.py)
-DEFAULT_UNTANGLE_VALUES = [0, 3, 4, 5, 2]
+DEFAULT_UNTANGLE_VALUES = [2, 3, 4]

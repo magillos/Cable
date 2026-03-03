@@ -1,3 +1,6 @@
+"""
+Visual constants for graph rendering — node dimensions, colors, fonts, and spacing.
+"""
 from PyQt6.QtGui import QColor
 
 # --- Constants ---
@@ -67,6 +70,16 @@ MIN_NODE_V_SPACING = 10.0
 # Node push-away animation settings
 PUSH_AWAY_ANIMATION_DURATION = 200  # milliseconds
 PUSH_AWAY_ANIMATION_ENABLED = True  # Set to False for instant movement
+
+# Layout transition animation settings (when applying automatic layouts)
+LAYOUT_ANIMATION_ENABLED = True
+LAYOUT_ANIMATION_DURATION = 220  # milliseconds
+LAYOUT_ANIMATION_EASING = "OutCubic"  # QEasingCurve.Type name
+LAYOUT_ANIMATION_MIN_DISTANCE = 6.0  # pixels
+
+# General animation defaults
+ANIMATION_DEFAULT_DURATION = 150  # milliseconds
+ANIMATION_DEFAULT_EASING = "OutQuad"  # QEasingCurve.Type name
 
 # UI Layout Fine-tuning
 GRAPH_TOOLBAR_UNDO_REDO_OFFSET = -65 # Adjust to shift Undo/Redo buttons in Graph tab toolbar, e.g., 10 or -10

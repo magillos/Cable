@@ -8,6 +8,18 @@ from PyQt6.QtWidgets import (QVBoxLayout, QHBoxLayout, QLabel, QSpacerItem, QSpl
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QFont, QIcon, QAction
 import threading # Added for graph tab
+from cable_core import config_keys as keys
+
+import logging
+from typing import TYPE_CHECKING, Optional, Any, Union, List
+
+if TYPE_CHECKING:
+    from PyQt6.QtWidgets import QTabWidget
+    from cables.connection_manager import JackConnectionManager
+    from cables.ui.port_tree_widget import PortTreeWidget
+    from cables.ui.connection_view import ConnectionView
+
+logger = logging.getLogger(__name__)
 
 from cables.ui.port_tree_widget import DragPortTreeWidget, DropPortTreeWidget
 from cables.ui.shared_widgets import create_action_button
@@ -32,7 +44,7 @@ class TabUIManager:
     in the application, including the port tabs, pw-top tab, and latency test tab.
     """
     
-    def setup_port_tab(self, manager, tab_widget, tab_name, port_type):
+    def setup_port_tab(self, manager: 'JackConnectionManager', tab_widget: QWidget, tab_name: str, port_type: str) -> None:
         """
         Set up a port tab (Audio or MIDI).
         
@@ -74,29 +86,24 @@ class TabUIManager:
             tooltip="Disconnect selected items <span style='color:grey'>D/Del</span>"
         )
 
-        presets_action = manager.action_manager.presets_action
-        presets_button = create_action_button(
+        # Create per-tab undo/redo buttons
+        undo_button = create_action_button(
             parent_widget=button_widget,
-            action=presets_action,
-            tooltip="Manage Presets"
+            action=manager.action_manager.global_undo_action,
+            tooltip="Undo last connection <span style='color:grey'>Ctrl+Z</span>"
         )
-        presets_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        
-        # Add Node Visibility button
-        node_visibility_action = QAction("Clients Visibility", button_widget)
-        node_visibility_action.triggered.connect(lambda: manager.show_node_visibility_dialog(port_type))
-        node_visibility_button = create_action_button(
+        redo_button = create_action_button(
             parent_widget=button_widget,
-            action=node_visibility_action,
-            tooltip="Configure which nodes should be visible"
+            action=manager.action_manager.global_redo_action,
+            tooltip="Redo last connection <span style='color:grey'>Shift+Ctrl+Z/Ctrl+Y</span>"
         )
 
         # Add buttons to layout with stretches for centering
         button_layout.addStretch()
         button_layout.addWidget(connect_button)
         button_layout.addWidget(disconnect_button)
-        button_layout.addWidget(presets_button)
-        button_layout.addWidget(node_visibility_button)
+        button_layout.addWidget(undo_button)
+        button_layout.addWidget(redo_button)
         button_layout.addStretch()
 
         # Add button widget to main layout with fixed height
@@ -133,8 +140,8 @@ class TabUIManager:
         connection_view.connect_to_jack_signals(manager.client)
         
         # Apply styles
-        input_tree.setStyleSheet(manager.list_stylesheet())
-        output_tree.setStyleSheet(manager.list_stylesheet())
+        input_tree.setStyleSheet(manager.ui_manager.list_stylesheet())
+        output_tree.setStyleSheet(manager.ui_manager.list_stylesheet())
         connection_view.setStyleSheet(f"background: {manager.background_color.name()}; border: none;")
         
         # Add spacers and labels to layouts
@@ -169,7 +176,7 @@ class TabUIManager:
         
         # Load saved splitter sizes or use defaults
         connection_view_initial_width = manager.config_manager.get_int_setting(
-            "CONNECTION_VIEW_INITIAL_WIDTH", app_config.CONNECTION_VIEW_INITIAL_WIDTH
+            keys.CONNECTION_VIEW_INITIAL_WIDTH, app_config.CONNECTION_VIEW_INITIAL_WIDTH
         )
         config_key = f"{port_type}_splitter_sizes"
         saved_sizes = manager.config_manager.get_str(config_key, "")
@@ -180,7 +187,7 @@ class TabUIManager:
                 if len(sizes) == 3:
                     splitter.setSizes(sizes)
             except ValueError:
-                pass
+                logger.debug("ValueError suppressed")
         
         if not saved_sizes or len(saved_sizes.split(",")) != 3:
             # Default: equal space for trees, configured width for middle
@@ -189,7 +196,7 @@ class TabUIManager:
             splitter.setSizes([tree_width, connection_view_initial_width, tree_width])
         
         # Save splitter sizes when changed
-        def save_splitter_sizes():
+        def save_splitter_sizes() -> None:
             sizes = splitter.sizes()
             manager.config_manager.set_str(config_key, ",".join(str(s) for s in sizes))
             connection_view.request_refresh()
@@ -206,8 +213,6 @@ class TabUIManager:
             manager.connection_view = connection_view
             manager.connect_button = connect_button
             manager.disconnect_button = disconnect_button
-            manager.presets_button = presets_button
-            manager.audio_node_visibility_button = node_visibility_button
 
         elif port_type == 'midi':
             manager.midi_input_tree = input_tree
@@ -216,14 +221,13 @@ class TabUIManager:
             manager.midi_connection_view = connection_view
             manager.midi_connect_button = connect_button
             manager.midi_disconnect_button = disconnect_button
-            manager.midi_presets_button = presets_button
-            manager.midi_node_visibility_button = node_visibility_button
+
         
         # Connect tree signals to trigger connection view refresh on scroll/expand/collapse
         self._connect_tree_refresh_signals(input_tree, connection_view)
         self._connect_tree_refresh_signals(output_tree, connection_view)
     
-    def _connect_tree_refresh_signals(self, tree, connection_view):
+    def _connect_tree_refresh_signals(self, tree: 'PortTreeWidget', connection_view: 'ConnectionView') -> None:
         """
         Connect tree widget signals to connection view refresh.
         
@@ -247,7 +251,7 @@ class TabUIManager:
         tree.itemExpanded.connect(lambda _: connection_view.request_refresh())
         tree.itemCollapsed.connect(lambda _: connection_view.request_refresh())
 
-    def setup_midi_matrix_tab(self, manager, tab_widget):
+    def setup_midi_matrix_tab(self, manager: 'JackConnectionManager', tab_widget: QWidget) -> None:
         """
         Set up the MIDI Matrix tab.
         
@@ -341,7 +345,7 @@ class TabUIManager:
         manager.midi_matrix_v_splitter = splitter
 
 
-    def setup_pwtop_tab(self, manager, tab_widget):
+    def setup_pwtop_tab(self, manager: 'JackConnectionManager', tab_widget: QWidget) -> None:
         """
         Set up the pw-top statistics tab.
         
@@ -359,7 +363,7 @@ class TabUIManager:
                 background-color: {manager.background_color.name()};
                 color: {manager.text_color.name()};
                 font-family: monospace;
-                font-size: {manager.config_manager.get_int_setting("PWTOP_FONT_SIZE_PT", app_config.PWTOP_FONT_SIZE_PT)}pt;
+                font-size: {manager.config_manager.get_int_setting(keys.PWTOP_FONT_SIZE_PT, app_config.PWTOP_FONT_SIZE_PT)}pt;
             }}
         """)
         layout.addWidget(pwtop_text_widget)
@@ -371,7 +375,7 @@ class TabUIManager:
         from cables.features.pwtop_monitor import PwTopMonitor
         manager.pwtop_monitor = PwTopMonitor(manager, pwtop_text_widget)
     
-    def setup_latency_tab(self, manager, tab_widget):
+    def setup_latency_tab(self, manager: 'JackConnectionManager', tab_widget: QWidget) -> None:
         """
         Set up the Latency Test tab.
         
@@ -406,15 +410,15 @@ class TabUIManager:
         # Combo Boxes for Port Selection
         manager.latency_input_combo = QComboBox()
         manager.latency_input_combo.setPlaceholderText("Select Input (Capture)...")
-        manager.latency_input_combo.setStyleSheet(manager.list_stylesheet())
+        manager.latency_input_combo.setStyleSheet(manager.ui_manager.list_stylesheet())
         
         manager.latency_output_combo = QComboBox()
         manager.latency_output_combo.setPlaceholderText("Select Output (Playback)...")
-        manager.latency_output_combo.setStyleSheet(manager.list_stylesheet())
+        manager.latency_output_combo.setStyleSheet(manager.ui_manager.list_stylesheet())
         
         # Refresh Button
         manager.latency_refresh_button = QPushButton("Refresh Ports")
-        manager.latency_refresh_button.setStyleSheet(manager.button_stylesheet())
+        manager.latency_refresh_button.setStyleSheet(manager.ui_manager.button_stylesheet())
         manager.latency_refresh_button.clicked.connect(manager.latency_tester._populate_latency_combos)
         
         # Combo Boxes Layout
@@ -444,11 +448,11 @@ class TabUIManager:
         # Start/Stop Buttons Layout
         start_stop_button_layout = QHBoxLayout()
         manager.latency_run_button = QPushButton('Start measurement')
-        manager.latency_run_button.setStyleSheet(manager.button_stylesheet())
+        manager.latency_run_button.setStyleSheet(manager.ui_manager.button_stylesheet())
         manager.latency_run_button.clicked.connect(manager.latency_tester.run_latency_test)
         
         manager.latency_stop_button = QPushButton('Stop')
-        manager.latency_stop_button.setStyleSheet(manager.button_stylesheet())
+        manager.latency_stop_button.setStyleSheet(manager.ui_manager.button_stylesheet())
         manager.latency_stop_button.clicked.connect(manager.latency_tester.stop_latency_test)
         manager.latency_stop_button.setEnabled(False)
         
@@ -483,7 +487,7 @@ class TabUIManager:
         manager.latency_input_combo.currentIndexChanged.connect(manager.latency_tester._on_latency_input_selected)
         manager.latency_output_combo.currentIndexChanged.connect(manager.latency_tester._on_latency_output_selected)
 
-    def setup_graph_tab(self, manager, tab_widget):
+    def setup_graph_tab(self, manager: 'JackConnectionManager', tab_widget: QWidget) -> None:
         """
         Set up the Graph tab.
 
@@ -543,35 +547,33 @@ class TabUIManager:
                     tooltip="Configure which nodes should be visible"
                 )
                 
-                # Try to get the top toolbar layout
-                top_toolbar_layout = None
-                if hasattr(manager.graph_main_window, 'get_top_toolbar_layout'):
-                    top_toolbar_layout = manager.graph_main_window.get_top_toolbar_layout()
+                # Try to get the bottom toolbar layout (Presets are in the bottom toolbar)
+                bottom_toolbar_layout = None
+                if hasattr(manager.graph_main_window, 'get_bottom_toolbar_layout'):
+                    bottom_toolbar_layout = manager.graph_main_window.get_bottom_toolbar_layout()
                 
-                if top_toolbar_layout:
-                    # Get the index of the last stretch to insert before it
-                    for i in range(top_toolbar_layout.count()):
-                        item = top_toolbar_layout.itemAt(i)
-                        # We want to insert before the ending stretch
-                        if item.spacerItem() and i > 0:  # Skip the first stretch
-                            top_toolbar_layout.insertWidget(i, graph_node_visibility_button)
+                if bottom_toolbar_layout:
+                    # Insert after the preset button
+                    preset_index = -1
+                    for i in range(bottom_toolbar_layout.count()):
+                        item = bottom_toolbar_layout.itemAt(i)
+                        if item.widget() == manager.graph_main_window.preset_button:
+                            preset_index = i
                             break
+                    
+                    if preset_index != -1:
+                        bottom_toolbar_layout.insertWidget(preset_index + 1, graph_node_visibility_button)
                     else:
-                        # Fallback if no ending stretch found - add after preset button
-                        preset_index = -1
-                        for i in range(top_toolbar_layout.count()):
-                            item = top_toolbar_layout.itemAt(i)
-                            if item.widget() == manager.graph_main_window.preset_button:
-                                preset_index = i
+                        # Fallback - insert before the trailing stretch
+                        for i in range(bottom_toolbar_layout.count()):
+                            item = bottom_toolbar_layout.itemAt(i)
+                            if item.spacerItem() and i > 0:
+                                bottom_toolbar_layout.insertWidget(i, graph_node_visibility_button)
                                 break
-                        
-                        if preset_index != -1:
-                            top_toolbar_layout.insertWidget(preset_index + 1, graph_node_visibility_button)
                         else:
-                            # Just add it at the end
-                            top_toolbar_layout.addWidget(graph_node_visibility_button)
+                            bottom_toolbar_layout.addWidget(graph_node_visibility_button)
                 else:
-                    # Create a separate button container if we can't access the top toolbar
+                    # Create a separate button container if we can't access the bottom toolbar
                     button_container = QWidget()
                     button_layout = QHBoxLayout(button_container)
                     button_layout.setContentsMargins(0, 0, 0, 0)
@@ -618,8 +620,8 @@ class TabUIManager:
            hasattr(manager.graph_main_window, 'scene') and manager.graph_main_window.scene:
             
             # Define a slot for the refresh
-            def delayed_refresh():
-                print("TabUIManager: Explicit delayed full_graph_refresh for graph tab.")
+            def delayed_refresh() -> None:
+                logger.debug("TabUIManager: Explicit delayed full_graph_refresh for graph tab.")
                 if manager.graph_main_window and manager.graph_main_window.scene: # Re-check existence
                     manager.graph_main_window.scene.full_graph_refresh()
 

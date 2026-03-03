@@ -1,8 +1,16 @@
+"""
+XDG autostart management for launching Cable on login.
+"""
+
 import os
+from typing import Optional
+
+import logging
+logger = logging.getLogger(__name__)
 
 class AutostartManager:
     """Manages autostart functionality using XDG autostart"""
-    def __init__(self, flatpak_env=False, appimage_path=None):
+    def __init__(self, flatpak_env: bool = False, appimage_path: Optional[str] = None) -> None:
         self.autostart_dir = os.path.expanduser("~/.config/autostart")
         self.desktop_file = os.path.join(self.autostart_dir, "cable-autostart.desktop")
         self.appimage_path = appimage_path
@@ -24,7 +32,7 @@ Icon=jack-plug
 Terminal=false
 X-GNOME-Autostart-enabled=true"""
 
-    def enable_autostart(self):
+    def enable_autostart(self) -> bool:
 
         try:
             os.makedirs(self.autostart_dir, exist_ok=True)
@@ -33,19 +41,19 @@ X-GNOME-Autostart-enabled=true"""
             os.chmod(self.desktop_file, 0o755)
             return True
         except Exception as e:
-            print(f"Error enabling autostart: {e}")
+            logger.error(f"Error enabling autostart: {e}")
             return False
 
-    def disable_autostart(self):
+    def disable_autostart(self) -> bool:
 
         try:
             if os.path.exists(self.desktop_file):
                 os.remove(self.desktop_file)
             return True
         except Exception as e:
-            print(f"Error disabling autostart: {e}")
+            logger.error(f"Error disabling autostart: {e}")
             return False
 
-    def is_autostart_enabled(self):
+    def is_autostart_enabled(self) -> bool:
 
         return os.path.exists(self.desktop_file)

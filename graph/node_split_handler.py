@@ -1,22 +1,28 @@
+"""
+Handler for splitting and restoring JACK client nodes into separate input/output nodes.
+"""
 from __future__ import annotations
+import logging
 import traceback
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Dict, Any, Optional, List
 
 from PyQt6.QtCore import QPointF
 
 from . import constants
 
+logger = logging.getLogger(__name__)
+
 if TYPE_CHECKING:
     from .node_item import NodeItem
     from .connection_item import ConnectionItem
-    from .config_utils import ConfigManager
+    from .config_utils import GraphConfigManager
     # GraphJackHandler is part of jack_handler on NodeItem, no direct import needed here.
     # GuiScene is accessed via node_item.scene()
 
 class NodeSplitHandler:
     """Handles splitting and unsplitting logic for a NodeItem."""
 
-    def __init__(self, node_item: NodeItem):
+    def __init__(self, node_item: NodeItem) -> None:
         """
         Initializes the split handler.
         Args:
@@ -26,7 +32,7 @@ class NodeSplitHandler:
         # Split-related attributes (is_split_origin, is_split_part, etc.)
         # are stored on the node_item itself and manipulated by this handler.
 
-    def split_node(self, save_state: bool = True):
+    def split_node(self, save_state: bool = True) -> None:
         """
         Visually splits the associated node_item into two parts: one for inputs, one for outputs.
         Args:
@@ -38,17 +44,17 @@ class NodeSplitHandler:
         
         scene = ni.scene()
         if not scene:
-            print("Error (SplitHandler): NodeItem cannot access scene for splitting.")
+            logger.error("NodeItem cannot access scene for splitting.")
             ni._internal_state_change_in_progress = False
             return
 
         if not ni.jack_handler or not ni.jack_handler.jack_client:
-            print(f"Error (SplitHandler): JACK handler or client not available for splitting {ni.client_name}.")
+            logger.error(f"JACK handler or client not available for splitting {ni.client_name}.")
             ni._internal_state_change_in_progress = False
             return
 
         if ni.is_split_origin or ni.is_split_part:
-            print(f"Warning (SplitHandler): Node {ni.client_name} is already split or is a split part.")
+            logger.warning(f"Node {ni.client_name} is already split or is a split part.")
             ni._internal_state_change_in_progress = False
             return
 
@@ -70,10 +76,10 @@ class NodeSplitHandler:
                 else:
                     output_ports_data[port_name] = port_obj
             else:
-                print(f"Warning (SplitHandler): Could not get port object for {port_name} during split.")
+                logger.warning(f"Could not get port object for {port_name} during split.")
 
         if not input_ports_data or not output_ports_data:
-            print(f"Node {ni.client_name} cannot be split: requires both input and output ports.")
+            logger.warning(f"Node {ni.client_name} cannot be split: requires both input and output ports.")
             ni._internal_state_change_in_progress = False
             return
 
@@ -85,7 +91,7 @@ class NodeSplitHandler:
         output_node_display_name = f"{original_client_name}{constants.SPLIT_OUTPUT_SUFFIX}"
 
         if not ni.config_manager:
-            print("Error (SplitHandler): self.node_item.config_manager is None. Cannot create split parts.")
+            logger.error("self.node_item.config_manager is None. Cannot create split parts.")
             ni._internal_state_change_in_progress = False
             return
 
@@ -112,16 +118,37 @@ class NodeSplitHandler:
         output_node.prepareGeometryChange()
         output_node.update()
         
-        # Set both split parts to same Y-coordinate as original node
+        # Set positions: input on left, output on right, both at same Y (horizontal alignment)
+        # Place them close to the original node position
         input_x = original_pos.x()
         input_y = original_pos.y()
         output_x = original_pos.x() + input_node.boundingRect().width() + constants.NODE_HSPACING
         output_y = original_pos.y()
         
-        # Check for overlaps and find non-overlapping positions if needed
+        # Check for overlaps and find non-overlapping positions.
+        # IMPORTANT: When checking for overlaps, we need to exclude the sibling split part
+        # from the check so both parts stay close together and horizontally aligned.
         if scene.layouter:
-            input_x, input_y = scene.layouter.find_non_overlapping_position(input_node, input_x, input_y)
-            output_x, output_y = scene.layouter.find_non_overlapping_position(output_node, output_x, output_y)
+            # First, temporarily add both nodes to the scene for overlap checking
+            # but don't set their final positions yet
+            scene.addItem(input_node)
+            scene.addItem(output_node)
+            
+            # Find non-overlapping position for input, excluding output from overlap check
+            input_x, input_y = scene.layouter.find_non_overlapping_position(
+                input_node, input_x, input_y, exclude_sibling=output_node)
+            
+            # Find non-overlapping position for output, excluding input from overlap check
+            # Position output to the right of input (horizontal alignment)
+            output_x = input_x + input_node.boundingRect().width() + constants.NODE_HSPACING
+            output_y = input_y  # Keep same Y for horizontal alignment
+            output_x, output_y = scene.layouter.find_non_overlapping_position(
+                output_node, output_x, output_y, exclude_sibling=input_node)
+            
+            # After finding positions, ensure they are still horizontally aligned
+            # If output was moved vertically, adjust input to match
+            if output_y != input_y:
+                output_y = input_y
         
         input_node.setPos(QPointF(input_x, input_y))
         output_node.setPos(QPointF(output_x, output_y))
@@ -192,10 +219,10 @@ class NodeSplitHandler:
                     scene.addItem(new_conn)
                     scene.connections[conn_key] = new_conn
                 except Exception as e:
-                    print(f"Error (SplitHandler) creating new ConnectionItem for {old_source_port_name} -> {old_dest_port_name}: {e}")
+                    logger.error(f"Error creating new ConnectionItem for {old_source_port_name} -> {old_dest_port_name}: {e}")
                     traceback.print_exc()
             else:
-                print(f"Warning (SplitHandler): Could not find port items to recreate connection: {old_source_port_name} -> {old_dest_port_name}")
+                logger.warning(f"Could not find port items to recreate connection: {old_source_port_name} -> {old_dest_port_name}")
 
         ni.layout_ports() # Recalculate original node size (title bar)
         ni.update()
@@ -225,7 +252,7 @@ class NodeSplitHandler:
         if save_state and scene and hasattr(scene, 'node_states_changed'):
             scene.node_states_changed.emit()
 
-    def unsplit_node(self, save_state: bool = True):
+    def unsplit_node(self, save_state: bool = True) -> None:
         """
         Reverses the visual split, restoring the original node_item appearance.
         Args:
@@ -237,11 +264,11 @@ class NodeSplitHandler:
 
         scene = ni.scene()
         if not scene:
-            print("Error (SplitHandler): Cannot access scene for unsplitting.")
+            logger.error("Cannot access scene for unsplitting.")
             ni._internal_state_change_in_progress = False
             return
         if not ni.is_split_origin or not ni.split_input_node or not ni.split_output_node:
-            print(f"Error (SplitHandler): Node {ni.client_name} is not in a valid split state to unsplit.")
+            logger.error(f"Node {ni.client_name} is not in a valid split state to unsplit.")
             ni._internal_state_change_in_progress = False
             return
 
@@ -275,7 +302,7 @@ class NodeSplitHandler:
             # Save the updated visibility settings to the config file
             scene.node_visibility_manager.save_visibility_settings()
             
-            print(f"Restored visibility for both input and output of node {client_name}")
+            logger.info(f"Restored visibility for both input and output of node {client_name}")
 
         # Transfer visual connections back
         # Local import for ConnectionItem
@@ -319,10 +346,10 @@ class NodeSplitHandler:
                     scene.addItem(new_conn)
                     scene.connections[conn_key] = new_conn
                 except Exception as e:
-                    print(f"Error (SplitHandler) creating new ConnectionItem for {old_source_port_name} -> {old_dest_port_name}: {e}")
+                    logger.error(f"Error creating new ConnectionItem for {old_source_port_name} -> {old_dest_port_name}: {e}")
                     traceback.print_exc()
             else:
-                print(f"Warning (SplitHandler): Could not find original port items to recreate connection: {old_source_port_name} -> {old_dest_port_name}")
+                logger.warning(f"Could not find original port items to recreate connection: {old_source_port_name} -> {old_dest_port_name}")
 
         scene.removeItem(input_part)
         scene.removeItem(output_part)
@@ -366,7 +393,7 @@ class NodeSplitHandler:
         if save_state and scene and hasattr(scene, 'node_states_changed'):
             scene.node_states_changed.emit()
 
-    def apply_split_config(self, config: dict):
+    def apply_split_config(self, config: Dict[str, Any]) -> None:
         """
         Applies split state from a configuration dictionary.
         This method is called by NodeItem.apply_configuration.

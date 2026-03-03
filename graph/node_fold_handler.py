@@ -1,5 +1,8 @@
+"""
+Handler for folding/unfolding nodes to show or hide their ports.
+"""
 from __future__ import annotations
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional, Dict, Any
 
 if TYPE_CHECKING:
     from .node_item import NodeItem
@@ -8,7 +11,7 @@ if TYPE_CHECKING:
 class NodeFoldHandler:
     """Handles folding and unfolding logic for a NodeItem."""
 
-    def __init__(self, node_item: NodeItem):
+    def __init__(self, node_item: NodeItem) -> None:
         """
         Initializes the fold handler.
         Args:
@@ -18,7 +21,7 @@ class NodeFoldHandler:
         # Fold state attributes (is_folded, input_part_folded, output_part_folded)
         # are stored on the node_item itself and manipulated by this handler.
 
-    def toggle_main_fold_state(self):
+    def toggle_main_fold_state(self) -> None:
         """Toggles the folded state of a non-split, non-part node."""
         ni = self.node_item
         if ni.is_split_origin or ni.is_split_part:
@@ -30,7 +33,7 @@ class NodeFoldHandler:
         self._after_fold_change_for_node(ni)
         self._save_state_for_node(ni)
 
-    def toggle_input_part_fold(self, fold_state: bool | None = None):
+    def toggle_input_part_fold(self, fold_state: bool | None = None) -> None:
         """
         Toggles or sets the folded state of an input split part.
         This method is called on the fold_handler of the input part NodeItem.
@@ -50,7 +53,7 @@ class NodeFoldHandler:
         # Saving state is triggered on the origin node for parts
         self._save_state_for_node(ni, is_part=True)
 
-    def toggle_output_part_fold(self, fold_state: bool | None = None):
+    def toggle_output_part_fold(self, fold_state: bool | None = None) -> None:
         """
         Toggles or sets the folded state of an output split part.
         This method is called on the fold_handler of the output part NodeItem.
@@ -70,7 +73,7 @@ class NodeFoldHandler:
         # Saving state is triggered on the origin node for parts
         self._save_state_for_node(ni, is_part=True)
 
-    def _after_fold_change_for_node(self, node: NodeItem, is_input_part: bool = False, is_output_part: bool = False):
+    def _after_fold_change_for_node(self, node: NodeItem, is_input_part: bool = False, is_output_part: bool = False) -> None:
         """
         Common actions after a fold state changes for the given node.
         Args:
@@ -106,7 +109,7 @@ class NodeFoldHandler:
                     for conn in port_item.connections:
                         conn.update_path()
 
-    def _save_state_for_node(self, node: NodeItem, is_part: bool = False):
+    def _save_state_for_node(self, node: NodeItem, is_part: bool = False) -> None:
         """
         Saves the state of the relevant node (origin if 'node' is a part).
         Args:
@@ -126,7 +129,7 @@ class NodeFoldHandler:
            hasattr(node_to_trigger_save_on.scene(), 'node_states_changed'):
             node_to_trigger_save_on.scene().node_states_changed.emit()
 
-    def apply_fold_config(self, config: dict, is_currently_split_origin: bool, is_currently_split_part: bool):
+    def apply_fold_config(self, config: Dict[str, Any], is_currently_split_origin: bool, is_currently_split_part: bool) -> None:
         """
         Applies fold state from a configuration dictionary.
         This method is called by NodeItem.apply_configuration.
@@ -136,7 +139,7 @@ class NodeFoldHandler:
             is_currently_split_part: True if self.node_item is currently a split part.
         """
         # Local import to avoid potential early import issues if NodeItem also imports it.
-        from .config_utils import ConfigManager
+        from .config_utils import GraphConfigManager
 
         ni = self.node_item
 
@@ -146,13 +149,13 @@ class NodeFoldHandler:
             # Its parts (split_input_node, split_output_node) will have their fold states applied.
             if ni.split_input_node:
                 # Default to current part's state if key missing (current state might be from inheritance in _split_node)
-                loaded_input_folded = config.get(ConfigManager.INPUT_PART_FOLDED_KEY, ni.split_input_node.input_part_folded)
+                loaded_input_folded = config.get(GraphConfigManager.INPUT_PART_FOLDED_KEY, ni.split_input_node.input_part_folded)
                 if ni.split_input_node.input_part_folded != loaded_input_folded:
                     ni.split_input_node.input_part_folded = loaded_input_folded
                     ni.split_input_node.layout_ports() # The part's layout uses its new fold state
 
             if ni.split_output_node:
-                loaded_output_folded = config.get(ConfigManager.OUTPUT_PART_FOLDED_KEY, ni.split_output_node.output_part_folded)
+                loaded_output_folded = config.get(GraphConfigManager.OUTPUT_PART_FOLDED_KEY, ni.split_output_node.output_part_folded)
                 if ni.split_output_node.output_part_folded != loaded_output_folded:
                     ni.split_output_node.output_part_folded = loaded_output_folded
                     ni.split_output_node.layout_ports()
@@ -165,14 +168,14 @@ class NodeFoldHandler:
 
             if is_input_part_type:
                 current_fold_state = ni.input_part_folded
-                config_key = ConfigManager.INPUT_PART_FOLDED_KEY
+                config_key = GraphConfigManager.INPUT_PART_FOLDED_KEY
                 loaded_fold_state = config.get(config_key, current_fold_state)
                 if current_fold_state != loaded_fold_state:
                     ni.input_part_folded = loaded_fold_state
                     ni.layout_ports() # Update layout of this part
             elif is_output_part_type:
                 current_fold_state = ni.output_part_folded
-                config_key = ConfigManager.OUTPUT_PART_FOLDED_KEY
+                config_key = GraphConfigManager.OUTPUT_PART_FOLDED_KEY
                 loaded_fold_state = config.get(config_key, current_fold_state)
                 if current_fold_state != loaded_fold_state:
                     ni.output_part_folded = loaded_fold_state
@@ -181,8 +184,8 @@ class NodeFoldHandler:
         else: # This handler is on a NORMAL, UNSPLIT node
             # If IS_FOLDED_KEY is present in config, use its value.
             # ni.is_folded might have been set to False by split_handler._unsplit_node if it just ran.
-            if ConfigManager.IS_FOLDED_KEY in config: # Check presence of key
-                is_folded_from_config = config.get(ConfigManager.IS_FOLDED_KEY) # Get value
+            if GraphConfigManager.IS_FOLDED_KEY in config: # Check presence of key
+                is_folded_from_config = config.get(GraphConfigManager.IS_FOLDED_KEY) # Get value
                 if ni.is_folded != is_folded_from_config:
                     ni.is_folded = is_folded_from_config
                     ni.layout_ports() # Update layout of this node

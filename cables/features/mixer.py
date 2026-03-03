@@ -1,4 +1,8 @@
+"""
+ALSA mixer widget providing volume sliders, mute controls, and card/mixer element selection.
+"""
 import sys
+from typing import Any, Dict, List, Optional
 try:
     import alsaaudio
 except ImportError:
@@ -10,8 +14,12 @@ from PyQt6.QtWidgets import (
     QFrame, QPushButton
 )
 from PyQt6.QtCore import Qt, QTimer, QSize, QSocketNotifier
-from PyQt6.QtGui import QFont, QAction, QKeySequence
+from PyQt6.QtGui import QFont, QAction, QKeySequence, QKeyEvent, QCloseEvent
 from functools import partial
+from cable_core import config_keys as keys
+
+import logging
+logger = logging.getLogger(__name__)
 
 # --- Constants ---
 _MIXER_CAP_PVOLUME_INT = 2
@@ -24,15 +32,15 @@ _CAP_STRING_GENERIC_VOLUME = "Volume"
 _CAP_STRING_CAPTURE_VOLUME = "Capture Volume"
 
 try: _MIXER_CAP_PVOLUME_INT = alsaaudio.MIXER_CAP_PVOLUME
-except AttributeError: print(f"Warning: alsaaudio.MIXER_CAP_PVOLUME not found. Using default int value {_MIXER_CAP_PVOLUME_INT}.", file=sys.stderr)
+except AttributeError: logger.warning(f"Warning: alsaaudio.MIXER_CAP_PVOLUME not found. Using default int value {_MIXER_CAP_PVOLUME_INT}.")
 try: _MIXER_SWCAP_PLAYBACK_INT = alsaaudio.MIXER_SWCAP_PLAYBACK
-except AttributeError: print(f"Warning: alsaaudio.MIXER_SWCAP_PLAYBACK not found. Using default int value {_MIXER_SWCAP_PLAYBACK_INT}.", file=sys.stderr)
+except AttributeError: logger.warning(f"Warning: alsaaudio.MIXER_SWCAP_PLAYBACK not found. Using default int value {_MIXER_SWCAP_PLAYBACK_INT}.")
 try: _MIXER_CAP_CVOLUME_INT = alsaaudio.MIXER_CAP_CVOLUME
-except AttributeError: print(f"Warning: alsaaudio.MIXER_CAP_CVOLUME not found. Using default int value {_MIXER_CAP_CVOLUME_INT}.", file=sys.stderr)
+except AttributeError: logger.warning(f"Warning: alsaaudio.MIXER_CAP_CVOLUME not found. Using default int value {_MIXER_CAP_CVOLUME_INT}.")
 # --- End Constants ---
 
 class AlsMixerApp(QWidget):
-    def __init__(self, config_manager=None):
+    def __init__(self, config_manager: Optional[Any] = None) -> None:
         super().__init__()
         
         # Initialize debug_mode early to prevent AttributeError when pyalsaaudio is not available
@@ -44,7 +52,7 @@ class AlsMixerApp(QWidget):
 
         self._init_mixer_components(config_manager)
 
-    def _init_mixer_components(self, config_manager):
+    def _init_mixer_components(self, config_manager: Optional[Any]) -> None:
         self.config_manager = config_manager
         self.current_card_index = -1
         self._is_updating_ui = False
@@ -74,31 +82,31 @@ class AlsMixerApp(QWidget):
         # self.populate_cards() # Populate cards only when updates are started
  
     # Zoom methods defined before init_ui uses them via connections
-    def _load_zoom_level(self):
+    def _load_zoom_level(self) -> None:
         if self.config_manager:
             try:
-                multiplier_str = self.config_manager.get_str('alsa_mixer_zoom_level', '1.0')
+                multiplier_str = self.config_manager.get_str(keys.ALSA_MIXER_ZOOM_LEVEL, '1.0')
                 self.current_font_size_multiplier = float(multiplier_str)
             except ValueError:
                 self.current_font_size_multiplier = 1.0
         else:
             self.current_font_size_multiplier = 1.0
 
-    def _save_zoom_level(self):
+    def _save_zoom_level(self) -> None:
         if self.config_manager:
-            self.config_manager.set_str('alsa_mixer_zoom_level', str(self.current_font_size_multiplier))
+            self.config_manager.set_str(keys.ALSA_MIXER_ZOOM_LEVEL, str(self.current_font_size_multiplier))
 
-    def _zoom_in(self):
+    def _zoom_in(self) -> None:
         self.current_font_size_multiplier = round(min(2.0, self.current_font_size_multiplier + 0.04), 2)
         self._apply_zoom()
         self._save_zoom_level()
 
-    def _zoom_out(self):
+    def _zoom_out(self) -> None:
         self.current_font_size_multiplier = round(max(0.5, self.current_font_size_multiplier - 0.04), 2)
         self._apply_zoom()
         self._save_zoom_level()
 
-    def _apply_zoom(self):
+    def _apply_zoom(self) -> None:
         multiplier = self.current_font_size_multiplier
         base_app_font_size = QApplication.font().pointSizeF()
         if base_app_font_size <= 0: base_app_font_size = 10 
@@ -169,7 +177,7 @@ class AlsMixerApp(QWidget):
             self.scroll_content_widget.updateGeometry()
             self.scroll_area.updateGeometry()
 
-    def init_ui(self):
+    def init_ui(self) -> None:
         self.setWindowTitle("PyQt6 ALSA Mixer")
         self.setGeometry(200, 200, 800, 650)
 
@@ -235,7 +243,7 @@ class AlsMixerApp(QWidget):
         
         self._setup_zoom_shortcuts()
  
-    def _get_long_card_name(self, card_index, fallback_name):
+    def _get_long_card_name(self, card_index: int, fallback_name: str) -> str:
         try:
             longname_path = f"/proc/asound/card{card_index}/longname"
             if os.path.exists(longname_path):
@@ -253,11 +261,10 @@ class AlsMixerApp(QWidget):
                              return f"{name} (hw:{card_index})"
                         return name 
         except Exception as e:
-            if self.debug_mode:
-                print(f"Error reading card name for index {card_index}: {e}", file=sys.stderr)
+            logger.error(f"Error reading card name for index {card_index}: {e}")
         return fallback_name
 
-    def init_error_ui(self, message):
+    def init_error_ui(self, message: str) -> None:
         layout = QVBoxLayout(self)
         error_label = QLabel(f"<b>Error:</b> {message}<br><br>"
                             "ALSA mixer functionality requires pyalsaaudio (install python-pyalsaaudio, python3-alsaaudio or equivalent package).</code>")                    
@@ -266,7 +273,7 @@ class AlsMixerApp(QWidget):
         layout.addWidget(error_label)
         self.setLayout(layout)
 
-    def populate_cards(self):
+    def populate_cards(self) -> None:
         if alsaaudio is None:
             return
         self.card_combo.clear()
@@ -275,7 +282,7 @@ class AlsMixerApp(QWidget):
         try:
             self.card_combo.currentIndexChanged.disconnect(self._on_card_selected)
         except TypeError: 
-            pass
+            logger.debug("TypeError suppressed")
 
         try:
             alsa_cards_short_names = alsaaudio.cards() if alsaaudio else []
@@ -308,7 +315,7 @@ class AlsMixerApp(QWidget):
             if self.card_combo.count() > 0:
                 last_card_hw_index = -1 
                 if self.config_manager:
-                    last_card_hw_index_str = self.config_manager.get_str('last_alsa_mixer_card_index', '-1')
+                    last_card_hw_index_str = self.config_manager.get_str(keys.LAST_ALSA_MIXER_CARD_INDEX, '-1')
                     try:
                         last_card_hw_index = int(last_card_hw_index_str)
                     except ValueError:
@@ -341,7 +348,7 @@ class AlsMixerApp(QWidget):
         if not initial_card_selected: 
             self.clear_mixer_controls_ui()
 
-    def clear_mixer_controls_ui(self):
+    def clear_mixer_controls_ui(self) -> None:
         self._is_updating_ui = True; self.mixer_controls_data.clear()
         while self.mixer_hbox_layout.count():
             item = self.mixer_hbox_layout.takeAt(0)
@@ -351,7 +358,7 @@ class AlsMixerApp(QWidget):
                     widget.deleteLater()
         self._is_updating_ui = False
 
-    def _on_card_selected(self, index):
+    def _on_card_selected(self, index: int) -> None:
         if index < 0: self.clear_mixer_controls_ui(); self.current_card_index = -1; return
         selected_card_hw_index = self.card_combo.itemData(index) 
         if selected_card_hw_index is None:
@@ -360,7 +367,7 @@ class AlsMixerApp(QWidget):
             return
         
         if self.config_manager:
-            self.config_manager.set_str('last_alsa_mixer_card_index', str(selected_card_hw_index))
+            self.config_manager.set_str(keys.LAST_ALSA_MIXER_CARD_INDEX, str(selected_card_hw_index))
 
         if selected_card_hw_index == self.current_card_index and self.mixer_hbox_layout.count() > 1:
             return
@@ -377,7 +384,7 @@ class AlsMixerApp(QWidget):
             mixer_name_key = mixer_name_from_list
             try: mixer_obj = alsaaudio.Mixer(control=mixer_name_from_list, cardindex=self.current_card_index)
             except alsaaudio.ALSAAudioError as e:
-                if self.debug_mode: print(f"Err init mixer '{mixer_name_from_list}': {e}", file=sys.stderr)
+                logger.warning(f"Err init mixer '{mixer_name_from_list}': {e}")
                 continue
 
             if self._setup_mixer_notifiers(mixer_name_from_list, mixer_obj):
@@ -398,12 +405,12 @@ class AlsMixerApp(QWidget):
 
             has_pb_vol, has_pb_mute, has_cap_vol = False, False, False
             vol_cap_ret, sw_cap_ret = None, None
-            if self.debug_mode: print(f"\nDEBUG: Mixer: {mixer_name_from_list}")
+            logger.debug(f"\nDEBUG: Mixer: {mixer_name_from_list}")
             try: vol_cap_ret = mixer_obj.volumecap();
-            except Exception as e: print(f"  volumecap() ERROR for {mixer_name_from_list}: {e}", file=sys.stderr) if self.debug_mode else None
+            except Exception as e: logger.debug(f"  volumecap() ERROR for {mixer_name_from_list}: {e}")
             try: sw_cap_ret = mixer_obj.switchcap();
-            except Exception as e: print(f"  switchcap() ERROR for {mixer_name_from_list}: {e}", file=sys.stderr) if self.debug_mode else None
-            if self.debug_mode: print(f"  volumecap: {vol_cap_ret}, switchcap: {sw_cap_ret}")
+            except Exception as e: logger.debug(f"  switchcap() ERROR for {mixer_name_from_list}: {e}")
+            logger.debug(f"  volumecap: {vol_cap_ret}, switchcap: {sw_cap_ret}")
 
             if isinstance(vol_cap_ret, list):
                 if _CAP_STRING_PLAYBACK_VOLUME in vol_cap_ret: has_pb_vol = True
@@ -456,8 +463,7 @@ class AlsMixerApp(QWidget):
                     mixer_group_layout.addWidget(volume_frame)
                     actually_controllable_elements += 1
                 except alsaaudio.ALSAAudioError as e:
-                    if self.debug_mode: print(f"  UI INFO: PB Vol for '{mixer_name_from_list}' inaccessible: {e}", file=sys.stderr)
-
+                    logger.warning(f"  UI INFO: PB Vol for '{mixer_name_from_list}' inaccessible: {e}")
             if has_pb_mute:
                 cb = QCheckBox("")
                 try:
@@ -476,8 +482,7 @@ class AlsMixerApp(QWidget):
                     mixer_group_layout.addLayout(mute_layout)
                     actually_controllable_elements += 1
                 except alsaaudio.ALSAAudioError as e:
-                    if self.debug_mode: print(f"  UI INFO: PB Mute for '{mixer_name_from_list}' inaccessible: {e}", file=sys.stderr)
-
+                    logger.warning(f"  UI INFO: PB Mute for '{mixer_name_from_list}' inaccessible: {e}")
             if actually_controllable_elements > 0 and has_cap_vol :
                 sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine); sep.setFrameShadow(QFrame.Shadow.Sunken); mixer_group_layout.addWidget(sep)
 
@@ -515,13 +520,12 @@ class AlsMixerApp(QWidget):
                     mixer_group_layout.addWidget(cap_volume_frame)
                     actually_controllable_elements += 1
                 except alsaaudio.ALSAAudioError as e:
-                    if self.debug_mode: print(f"  UI INFO: CAP Vol for '{mixer_name_from_list}' inaccessible: {e}", file=sys.stderr)
-
+                    logger.warning(f"  UI INFO: CAP Vol for '{mixer_name_from_list}' inaccessible: {e}")
             if actually_controllable_elements > 0:
                 self.mixer_controls_data[mixer_name_key] = control_data
                 self.mixer_hbox_layout.addWidget(mixer_group_widget)
             else:
-                if self.debug_mode: print(f"  UI INFO: No controllable elements for '{mixer_name_from_list}', skipping UI frame.")
+                logger.debug(f"  UI INFO: No controllable elements for '{mixer_name_from_list}', skipping UI frame.")
                 mixer_group_widget.deleteLater()
 
         # Manage the timer based on notifier setup
@@ -533,7 +537,7 @@ class AlsMixerApp(QWidget):
         self._apply_zoom()
         self._is_updating_ui = False
 
-    def _on_dynamic_volume_changed(self, mixer_name_key, volume_label_widget, value):
+    def _on_dynamic_volume_changed(self, mixer_name_key: str, volume_label_widget: Optional[QLabel], value: int) -> None:
         if self._is_updating_ui: return
         control_data = self.mixer_controls_data.get(mixer_name_key)
         if not control_data or not control_data['obj']: return
@@ -542,7 +546,7 @@ class AlsMixerApp(QWidget):
             if volume_label_widget: volume_label_widget.setText(str(value))
         except alsaaudio.ALSAAudioError as e: QMessageBox.warning(self, "ALSA Error", f"Could not set volume for '{mixer_name_key}': {e}"); self.refresh_specific_mixer_state(mixer_name_key)
 
-    def _on_dynamic_mute_changed(self, mixer_name_key, qt_state_value):
+    def _on_dynamic_mute_changed(self, mixer_name_key: str, qt_state_value: int) -> None:
         if self._is_updating_ui: return
         control_data = self.mixer_controls_data.get(mixer_name_key)
         if not control_data or not control_data['obj']: return
@@ -551,7 +555,7 @@ class AlsMixerApp(QWidget):
             control_data['obj'].setmute(mute_val)
         except alsaaudio.ALSAAudioError as e: QMessageBox.warning(self, "ALSA Error", f"Could not set mute for '{mixer_name_key}': {e}"); self.refresh_specific_mixer_state(mixer_name_key)
 
-    def refresh_specific_mixer_state(self, mixer_name_key):
+    def refresh_specific_mixer_state(self, mixer_name_key: str) -> None:
         if self._is_updating_ui: return
         control_data = self.mixer_controls_data.get(mixer_name_key)
         if not control_data or not control_data['obj']: return
@@ -579,44 +583,44 @@ class AlsMixerApp(QWidget):
 
         self._is_updating_ui = False
 
-    def refresh_all_mixer_states(self):
+    def refresh_all_mixer_states(self) -> None:
         if not alsaaudio:
             return
-        if self._is_updating_ui: return; print("Refreshing all mixer states...") if self.debug_mode else None; self._is_updating_ui = True
+        if self._is_updating_ui: return; logger.debug("Refreshing all mixer states..."); self._is_updating_ui = True
         for key in list(self.mixer_controls_data.keys()): self.refresh_specific_mixer_state(key)
         self._is_updating_ui = False
  
-    def start_updates(self):
+    def start_updates(self) -> None:
         """Starts the ALSA mixer update mechanisms (timer or notifiers)."""
         if not alsaaudio:
             return
-        print("ALSA Mixer: Starting updates...") if self.debug_mode else None
+        logger.debug("ALSA Mixer: Starting updates...")
         # Re-populate cards to ensure correct state and setup notifiers/timer
         self.populate_cards()
  
-    def stop_updates(self):
+    def stop_updates(self) -> None:
         """Stops the ALSA mixer update mechanisms (timer and notifiers)."""
         if not alsaaudio:
             return
-        print("ALSA Mixer: Stopping updates...") if self.debug_mode else None
+        logger.info("ALSA Mixer: Stopping updates...")
         self.update_timer.stop()
         self._cleanup_notifiers()
         self.clear_mixer_controls_ui() # Clear UI when stopping updates
  
-    def closeEvent(self, event):
+    def closeEvent(self, event: QCloseEvent) -> None:
         if alsaaudio:
             self._cleanup_notifiers()
             self.clear_mixer_controls_ui()
         event.accept()
 
-    def _setup_mixer_notifiers(self, mixer_name, mixer_obj):
+    def _setup_mixer_notifiers(self, mixer_name: str, mixer_obj: Any) -> bool:
         if not hasattr(mixer_obj, 'polldescriptors'):
-            if self.debug_mode: print(f"polldescriptors not available for {mixer_name}")
+            logger.debug(f"polldescriptors not available for {mixer_name}")
             return False
  
         try:
             fds = mixer_obj.polldescriptors()
-            if self.debug_mode: print(f"polldescriptors for {mixer_name}: {fds}")
+            logger.debug(f"polldescriptors for {mixer_name}: {fds}")
             if not fds:
                 return False
  
@@ -627,16 +631,14 @@ class AlsMixerApp(QWidget):
                 self.mixer_notifiers[mixer_name].append(notifier)
                 self.fd_to_mixer[fd] = mixer_name
  
-            if self.debug_mode:
-                print(f"Set up {len(fds)} notifiers for {mixer_name}")
+            logger.debug(f"Set up {len(fds)} notifiers for {mixer_name}")
             return True
  
         except Exception as e:
-            if self.debug_mode:
-                print(f"Error setting up notifiers for {mixer_name}: {e}")
+            logger.error(f"Error setting up notifiers for {mixer_name}: {e}")
             return False
     
-    def _handle_alsa_event(self, mixer_name, fd):
+    def _handle_alsa_event(self, mixer_name: str, fd: int) -> None:
         activated_notifier = None
         if mixer_name in self.mixer_notifiers:
             for notifier in self.mixer_notifiers[mixer_name]:
@@ -647,32 +649,24 @@ class AlsMixerApp(QWidget):
         if activated_notifier:
             activated_notifier.setEnabled(False)
  
-        if self.debug_mode:
-            print(f"ALSA event detected for {mixer_name} (fd: {fd}). Notifier disabled temporarily.")
-        
+        logger.info(f"ALSA event detected for {mixer_name} (fd: {fd}). Notifier disabled temporarily.")
         control_data = self.mixer_controls_data.get(mixer_name)
         if control_data and control_data.get('obj'):
             mixer_obj = control_data['obj']
             try:
                 mixer_obj.handleevents()
-                if self.debug_mode:
-                    print(f"Called handleevents() for {mixer_name}")
+                logger.debug(f"Called handleevents() for {mixer_name}")
             except alsaaudio.ALSAAudioError as e:
-                if self.debug_mode:
-                    print(f"Error calling handleevents() for {mixer_name}: {e}", file=sys.stderr)
+                logger.error(f"Error calling handleevents() for {mixer_name}: {e}")
             except Exception as e:
-                 if self.debug_mode:
-                    print(f"Unexpected error during handleevents() for {mixer_name}: {e}", file=sys.stderr)
-        
+                 logger.error(f"Unexpected error during handleevents() for {mixer_name}: {e}")
         # Debounce the UI refresh to avoid excessive updates from rapid ALSA events
         QTimer.singleShot(50, lambda: self.refresh_specific_mixer_state(mixer_name))
  
         if activated_notifier:
             activated_notifier.setEnabled(True)
-            if self.debug_mode:
-                print(f"Notifier for {mixer_name} (fd: {fd}) re-enabled.")
- 
-    def _cleanup_notifiers(self):
+            logger.info(f"Notifier for {mixer_name} (fd: {fd}) re-enabled.")
+    def _cleanup_notifiers(self) -> None:
         if not alsaaudio:
             return
         for mixer_name, notifiers in self.mixer_notifiers.items():
@@ -682,7 +676,7 @@ class AlsMixerApp(QWidget):
         self.mixer_notifiers.clear()
         self.fd_to_mixer.clear()
 
-    def _setup_zoom_shortcuts(self):
+    def _setup_zoom_shortcuts(self) -> None:
         zoom_in_action = QAction("Zoom In", self)
         zoom_in_action.setShortcut(QKeySequence("Ctrl+=")) # Using string for Ctrl+= (often same as Ctrl++)
         zoom_in_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
@@ -704,7 +698,7 @@ class AlsMixerApp(QWidget):
         zoom_out_action.triggered.connect(self._zoom_out)
         self.addAction(zoom_out_action)
 
-    def keyPressEvent(self, event):
+    def keyPressEvent(self, event: QKeyEvent) -> None:
         """Handle key press events for zooming."""
         accepted = False
         if event.modifiers() == Qt.KeyboardModifier.ControlModifier:

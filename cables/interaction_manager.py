@@ -5,11 +5,17 @@ Manages user interactions with port tree widgets.
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QGuiApplication
+from typing import TYPE_CHECKING, Optional, Callable
+
+if TYPE_CHECKING:
+    from cables.highlight_manager import HighlightManager
+    from cables.ui.port_tree_widget import PortTreeWidget
+    from PyQt6.QtWidgets import QTreeWidgetItem
 
 class InteractionManager:
     """Handles clicks and selection logic for port tree widgets."""
 
-    def __init__(self, highlight_manager, update_connection_buttons_func, update_midi_connection_buttons_func):
+    def __init__(self, highlight_manager: 'HighlightManager', update_connection_buttons_func: Callable[[], None], update_midi_connection_buttons_func: Callable[[], None]) -> None:
         """
         Initialize the InteractionManager.
 
@@ -22,7 +28,7 @@ class InteractionManager:
         self.update_connection_buttons = update_connection_buttons_func
         self.update_midi_connection_buttons = update_midi_connection_buttons_func
 
-    def handle_port_click(self, item, clicked_tree, is_midi):
+    def handle_port_click(self, item: Optional['QTreeWidgetItem'], clicked_tree: 'PortTreeWidget', is_midi: bool) -> None:
         """
         Handle selection in tree widgets for ports and groups, respecting Ctrl modifier.
         This method is intended to be called directly via signal connections (e.g., lambdas).

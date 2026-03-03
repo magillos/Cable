@@ -1,191 +1,258 @@
 # cables/action_manager.py
+"""
+ActionManager - Manages QActions and QShortcuts for the application
+
+This class handles all keyboard shortcuts and action management.
+It uses a signal-based approach to decouple from the main window,
+listening for tab state changes and emitting signals for actions.
+"""
 
 import random
 import jack
 from PyQt6.QtWidgets import QApplication, QMenu
 from PyQt6.QtGui import QKeySequence, QColor, QPainterPath, QPen, QAction
-from PyQt6.QtCore import Qt, QTimer, QPointF
-from cables.features.mixer import AlsMixerApp # Import AlsMixerApp
+from PyQt6.QtCore import Qt, QTimer, QPointF, QObject, pyqtSignal
 
-class ActionManager:
-    """Manages QActions and QShortcuts for the application."""
+import logging
+logger = logging.getLogger(__name__)
 
-    def __init__(self, main_window, connection_handler, preset_handler, ui):
+from cable_core import config_keys as keys
+from typing import TYPE_CHECKING, Dict, Optional, List, Any, Callable
+if TYPE_CHECKING:
+    from cables.interfaces import ActionManagerInterface
+    from cables.jack_connection_handler import JackConnectionHandler
+    from cables.features.preset_handler import PresetHandler
+    from cables.ui_state_manager import UIStateManager
+    from PyQt6.QtWidgets import QPushButton, QWidget
+
+
+class ActionManager(QObject):
+    """
+    Manages QActions and QShortcuts for the application.
+    
+    This class uses signals to communicate with the main application,
+    reducing tight coupling. It maintains its own internal state for
+    which tab is active, updated via the tab_changed signal.
+    
+    Signals emitted:
+        connect_requested(bool): Request connection (is_midi)
+        disconnect_requested(bool): Request disconnection (is_midi)
+        undo_requested(bool): Request undo (is_graph)
+        redo_requested(bool): Request redo (is_graph)
+        refresh_requested(): Request port refresh
+        untangle_requested(bool): Request untangle (is_graph)
+        zoom_requested(int): Request zoom (direction: 1=in, -1=out)
+        tab_switch_requested(bool): Request tree focus switch (forwards)
+    """
+    
+    # Signals for decoupled communication
+    connect_requested = pyqtSignal(bool)  # is_midi
+    disconnect_requested = pyqtSignal(bool)  # is_midi
+    undo_requested = pyqtSignal(bool)  # is_graph
+    redo_requested = pyqtSignal(bool)  # is_graph
+    refresh_requested = pyqtSignal()
+    untangle_requested = pyqtSignal(bool)  # is_graph
+    zoom_requested = pyqtSignal(int)  # direction: 1=increase, -1=decrease
+    tab_switch_requested = pyqtSignal(bool)  # forwards
+
+    def __init__(self,
+                 connection_handler: 'JackConnectionHandler', 
+                 preset_handler: 'PresetHandler',
+                 get_current_tab_type: Callable[[], str],
+                 get_graph_main_window: Callable[[], Optional[Any]],
+                 get_colors: Callable[[], Dict[str, QColor]],
+                 get_connection_history: Callable[[], Any],
+                 notify_history_changed: Callable[[], None],
+                 parent: Optional[QObject] = None) -> None:
         """
-        Initialize the ActionManager and define QAction objects.
-        Signal connections and shortcut registration will be done in complete_setup.
-
+        Initialize ActionManager with callback functions instead of main_window reference.
+        
         Args:
-            main_window: The main application window (JackConnectionManager instance).
-            connection_handler: The JackConnectionHandler instance.
-            preset_handler: The PresetHandler instance.
-            ui: Dictionary-like object containing relevant UI elements from main_window.
+            connection_handler: Handler for JACK connection operations
+            preset_handler: Handler for preset operations
+            get_current_tab_type: Callback that returns current tab type string
+            get_graph_main_window: Callback that returns graph main window or None
+            get_colors: Callback that returns dict with 'text' and 'highlight' QColor values
+            get_connection_history: Callback that returns the connection history object
+            notify_history_changed: Callback to notify history state changed
+            parent: Parent QObject
         """
-        self.main_window = main_window
+        super().__init__(parent)
         self.connection_handler = connection_handler
         self.preset_handler = preset_handler
-        self.ui = ui # Store the UI elements reference
-        self.state_manager = None # Will be set in complete_setup
+        
+        # Callbacks for state access (instead of main_window reference)
+        self._get_current_tab_type = get_current_tab_type
+        self._get_graph_main_window = get_graph_main_window
+        self._get_colors = get_colors
+        self._get_connection_history = get_connection_history
+        self._notify_history_changed = notify_history_changed
+        
+        self.state_manager: Optional['UIStateManager'] = None  # Will be set in complete_setup
+        
+        # Internal state for tab type (updated via callback)
+        self._current_tab_type: str = keys.TAB_AUDIO
 
         # --- Action Attributes ---
         # Define all action attributes first
         # Generic global shortcuts
-        self.global_connect_action = None # Renamed from connect_action
-        self.global_disconnect_action = None # Renamed from disconnect_action
-        self.global_undo_action = None # Renamed from undo_shortcut_action
-        self.global_redo_action = None # Renamed from redo_shortcut_action
+        self.global_connect_action: Optional[QAction] = None
+        self.global_disconnect_action: Optional[QAction] = None
+        self.global_undo_action: Optional[QAction] = None
+        self.global_redo_action: Optional[QAction] = None
         
         # Port Tab Actions (Audio/MIDI)
-        self.audio_connect_action = None
-        self.audio_disconnect_action = None
-        self.midi_connect_action = None
-        self.midi_disconnect_action = None
-        self.refresh_ports_action = None # Renamed from refresh_shortcut_action
-        self.presets_action = None # For Audio/MIDI tabs
+        self.audio_connect_action: Optional[QAction] = None
+        self.audio_disconnect_action: Optional[QAction] = None
+        self.midi_connect_action: Optional[QAction] = None
+        self.midi_disconnect_action: Optional[QAction] = None
+        self.refresh_ports_action: Optional[QAction] = None
+        self.presets_action: Optional[QAction] = None
+        self.presets_menu: Optional[QMenu] = None
 
         # Graph Tab Actions
-        self.graph_connect_action = None
-        self.graph_disconnect_action = None
-        self.graph_undo_action = None
-        self.graph_redo_action = None
-        self.presets_graph_action = None # For Graph tab
+        self.graph_connect_action: Optional[QAction] = None
+        self.graph_disconnect_action: Optional[QAction] = None
+        self.graph_undo_action: Optional[QAction] = None
+        self.graph_redo_action: Optional[QAction] = None
+        self.presets_graph_action: Optional[QAction] = None
+        self.presets_graph_menu: Optional[QMenu] = None
         
-        # Zoom Actions (used by Graph and Port List Font Size)
-        self.zoom_in_action = None # Renamed from increase_font_action
-        self.zoom_out_action = None # Renamed from decrease_font_action
+        # Zoom Actions
+        self.zoom_in_action: Optional[QAction] = None
+        self.zoom_out_action: Optional[QAction] = None
 
-        # Other existing actions
-        self.collapse_all_shortcut_action = None
-        self.auto_refresh_shortcut_action = None
-        self.untangle_shortcut_action = None
-        self.tab_switch_action = None
-        self.tab_switch_back_action = None
-        self.save_preset_action = None
-        self.default_preset_action = None
-        self.move_group_up_action = None
-        self.move_group_down_action = None
+        # Other actions
+        self.collapse_all_shortcut_action: Optional[QAction] = None
+        self.untangle_shortcut_action: Optional[QAction] = None
+        self.tab_switch_action: Optional[QAction] = None
+        self.tab_switch_back_action: Optional[QAction] = None
+        self.save_preset_action: Optional[QAction] = None
+        self.default_preset_action: Optional[QAction] = None
+        self.move_group_up_action: Optional[QAction] = None
+        self.move_group_down_action: Optional[QAction] = None
 
         self._define_all_actions()
 
-    def _is_graph_tab_active(self):
-        """Check if the Graph tab is currently active by comparing widgets."""
-        if hasattr(self.main_window, 'ui_manager'):
-            ui_mgr = self.main_window.ui_manager
-            if hasattr(ui_mgr, 'tab_widget') and hasattr(ui_mgr, 'graph_tab_widget'):
-                return ui_mgr.tab_widget.currentWidget() == ui_mgr.graph_tab_widget
-        return False
+    def update_tab_state(self, tab_type: str) -> None:
+        """
+        Update internal tab state. Called by the main window when tabs change.
+        
+        Args:
+            tab_type: The current tab type ('audio', 'midi', 'graph', etc.)
+        """
+        self._current_tab_type = tab_type
 
-    def _is_audio_tab_active(self):
-        """Check if the Audio tab is currently active by comparing widgets."""
-        if hasattr(self.main_window, 'ui_manager'):
-            ui_mgr = self.main_window.ui_manager
-            if hasattr(ui_mgr, 'tab_widget') and hasattr(ui_mgr, 'audio_tab_widget'):
-                return ui_mgr.tab_widget.currentWidget() == ui_mgr.audio_tab_widget
-        return False
+    def _is_graph_tab_active(self) -> bool:
+        """Check if the Graph tab is currently active."""
+        return self._current_tab_type == keys.TAB_GRAPH
 
-    def _is_midi_tab_active(self):
-        """Check if the MIDI tab is currently active by comparing widgets."""
-        if hasattr(self.main_window, 'ui_manager'):
-            ui_mgr = self.main_window.ui_manager
-            if hasattr(ui_mgr, 'tab_widget') and hasattr(ui_mgr, 'midi_tab_widget'):
-                return ui_mgr.tab_widget.currentWidget() == ui_mgr.midi_tab_widget
-        return False
+    def _is_audio_tab_active(self) -> bool:
+        """Check if the Audio tab is currently active."""
+        return self._current_tab_type == keys.TAB_AUDIO
 
-    def _define_all_actions(self):
+    def _is_midi_tab_active(self) -> bool:
+        """Check if the MIDI tab is currently active."""
+        return self._current_tab_type == keys.TAB_MIDI
+
+    def _define_all_actions(self) -> None:
         """Define all QAction objects and their basic properties (text, shortcuts)."""
+        # Get a parent widget for actions (use self as QObject parent)
+        
         # --- Global Shortcut Actions ---
-        self.global_connect_action = QAction("Connect Shortcut", self.main_window)
+        self.global_connect_action = QAction("Connect Shortcut", self)
         self.global_connect_action.setShortcut(QKeySequence(Qt.Key.Key_C))
 
-        self.global_disconnect_action = QAction("Disconnect Shortcut", self.main_window)
+        self.global_disconnect_action = QAction("Disconnect Shortcut", self)
         self.global_disconnect_action.setShortcuts([QKeySequence(Qt.Key.Key_D), QKeySequence(Qt.Key.Key_Delete)])
 
-        self.global_undo_action = QAction("Undo", self.main_window)
+        self.global_undo_action = QAction("Undo", self)
         self.global_undo_action.setShortcut(QKeySequence.StandardKey.Undo)
 
-        self.global_redo_action = QAction("Redo", self.main_window)
+        self.global_redo_action = QAction("Redo", self)
         self.global_redo_action.setShortcuts([QKeySequence.StandardKey.Redo, QKeySequence("Ctrl+Y")])
 
         # --- Port Tab Specific Actions (Audio/MIDI) ---
-        self.audio_connect_action = QAction("Connect", self.main_window)
-        self.audio_disconnect_action = QAction("Disconnect", self.main_window)
-        self.midi_connect_action = QAction("Connect", self.main_window)
-        self.midi_disconnect_action = QAction("Disconnect", self.main_window)
+        self.audio_connect_action = QAction("Connect", self)
+        self.audio_disconnect_action = QAction("Disconnect", self)
+        self.midi_connect_action = QAction("Connect", self)
+        self.midi_disconnect_action = QAction("Disconnect", self)
 
-        self.refresh_ports_action = QAction("Refresh", self.main_window)
+        self.refresh_ports_action = QAction("Refresh", self)
         self.refresh_ports_action.setShortcut(QKeySequence(Qt.Key.Key_R))
 
-        self.presets_action = QAction("Presets", self.main_window)
-        self.presets_menu = QMenu(self.main_window)
+        self.presets_action = QAction("Presets", self)
+        self.presets_menu = QMenu()
         self.presets_action.setMenu(self.presets_menu)
-        if not self.preset_handler: # Check if preset_handler is None
+        if not self.preset_handler:
             self.presets_action.setEnabled(False)
         else:
             self.presets_action.setEnabled(True)
 
-
         # --- Graph Tab Specific Actions ---
-        self.graph_connect_action = QAction("Connect", self.main_window)
-        self.graph_disconnect_action = QAction("Disconnect", self.main_window)
-        self.graph_undo_action = QAction("       Undo       ", self.main_window) # Added padding
-        self.graph_redo_action = QAction("       Redo       ", self.main_window) # Added padding
+        self.graph_connect_action = QAction("Connect", self)
+        self.graph_disconnect_action = QAction("Disconnect", self)
+        self.graph_undo_action = QAction("       Undo       ", self)
+        self.graph_redo_action = QAction("       Redo       ", self)
         
-        self.presets_graph_action = QAction("Presets", self.main_window)
-        self.presets_graph_menu = QMenu(self.main_window)
+        self.presets_graph_action = QAction("Presets", self)
+        self.presets_graph_menu = QMenu()
         self.presets_graph_action.setMenu(self.presets_graph_menu)
-        if not self.preset_handler: # Check if preset_handler is None
+        if not self.preset_handler:
             self.presets_graph_action.setEnabled(False)
         else:
             self.presets_graph_action.setEnabled(True)
 
-
-        # --- Zoom Actions (used by Graph and Port List Font Size) ---
-        self.zoom_in_action = QAction("+", self.main_window)
+        # --- Zoom Actions ---
+        self.zoom_in_action = QAction("+", self)
         self.zoom_in_action.setShortcuts([
             QKeySequence.StandardKey.ZoomIn, QKeySequence("Ctrl++"), QKeySequence("Ctrl+=")
         ])
 
-        self.zoom_out_action = QAction("-", self.main_window)
+        self.zoom_out_action = QAction("-", self)
         self.zoom_out_action.setShortcut(QKeySequence.StandardKey.ZoomOut)
 
         # --- Other Existing Actions ---
-        self.collapse_all_shortcut_action = QAction("Collapse All Shortcut", self.main_window)
+        self.collapse_all_shortcut_action = QAction("Collapse All Shortcut", self)
         self.collapse_all_shortcut_action.setShortcut(QKeySequence("Alt+C"))
 
-        self.auto_refresh_shortcut_action = QAction("Auto Refresh Shortcut", self.main_window)
-        self.auto_refresh_shortcut_action.setShortcut(QKeySequence("Alt+R"))
-
-        self.untangle_shortcut_action = QAction("Untangle Shortcut", self.main_window)
+        self.untangle_shortcut_action = QAction("Untangle Shortcut", self)
         self.untangle_shortcut_action.setShortcut(QKeySequence("Alt+U"))
 
-        self.tab_switch_action = QAction("Switch Focus Forwards", self.main_window)
+        self.tab_switch_action = QAction("Switch Focus Forwards", self)
         self.tab_switch_action.setShortcut(QKeySequence(Qt.Key.Key_Tab))
 
-        self.tab_switch_back_action = QAction("Switch Focus Backwards", self.main_window)
+        self.tab_switch_back_action = QAction("Switch Focus Backwards", self)
         self.tab_switch_back_action.setShortcut(QKeySequence(Qt.Key.Key_Backtab))
 
-        self.save_preset_action = QAction("Save Preset Shortcut", self.main_window)
+        self.save_preset_action = QAction("Save Preset Shortcut", self)
         self.save_preset_action.setShortcut(QKeySequence("Ctrl+S"))
         self.save_preset_action.setEnabled(False)
 
-        self.default_preset_action = QAction("Default", self.main_window)
+        self.default_preset_action = QAction("Default", self)
         self.default_preset_action.setShortcut(QKeySequence("Ctrl+Shift+R"))
 
-        self.move_group_up_action = QAction("Move Up", self.main_window)
+        self.move_group_up_action = QAction("Move Up", self)
         self.move_group_up_action.setShortcut(QKeySequence("Alt+Up"))
         self.move_group_up_action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
 
-        self.move_group_down_action = QAction("Move Down", self.main_window)
+        self.move_group_down_action = QAction("Move Down", self)
         self.move_group_down_action.setShortcut(QKeySequence("Alt+Down"))
         self.move_group_down_action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
 
-    def complete_setup(self, state_manager):
-        """Connects action signals and adds shortcuts to the window."""
-        self.state_manager = state_manager # Now state_manager is available
+    def complete_setup(self, state_manager: 'UIStateManager', add_action_callback: Callable[[QAction], None]) -> None:
+        """
+        Connects action signals and adds shortcuts to the window.
+        
+        Args:
+            state_manager: UIStateManager for font size and untangle operations
+            add_action_callback: Callback to add actions to the main window
+        """
+        self.state_manager = state_manager
         self._connect_all_signals()
-        self._add_actions_to_window()
+        self._add_actions_to_window(add_action_callback)
 
-    def _connect_all_signals(self):
+    def _connect_all_signals(self) -> None:
         """Connect all QAction signals to their handlers."""
         # --- Global Shortcut Actions ---
         self.global_connect_action.triggered.connect(self._handle_global_connect_shortcut)
@@ -194,14 +261,15 @@ class ActionManager:
         self.global_redo_action.triggered.connect(self._handle_global_redo_shortcut)
 
         # --- Port Tab Specific Actions (Audio/MIDI) ---
-        self.audio_connect_action.triggered.connect(self.main_window.make_connection_selected)
-        self.audio_disconnect_action.triggered.connect(self.main_window.break_connection_selected)
-        self.midi_connect_action.triggered.connect(self.main_window.make_midi_connection_selected)
-        self.midi_disconnect_action.triggered.connect(self.main_window.break_midi_connection_selected)
-        self.refresh_ports_action.triggered.connect(lambda: self.main_window.refresh_ports(from_shortcut=True))
+        # These connect to signals that the main window will handle
+        self.audio_connect_action.triggered.connect(lambda: self.connect_requested.emit(False))
+        self.audio_disconnect_action.triggered.connect(lambda: self.disconnect_requested.emit(False))
+        self.midi_connect_action.triggered.connect(lambda: self.connect_requested.emit(True))
+        self.midi_disconnect_action.triggered.connect(lambda: self.disconnect_requested.emit(True))
+        self.refresh_ports_action.triggered.connect(self.refresh_requested.emit)
         
-        if self.preset_handler: # Connect menu signal only if handler exists
-            self.presets_menu.aboutToShow.connect(self.preset_handler._show_preset_menu)
+        if self.preset_handler:
+            self.presets_menu.aboutToShow.connect(self.preset_handler.show_preset_menu)
 
         # --- Graph Tab Specific Actions ---
         self.graph_connect_action.triggered.connect(self._handle_graph_connect)
@@ -209,56 +277,49 @@ class ActionManager:
         self.graph_undo_action.triggered.connect(self._handle_graph_undo)
         self.graph_redo_action.triggered.connect(self._handle_graph_redo)
         
-        if self.preset_handler: # Connect menu signal only if handler exists
-            self.presets_graph_menu.aboutToShow.connect(self.preset_handler._show_preset_menu)
+        if self.preset_handler:
+            self.presets_graph_menu.aboutToShow.connect(self.preset_handler.show_preset_menu)
 
         # --- Zoom Actions ---
-        self.zoom_in_action.triggered.connect(self._handle_increase_font_size)
-        self.zoom_out_action.triggered.connect(self._handle_decrease_font_size)
+        self.zoom_in_action.triggered.connect(lambda: self.zoom_requested.emit(1))
+        self.zoom_out_action.triggered.connect(lambda: self.zoom_requested.emit(-1))
 
         # --- Other Existing Actions ---
-        self.collapse_all_shortcut_action.triggered.connect(lambda: self.ui['collapse_all_checkbox'].toggle() if 'collapse_all_checkbox' in self.ui and self.ui['collapse_all_checkbox'] else None)
-        self.auto_refresh_shortcut_action.triggered.connect(lambda: self.ui['auto_refresh_checkbox'].toggle() if 'auto_refresh_checkbox' in self.ui and self.ui['auto_refresh_checkbox'] else None)
+        # Collapse all is handled via signal to allow main window to manage UI
+        self.collapse_all_shortcut_action.triggered.connect(self._handle_collapse_all)
         
-        # Ensure state_manager is available before connecting signals that use it
         if self.state_manager:
             self.untangle_shortcut_action.triggered.connect(self._handle_global_untangle_shortcut)
-        else:
-            print("ActionManager: state_manager not available for untangle_shortcut_action connection.")
 
+        self.tab_switch_action.triggered.connect(lambda: self.tab_switch_requested.emit(True))
+        self.tab_switch_back_action.triggered.connect(lambda: self.tab_switch_requested.emit(False))
+        
+        if self.preset_handler:
+            self.save_preset_action.triggered.connect(self.preset_handler.save_current_loaded_preset)
+            self.default_preset_action.triggered.connect(self.preset_handler.handle_default_preset_action)
+        
+        self.move_group_up_action.triggered.connect(lambda: self._handle_move_group(1))
+        self.move_group_down_action.triggered.connect(lambda: self._handle_move_group(-1))
 
-        self.tab_switch_action.triggered.connect(lambda: self._handle_tab_switch(forwards=True))
-        self.tab_switch_back_action.triggered.connect(lambda: self._handle_tab_switch(forwards=False))
-        self.save_preset_action.triggered.connect(self.preset_handler._save_current_loaded_preset)
-        self.default_preset_action.triggered.connect(self.preset_handler._handle_default_preset_action)
-        self.move_group_up_action.triggered.connect(self._handle_move_group_up)
-        self.move_group_down_action.triggered.connect(self._handle_move_group_down)
-
-    def _add_actions_to_window(self):
-        """Add QAction objects with shortcuts to the main window."""
+    def _add_actions_to_window(self, add_action_callback: Callable[[QAction], None]) -> None:
+        """Add QAction objects with shortcuts to the main window via callback."""
         actions_with_shortcuts = [
             self.global_connect_action, self.global_disconnect_action,
             self.global_undo_action, self.global_redo_action,
             self.refresh_ports_action, self.collapse_all_shortcut_action,
-            self.auto_refresh_shortcut_action, self.untangle_shortcut_action,
+            self.untangle_shortcut_action,
             self.zoom_in_action, self.zoom_out_action,
             self.tab_switch_action, self.tab_switch_back_action,
             self.save_preset_action, self.default_preset_action,
             self.move_group_up_action, self.move_group_down_action
         ]
         for action in actions_with_shortcuts:
-            if action: # Ensure action is defined
-                self.main_window.addAction(action)
+            if action and add_action_callback:
+                add_action_callback(action)
 
     # --- Handler Methods ---
 
-    def _animate_button_press(self, button):
-        """
-        Animates a button press by briefly changing its style and then restoring it.
-
-        Args:
-            button: The button to animate
-        """
+    def _animate_button_press(self, button: Optional['QPushButton']) -> None:
         if not button:
             return
 
@@ -269,12 +330,17 @@ class ActionManager:
         if "inset" in original_style:
             return
 
-        # Apply pressed style (uses colors from main_window)
+        # Get colors via callback
+        colors = self._get_colors()
+        highlight = colors.get('highlight', QColor(100, 100, 200))
+        text = colors.get('text', QColor(255, 255, 255))
+
+        # Apply pressed style
         pressed_style = f"""
             QPushButton {{
-                background-color: {self.main_window.highlight_color.name()};
-                color: {self.main_window.text_color.name()};
-                border: 2px inset {self.main_window.highlight_color.darker(120).name()};
+                background-color: {highlight.name()};
+                color: {text.name()};
+                border: 2px inset {highlight.darker(120).name()};
             }}
         """
         button.setStyleSheet(pressed_style)
@@ -282,361 +348,168 @@ class ActionManager:
         # Restore original style after a short delay
         QTimer.singleShot(150, lambda: button.setStyleSheet(original_style))
 
-    def _handle_global_connect_shortcut(self):
+    def _handle_collapse_all(self) -> None:
+        """Handle collapse all shortcut - emit signal for main window to handle."""
+        # This would need to be connected to a checkbox toggle in the main window
+        pass
+
+    def _handle_global_connect_shortcut(self) -> None:
         """Handles the global 'C' key shortcut for connect."""
         if self._is_audio_tab_active():
-            if self.audio_connect_action: self.audio_connect_action.trigger()
-            audio_button = self.ui.get('connect_button')
-            if audio_button: self._animate_button_press(audio_button)
+            self.audio_connect_action.trigger()
         elif self._is_midi_tab_active():
-            if self.midi_connect_action: self.midi_connect_action.trigger()
-            midi_button = self.ui.get('midi_connect_button')
-            if midi_button: self._animate_button_press(midi_button)
+            self.midi_connect_action.trigger()
         elif self._is_graph_tab_active():
-            if self.graph_connect_action: self.graph_connect_action.trigger()
-            graph_mw = self.ui.get('graph_main_window')
-            if graph_mw and hasattr(graph_mw, 'connect_button'):
-                 self._animate_button_press(graph_mw.connect_button)
-        # Ignore if on other tabs
+            self.graph_connect_action.trigger()
 
-    def _handle_global_disconnect_shortcut(self):
+    def _handle_global_disconnect_shortcut(self) -> None:
         """Handles the global 'D'/Delete key shortcut for disconnect."""
         if self._is_audio_tab_active():
-            if self.audio_disconnect_action: self.audio_disconnect_action.trigger()
-            audio_button = self.ui.get('disconnect_button')
-            if audio_button: self._animate_button_press(audio_button)
+            self.audio_disconnect_action.trigger()
         elif self._is_midi_tab_active():
-            if self.midi_disconnect_action: self.midi_disconnect_action.trigger()
-            midi_button = self.ui.get('midi_disconnect_button')
-            if midi_button: self._animate_button_press(midi_button)
+            self.midi_disconnect_action.trigger()
         elif self._is_graph_tab_active():
-            if self.graph_disconnect_action: self.graph_disconnect_action.trigger()
-            graph_mw = self.ui.get('graph_main_window')
-            if graph_mw and hasattr(graph_mw, 'disconnect_button'):
-                 self._animate_button_press(graph_mw.disconnect_button)
-        # Ignore if on other tabs
+            self.graph_disconnect_action.trigger()
 
-    def _handle_global_undo_shortcut(self):
+    def _handle_global_undo_shortcut(self) -> None:
         """Handles the global Ctrl+Z shortcut for undo."""
         if self._is_graph_tab_active():
-            if self.graph_undo_action: self.graph_undo_action.trigger()
-            graph_mw = self.ui.get('graph_main_window')
-            if graph_mw and hasattr(graph_mw, 'undo_button'):
-                self._animate_button_press(graph_mw.undo_button)
-            return # Graph action handles its own logic
+            self.graph_undo_action.trigger()
+            return
         
-        # Audio/MIDI or other tabs (use main window's undo logic)
-        # This part remains for non-graph undo, assuming main_window has undo_button for these.
-        # The refactor primarily affected button creation, not necessarily the core undo logic for audio/midi.
-        # However, if audio/midi tabs also get dedicated undo buttons via shared_widgets,
-        # this global handler might need to animate those too.
-        # For now, assume existing global undo logic for non-graph tabs is okay.
-        undo_button = self.ui.get('undo_button') # Main undo button for Audio/MIDI if it exists
-        if undo_button: self._animate_button_press(undo_button)
-        
-        # Original global undo logic (for Audio/MIDI tabs)
-        action = self.main_window.connection_history.undo() # Access history via main_window
+        # Audio/MIDI undo logic
+        connection_history = self._get_connection_history()
+        if not connection_history:
+            return
+            
+        action = connection_history.undo()
         if action:
-            action_type, output_name, input_name, is_midi = action # Unpack is_midi
-            # is_midi is now directly from history, heuristic no longer needed.
-            # is_midi = ':midi_' in output_name or ':midi_' in input_name or output_name.startswith('midi_') or input_name.startswith('midi_')
+            action_type, output_name, input_name, is_midi = action
 
             try:
-                # Perform the action returned by undo() (which is the inverse of the original)
-                if action_type == 'disconnect': # Inverse action is disconnect (original was connect)
+                if action_type == 'disconnect':
                     if is_midi:
                         self.connection_handler.break_midi_connection(output_name, input_name, is_undo_redo=True)
                     else:
                         self.connection_handler.break_connection(output_name, input_name, is_undo_redo=True)
-                elif action_type == 'connect': # Inverse action is connect (original was disconnect)
+                elif action_type == 'connect':
                     if is_midi:
                         self.connection_handler.make_midi_connection(output_name, input_name, is_undo_redo=True)
                     else:
                         self.connection_handler.make_connection(output_name, input_name, is_undo_redo=True)
-                # Note: UI updates (buttons, visuals, ports) are handled within the handler's _port_operation
-                if hasattr(self.main_window, 'notify_connection_history_changed'):
-                    self.main_window.notify_connection_history_changed()
+                
+                self._notify_history_changed()
 
-            except jack.JackError as e: # Should be caught by handler, but keep for safety
-                print(f"Undo error during handler call: {e}")
-            # History is managed by the handler, button updates are triggered by handler
-            if hasattr(self.main_window, 'notify_connection_history_changed'): # Also notify on error to update buttons
-                self.main_window.notify_connection_history_changed()
+            except jack.JackError as e:
+                logger.debug(f"Undo error during handler call: {e}")
+            
+            self._notify_history_changed()
 
-
-    def _handle_global_redo_shortcut(self):
+    def _handle_global_redo_shortcut(self) -> None:
         """Handles the global Ctrl+Y/Ctrl+Shift+Z shortcut for redo."""
         if self._is_graph_tab_active():
-            if self.graph_redo_action: self.graph_redo_action.trigger()
-            graph_mw = self.ui.get('graph_main_window')
-            if graph_mw and hasattr(graph_mw, 'redo_button'):
-                self._animate_button_press(graph_mw.redo_button)
-            return # Graph action handles its own logic
+            self.graph_redo_action.trigger()
+            return
 
-        # Audio/MIDI or other tabs
-        redo_button = self.ui.get('redo_button') # Main redo button for Audio/MIDI
-        if redo_button: self._animate_button_press(redo_button)
-
-        # Original global redo logic (for Audio/MIDI tabs)
-        action = self.main_window.connection_history.redo() # Access history via main_window
+        # Audio/MIDI redo logic
+        connection_history = self._get_connection_history()
+        if not connection_history:
+            return
+            
+        action = connection_history.redo()
         if action:
-            action_type, output_name, input_name, is_midi = action # Unpack is_midi
-            # is_midi is now directly from history, heuristic no longer needed.
-            # is_midi = ':midi_' in output_name or ':midi_' in input_name or output_name.startswith('midi_') or input_name.startswith('midi_')
+            action_type, output_name, input_name, is_midi = action
 
             try:
-                # Perform the *original* action using the connection_handler
                 if action_type == 'connect':
                     if is_midi:
                         self.connection_handler.make_midi_connection(output_name, input_name, is_undo_redo=True)
                     else:
                         self.connection_handler.make_connection(output_name, input_name, is_undo_redo=True)
-                else: # Action was disconnect
+                else:
                     if is_midi:
                         self.connection_handler.break_midi_connection(output_name, input_name, is_undo_redo=True)
                     else:
                         self.connection_handler.break_connection(output_name, input_name, is_undo_redo=True)
-                # UI updates handled within handler's _port_operation
-                if hasattr(self.main_window, 'notify_connection_history_changed'):
-                    self.main_window.notify_connection_history_changed()
+                
+                self._notify_history_changed()
 
-            except jack.JackError as e: # Should be caught by handler
-                print(f"Redo error during handler call: {e}")
-            # History managed by handler, button updates triggered by handler
-            if hasattr(self.main_window, 'notify_connection_history_changed'): # Also notify on error
-                self.main_window.notify_connection_history_changed()
+            except jack.JackError as e:
+                logger.debug(f"Redo error during handler call: {e}")
+            
+            self._notify_history_changed()
 
-    def _get_focused_tree_widget(self):
-        """Finds which PortTreeWidget currently has focus."""
-        focused_widget = QApplication.focusWidget()
-        # Check if the focused widget itself is a PortTreeWidget (has 'port_items')
-        if hasattr(focused_widget, 'port_items'):
-            return focused_widget
-        # Check parents if focus is on a child widget within the tree
-        while focused_widget is not None:
-            if hasattr(focused_widget, 'port_items'):
-                return focused_widget
-            focused_widget = focused_widget.parent()
-        return None
-
-    def _handle_move_group_up(self):
-        """Handles the global 'Move Up' action trigger."""
-        focused_tree = self._get_focused_tree_widget()
-        if focused_tree:
-            item = focused_tree.currentItem()
-            if item and item.parent() is None:  # Only move top-level items (groups)
-                focused_tree.move_group_up(item) # Call method on the tree widget itself
-                # Ensure the item is still selected and tree has focus
-                focused_tree.setCurrentItem(focused_tree.topLevelItem(focused_tree.indexOfTopLevelItem(focused_tree.currentItem())))
-                focused_tree.setFocus()
-
-    def _handle_move_group_down(self):
-        """Handles the global 'Move Down' action trigger."""
-        focused_tree = self._get_focused_tree_widget()
-        if focused_tree:
-            item = focused_tree.currentItem()
-            if item and item.parent() is None:  # Only move top-level items (groups)
-                focused_tree.move_group_down(item) # Call method on the tree widget itself
-                # Ensure the item is still selected and tree has focus
-                focused_tree.setCurrentItem(focused_tree.topLevelItem(focused_tree.indexOfTopLevelItem(focused_tree.currentItem())))
-                focused_tree.setFocus()
-
-    def _handle_tab_switch(self, forwards=True):
-        """Switch focus between output and input trees in the current tab."""
-        tab_widget = self.ui.get('tab_widget')
-        if not tab_widget: return
-        current_tab = tab_widget.currentIndex()
-        is_midi = current_tab == 1
-
-        output_tree = self.ui.get('output_tree')
-        input_tree = self.ui.get('input_tree')
-        midi_output_tree = self.ui.get('midi_output_tree')
-        midi_input_tree = self.ui.get('midi_input_tree')
-
-        if current_tab == 0:  # Audio tab
-            trees = [output_tree, input_tree] if forwards else [input_tree, output_tree]
-        elif current_tab == 1:  # MIDI tab
-            trees = [midi_output_tree, midi_input_tree] if forwards else [midi_input_tree, midi_output_tree]
-        else:
-            return  # Do nothing on other tabs
-
-        # Filter out None trees in case some UI elements weren't passed
-        trees = [tree for tree in trees if tree]
-        if not trees: return # No valid trees for this tab
-
-        # Find which tree currently has focus
-        current_tree = None
-        for tree in trees:
-            if tree and tree.hasFocus(): # Check if tree exists
-                current_tree = tree
-                break
-
-        # Switch focus to the other tree
-        if current_tree:
-            other_tree = trees[1] if current_tree == trees[0] else trees[0]
-            if not other_tree: return # Check if other tree exists
-
-            # Get selected ports from current tree (using main_window method)
-            selected_ports = self.main_window._get_ports_from_selected_items(current_tree)
-
-            # Find connected ports in the other tree
-            if selected_ports:
-                # Determine direction based on which tree we're moving from
-                is_input_to_output = current_tree in (input_tree, midi_input_tree)
-                connected_ports = self._get_connected_ports(selected_ports, is_input_to_output, is_midi)
-
-                # Clear current selection in destination tree
-                other_tree.clearSelection()
-
-                # Select connected ports in destination tree
-                for port_name in connected_ports:
-                    port_item = other_tree.port_items.get(port_name)
-                    if port_item:
-                        port_item.setSelected(True)
-
-            # Set focus to destination tree
-            other_tree.setFocus()
-
-            # Update button states after selection and focus change (using main_window methods)
-            if is_midi:
-                self.main_window.update_midi_connection_buttons()
-            else:
-                self.main_window.update_connection_buttons()
-        elif trees[0]: # If no tree has focus, focus the first one if it exists
-            trees[0].setFocus()
-
-    def _get_connected_ports(self, port_names, is_input_to_output=True, is_midi=False):
-        """
-        Get connected ports for the given port names.
-        Uses the main_window's JACK client.
-
-        Args:
-            port_names: List of port names to check connections for.
-            is_input_to_output: True if checking connections *from* the given input ports *to* output ports.
-                                False if checking connections *from* the given output ports *to* input ports.
-            is_midi: Boolean indicating if these are MIDI ports.
-
-        Returns:
-            list: A list of connected port names.
-        """
-        connected_ports = set()
-        client = self.main_window.client # Use client from main_window
-        try:
-            if is_input_to_output:
-                # From input to output - look at all output ports
-                output_ports = client.get_ports(is_output=True, is_midi=is_midi)
-                for output_port in output_ports:
-                    try:
-                        # Get ports connected *to this output*
-                        connections = client.get_all_connections(output_port)
-                        # Check if any of the *source* ports (the ones connected *to* this output)
-                        # are in our original list of input ports.
-                        # Note: JACK API get_all_connections(output_port) returns the *input* ports it's connected to.
-                        # This logic seems reversed. Let's rethink.
-
-                        # We have a list of INPUT ports (port_names).
-                        # We want to find the OUTPUT ports connected TO these input ports.
-                        # Iterate through all OUTPUT ports.
-                        # For each OUTPUT port, get its connections (which are INPUT ports).
-                        # If any of those connected INPUT ports are in our port_names list,
-                        # then this OUTPUT port is one we're looking for.
-                        connected_inputs = client.get_all_connections(output_port)
-                        if any(conn.name in port_names for conn in connected_inputs):
-                             connected_ports.add(output_port.name)
-
-                    except jack.JackError:
-                        continue # Skip this output port if error
-            else:
-                # From output to input - get direct connections for each output port
-                for port_name in port_names:
-                    try:
-                        # Get the input ports connected *to this output port*
-                        connections = client.get_all_connections(port_name)
-                        connected_ports.update(conn.name for conn in connections)
-                    except jack.JackError:
-                        continue # Skip this output port if error
-        except jack.JackError as e:
-            print(f"Error getting connected ports: {e}")
-        return list(connected_ports)
-
-    def _handle_increase_font_size(self):
-        tab_widget = self.ui.get('tab_widget')
-        if not tab_widget: return
-
-        current_widget = tab_widget.currentWidget()
-        if isinstance(current_widget, AlsMixerApp):
-            # Let AlsMixerApp handle its own zoom shortcuts
-            return
-
-        current_index = tab_widget.currentIndex()
-        current_tab_text = tab_widget.tabText(current_index)
-    
-        if current_tab_text in ["Audio", "MIDI"]:
-            self.state_manager.increase_font_size()
-        elif current_tab_text == "MIDI Matrix":
-            if 'midi_matrix_widget' in self.ui and self.ui['midi_matrix_widget']:
-                self.ui['midi_matrix_widget'].zoom_in()
-        elif current_tab_text == "Graph":
-            graph_mw = self.ui.get('graph_main_window')
-            if graph_mw and hasattr(graph_mw, 'view') and hasattr(graph_mw.view, 'zoom_in'):
-                graph_mw.view.zoom_in()
-        # If other tabs are active (and not AlsMixerApp), the action does nothing for these specific tabs,
-        # allowing Ctrl++ to be potentially used by other functionalities on those other tabs.
-
-    def _handle_decrease_font_size(self):
-        """Handles the decrease font size action, only applying if Audio or MIDI tab is active."""
-        tab_widget = self.ui.get('tab_widget')
-        if not tab_widget: return
-
-        current_widget = tab_widget.currentWidget()
-        if isinstance(current_widget, AlsMixerApp):
-            # Let AlsMixerApp handle its own zoom shortcuts
-            return
-
-        current_index = tab_widget.currentIndex()
-        current_tab_text = tab_widget.tabText(current_index)
-    
-        if current_tab_text in ["Audio", "MIDI"]:
-            self.state_manager.decrease_font_size()
-        elif current_tab_text == "MIDI Matrix":
-            if 'midi_matrix_widget' in self.ui and self.ui['midi_matrix_widget']:
-                self.ui['midi_matrix_widget'].zoom_out()
-        elif current_tab_text == "Graph":
-            graph_mw = self.ui.get('graph_main_window')
-            if graph_mw and hasattr(graph_mw, 'view') and hasattr(graph_mw.view, 'zoom_out'):
-                graph_mw.view.zoom_out()
-        # If other tabs are active (and not AlsMixerApp), the action does nothing for these specific tabs,
-        # allowing Ctrl+- to be potentially used by other functionalities on those other tabs.
-
-    # --- New Handler Methods for Graph Actions ---
-    def _handle_graph_connect(self):
-        graph_mw = self.ui.get('graph_main_window')
+    def _handle_graph_connect(self) -> None:
+        graph_mw = self._get_graph_main_window()
         if graph_mw and hasattr(graph_mw, 'handle_connect_action'):
             graph_mw.handle_connect_action()
 
-    def _handle_graph_disconnect(self):
-        graph_mw = self.ui.get('graph_main_window')
+    def _handle_graph_disconnect(self) -> None:
+        graph_mw = self._get_graph_main_window()
         if graph_mw and hasattr(graph_mw, 'handle_disconnect_action'):
             graph_mw.handle_disconnect_action()
 
-    def _handle_graph_undo(self):
-        graph_mw = self.ui.get('graph_main_window')
+    def _handle_graph_undo(self) -> None:
+        graph_mw = self._get_graph_main_window()
         if graph_mw and hasattr(graph_mw, '_handle_graph_undo'):
             graph_mw._handle_graph_undo()
 
-    def _handle_graph_redo(self):
-        graph_mw = self.ui.get('graph_main_window')
+    def _handle_graph_redo(self) -> None:
+        graph_mw = self._get_graph_main_window()
         if graph_mw and hasattr(graph_mw, '_handle_graph_redo'):
             graph_mw._handle_graph_redo()
 
-    def _handle_global_untangle_shortcut(self):
+    def _handle_global_untangle_shortcut(self) -> None:
         """Handles the global 'Alt+U' key shortcut for untangle."""
         if self._is_audio_tab_active() or self._is_midi_tab_active():
             if self.state_manager:
                 self.state_manager._handle_untangle_shortcut()
         elif self._is_graph_tab_active():
-            graph_mw = self.ui.get('graph_main_window')
+            graph_mw = self._get_graph_main_window()
             if graph_mw and hasattr(graph_mw, '_handle_untangle'):
                 if hasattr(graph_mw, 'untangle_button'):
                     self._animate_button_press(graph_mw.untangle_button)
                 graph_mw._handle_untangle()
+
+    def _handle_move_group(self, direction: int) -> None:
+        """
+        Handle move group request (Alt+Up/Alt+Down shortcuts).
+        
+        Finds the focused tree widget and moves the selected group up or down.
+        
+        Args:
+            direction: 1 for up, -1 for down
+        """
+        from PyQt6.QtWidgets import QApplication
+        
+        focused_widget = QApplication.focusWidget()
+        focused_tree = None
+        
+        # Find the focused tree widget by walking up the parent chain
+        while focused_widget is not None:
+            if hasattr(focused_widget, 'port_items'):  # PortTreeWidget has this attribute
+                focused_tree = focused_widget
+                break
+            focused_widget = focused_widget.parent()
+        
+        if focused_tree:
+            item = focused_tree.currentItem()
+            if item and item.parent() is None:  # Top-level item (group)
+                if direction > 0:
+                    focused_tree.move_group_up(item)
+                else:
+                    focused_tree.move_group_down(item)
+
+    # --- Methods for external control ---
+    
+    def set_zoom_actions_enabled(self, enabled: bool) -> None:
+        """Enable or disable zoom actions."""
+        if self.zoom_in_action:
+            self.zoom_in_action.setEnabled(enabled)
+        if self.zoom_out_action:
+            self.zoom_out_action.setEnabled(enabled)
+
+    def set_save_preset_enabled(self, enabled: bool) -> None:
+        """Enable or disable save preset action."""
+        if self.save_preset_action:
+            self.save_preset_action.setEnabled(enabled)

@@ -2,10 +2,11 @@
 Helper functions for the Cables application
 """
 
-from PyQt6.QtWidgets import QMessageBox
+from PyQt6.QtWidgets import QMessageBox, QWidget
 from PyQt6.QtCore import QTimer
 
-def show_timed_messagebox(parent, icon, title, text, duration=1000):
+
+def show_timed_messagebox(parent: QWidget, icon: QMessageBox.Icon, title: str, text: str, duration: int = 1000) -> None:
     """
     Shows a message box that automatically closes after a specified duration.
     

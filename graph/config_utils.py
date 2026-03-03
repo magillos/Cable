@@ -1,16 +1,25 @@
 #!/usr/bin/env python3
+"""
+Graph configuration persistence — node positions, split states, and layout preferences.
+"""
 
 import os
 import json
 import atexit
 from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
 from PyQt6.QtCore import QPointF
 
-class ConfigManager:
-    """Manages saving and loading app configuration, including node positions and split states.
+import logging
+logger = logging.getLogger(__name__)
+
+class GraphConfigManager:
+    """Manages saving and loading graph configuration, including node positions and split states.
     
     Uses a dirty flag pattern to minimize disk writes - changes are kept in memory
     and only written to disk on exit or explicit flush.
+    
+    Note: This is separate from cable_core.config.ConfigManager which handles app settings.
     """
 
     # Define constants for special keys to avoid typos
@@ -23,12 +32,8 @@ class ConfigManager:
     INPUT_PART_FOLDED_KEY = "::input_part_folded"
     OUTPUT_PART_FOLDED_KEY = "::output_part_folded"
     MANUAL_SPLIT_KEY = "::manual_split"
-    IS_UNIFIED_KEY = "::is_unified"
-    UNIFIED_SINK_NAME_KEY = "::unified_sink_name"
-    UNIFIED_MODULE_ID_KEY = "::unified_module_id"
-    UNIFIED_PORTS_TYPE_KEY = "::unified_ports_type"
     
-    # New keys for split unification
+    # Keys for split unification
     IS_INPUT_UNIFIED_KEY = "::is_input_unified"
     IS_OUTPUT_UNIFIED_KEY = "::is_output_unified"
     UNIFIED_INPUT_SINK_NAME_KEY = "::unified_input_sink_name"
@@ -36,7 +41,7 @@ class ConfigManager:
     UNIFIED_INPUT_MODULE_ID_KEY = "::unified_input_module_id"
     UNIFIED_OUTPUT_MODULE_ID_KEY = "::unified_output_module_id"
  
-    def __init__(self):
+    def __init__(self) -> None:
         self.config_dir = Path.home() / ".config" / "cable"
         self.node_positions_file = self.config_dir / "node_positions.json"
         self.graph_settings_file = self.config_dir / "graph_settings.json"
@@ -56,14 +61,14 @@ class ConfigManager:
         # Register flush on exit
         atexit.register(self.flush)
 
-    def _load_cache(self):
+    def _load_cache(self) -> None:
         """Load existing data into memory cache."""
         if self.node_positions_file.exists():
             try:
                 with open(self.node_positions_file, 'r') as f:
                     self._cached_data = json.load(f)
             except (json.JSONDecodeError, Exception) as e:
-                print(f"Warning: Could not load {self.node_positions_file}: {e}")
+                logger.warning(f"Warning: Could not load {self.node_positions_file}: {e}")
                 self._cached_data = {}
         else:
             self._cached_data = {}
@@ -73,12 +78,12 @@ class ConfigManager:
                 with open(self.graph_settings_file, 'r') as f:
                     self._cached_graph_settings = json.load(f)
             except (json.JSONDecodeError, Exception) as e:
-                print(f"Warning: Could not load {self.graph_settings_file}: {e}")
+                logger.warning(f"Warning: Could not load {self.graph_settings_file}: {e}")
                 self._cached_graph_settings = {}
         else:
             self._cached_graph_settings = {}
 
-    def flush(self):
+    def flush(self) -> None:
         """Write cached data to disk if there are unsaved changes."""
         if self._dirty and self._cached_data is not None:
             try:
@@ -86,7 +91,7 @@ class ConfigManager:
                     json.dump(self._cached_data, f, indent=4)
                 self._dirty = False
             except Exception as e:
-                print(f"Error saving node states: {e}")
+                logger.error(f"Error saving node states: {e}")
         
         if self._graph_settings_dirty and self._cached_graph_settings is not None:
             try:
@@ -94,9 +99,9 @@ class ConfigManager:
                     json.dump(self._cached_graph_settings, f, indent=4)
                 self._graph_settings_dirty = False
             except Exception as e:
-                print(f"Error saving graph settings: {e}")
+                logger.error(f"Error saving graph settings: {e}")
  
-    def save_node_states(self, nodes_dict, graph_zoom_level=None, current_untangle_setting=None):
+    def save_node_states(self, nodes_dict: Dict[str, Any], graph_zoom_level: Optional[float] = None, current_untangle_setting: Optional[int] = None) -> None:
         """Save node positions, split states, fold states (including parts), graph zoom level, and current untangle setting.
  
         Args:
@@ -149,14 +154,7 @@ class ConfigManager:
                 if node.split_output_node:
                     node_data[self.OUTPUT_PART_FOLDED_KEY] = node.split_output_node.output_part_folded
 
-            # 6. Save unified state (Legacy and New)
-            if hasattr(node, 'is_unified') and node.is_unified:
-                node_data[self.IS_UNIFIED_KEY] = True
-                node_data[self.UNIFIED_SINK_NAME_KEY] = node.unified_virtual_sink_name
-                node_data[self.UNIFIED_MODULE_ID_KEY] = node.unified_module_id
-                node_data[self.UNIFIED_PORTS_TYPE_KEY] = node.unified_ports_type
-
-            # New split unification state
+            # 6. Save split unification state
             if hasattr(node, 'is_input_unified') and node.is_input_unified:
                 node_data[self.IS_INPUT_UNIFIED_KEY] = True
                 node_data[self.UNIFIED_INPUT_SINK_NAME_KEY] = node.unified_input_sink_name
@@ -182,7 +180,7 @@ class ConfigManager:
         self._dirty = True
  
  
-    def load_node_states(self):
+    def load_node_states(self) -> Tuple[Dict[str, Any], Optional[float]]:
         """Load node positions, split states, fold states (including parts), and graph zoom level.
         
         The current untangle setting is stored in the returned config dict under the key '::current_untangle_setting'.
@@ -199,7 +197,7 @@ class ConfigManager:
         raw_data = self._cached_data if self._cached_data else {}
         
         if not raw_data and not self.node_positions_file.exists():
-            print(f"No node states file found at {self.node_positions_file}")
+            logger.debug(f"No node states file found at {self.node_positions_file}")
             return loaded_config, loaded_zoom_level
 
         try:
@@ -230,14 +228,7 @@ class ConfigManager:
                     config[self.INPUT_PART_FOLDED_KEY] = bool(node_data.get(self.INPUT_PART_FOLDED_KEY, False))
                     config[self.OUTPUT_PART_FOLDED_KEY] = bool(node_data.get(self.OUTPUT_PART_FOLDED_KEY, False))
 
-                # Load unified state (Legacy)
-                if self.IS_UNIFIED_KEY in node_data and node_data[self.IS_UNIFIED_KEY]:
-                    config['is_unified'] = True
-                    config['virtual_sink_name'] = node_data.get(self.UNIFIED_SINK_NAME_KEY)
-                    config['unified_module_id'] = node_data.get(self.UNIFIED_MODULE_ID_KEY)
-                    config['unified_ports_type'] = node_data.get(self.UNIFIED_PORTS_TYPE_KEY)
-
-                # Load unified state (New Split)
+                # Load split unified state
                 if self.IS_INPUT_UNIFIED_KEY in node_data and node_data[self.IS_INPUT_UNIFIED_KEY]:
                     config['is_input_unified'] = True
                     config['unified_input_sink_name'] = node_data.get(self.UNIFIED_INPUT_SINK_NAME_KEY)
@@ -258,21 +249,45 @@ class ConfigManager:
             
             return loaded_config, loaded_zoom_level
         except Exception as e:
-            print(f"Error loading node states: {e}")
+            logger.error(f"Error loading node states: {e}")
             return {}, None
 
-    def _save_graph_settings(self, current_untangle_setting):
+    def _save_graph_settings(self, current_untangle_setting: int, keep_untangled: Optional[bool] = None) -> None:
         """Save graph settings to cache (will be written on flush).
         
         Args:
             current_untangle_setting (int): The current untangle layout setting.
+            keep_untangled (bool, optional): Whether to keep the graph untangled when nodes change.
         """
         if self._cached_graph_settings is None:
             self._cached_graph_settings = {}
         self._cached_graph_settings['current_untangle_setting'] = current_untangle_setting
+        if keep_untangled is not None:
+            self._cached_graph_settings['keep_untangled'] = keep_untangled
         self._graph_settings_dirty = True
     
-    def _load_graph_settings(self):
+    def save_keep_untangled(self, keep_untangled: bool) -> None:
+        """Save the keep_untangled setting to cache.
+        
+        Args:
+            keep_untangled (bool): Whether to keep the graph untangled when nodes change.
+        """
+        if self._cached_graph_settings is None:
+            self._cached_graph_settings = {}
+        self._cached_graph_settings['keep_untangled'] = keep_untangled
+        self._graph_settings_dirty = True
+    
+    def load_keep_untangled(self) -> bool:
+        """Load the keep_untangled setting from cache.
+        
+        Returns:
+            bool: True if keep_untangled is enabled, False otherwise.
+        """
+        if self._cached_graph_settings:
+            return self._cached_graph_settings.get('keep_untangled', False)
+        return False
+    
+    def _load_graph_settings(self) -> Optional[int]:
         """Load graph settings from cache.
         
         Returns:
@@ -282,7 +297,7 @@ class ConfigManager:
             return self._cached_graph_settings.get('current_untangle_setting')
         return None
     
-    def save_node_states_as_default(self, node_states, graph_zoom_level=None):
+    def save_node_states_as_default(self, node_states: Dict[str, Any], graph_zoom_level: Optional[float] = None) -> None:
         """Save provided node states directly to the node_positions.json file.
         This is used for saving the current layout as the default.
         
@@ -348,4 +363,4 @@ class ConfigManager:
         self._cached_data = data_to_save
         self._dirty = True
         
-        print(f"Queued {len(data_to_save) - (1 if self.GRAPH_ZOOM_LEVEL_KEY in data_to_save else 0)} node configurations as default layout.")
+        logger.debug(f"Queued {len(data_to_save) - (1 if self.GRAPH_ZOOM_LEVEL_KEY in data_to_save else 0)} node configurations as default layout.")

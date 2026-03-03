@@ -1,13 +1,26 @@
 """
 LatencyTester - Runs latency tests using jack_delay
+
+This class manages latency testing operations using the jack_delay tool.
+It uses the LatencyTesterInterface to access the capabilities it needs from
+the main application, enabling better testability and reduced coupling.
 """
 
 import re
 import shutil
 import subprocess
 from PyQt6.QtCore import QTimer, QProcess
-from PyQt6.QtGui import QTextCursor # Added import
+from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import QMessageBox, QSizePolicy
+
+import logging
+logger = logging.getLogger(__name__)
+
+from cables.jack_service import get_jack_service
+from typing import TYPE_CHECKING, Any, List, Optional, Tuple
+if TYPE_CHECKING:
+    from cables.interfaces import LatencyTesterInterface
+
 
 class LatencyTester:
     """
@@ -15,28 +28,35 @@ class LatencyTester:
     
     This class provides functionality to measure the round-trip latency
     of an audio interface using jack_delay or jack_iodelay.
+    
+    The class uses the LatencyTesterInterface protocol to access capabilities
+    from the main application. The manager parameter must implement:
+    - LatencyUIProvider: for latency UI widgets
+    - ConnectionOperations: for make_connection
+    - UIRefreshProvider: for refresh_ports
     """
     
-    def __init__(self, manager):
+    def __init__(self, manager: 'LatencyTesterInterface') -> None:
         """
         Initialize the LatencyTester.
-        
+
         Args:
-            manager: The JackConnectionManager instance
+            manager: Reference to an object implementing LatencyTesterInterface.
+                     Typically the JackConnectionManager instance.
         """
         self.manager = manager
-        self.latency_process = None
-        self.latency_values = []
+        self.latency_process: Optional[QProcess] = None
+        self.latency_values: List[Tuple[float, float]] = []
         self.latency_timer = QTimer()
-        self.latency_waiting_for_connection = False  # Flag to wait for connection
+        self.latency_waiting_for_connection: bool = False  # Flag to wait for connection
         # Store selected physical port aliases for latency test
-        self.latency_selected_input_alias = None
-        self.latency_selected_output_alias = None
+        self.latency_selected_input_alias: Optional[str] = None
+        self.latency_selected_output_alias: Optional[str] = None
         
         # Connect timer timeout signal internally
         self.latency_timer.timeout.connect(self.stop_latency_test)
     
-    def run_latency_test(self):
+    def run_latency_test(self) -> None:
         """Starts the jack_delay process and timer."""
         if self.latency_process is not None and self.latency_process.state() != QProcess.ProcessState.NotRunning:
             self.manager.latency_results_text.append("Test already in progress.")
@@ -94,7 +114,7 @@ class LatencyTester:
         self.latency_process.start()  # Start the process
         # Connection attempt is now triggered by _on_port_registered when jack_delay ports appear.
     
-    def handle_latency_output(self):
+    def handle_latency_output(self) -> None:
         """Handles output from the jack_delay process."""
         if self.latency_process is None:
             return
@@ -132,7 +152,7 @@ class LatencyTester:
                         except ValueError:
                             pass  # Ignore lines that don't parse correctly
     
-    def stop_latency_test(self):
+    def stop_latency_test(self) -> None:
         """Stops the jack_delay process."""
         if self.latency_timer.isActive():
             self.latency_timer.stop()  # Stop timer if called manually before timeout
@@ -147,7 +167,7 @@ class LatencyTester:
             
             self.latency_waiting_for_connection = False  # Reset flag
     
-    def handle_latency_finished(self, exit_code, exit_status):
+    def handle_latency_finished(self, exit_code: int, exit_status: QProcess.ExitStatus) -> None:
         """Handles the jack_delay process finishing."""
         # Clear previous text before showing final result
         self.manager.latency_results_text.clear()
@@ -185,7 +205,7 @@ class LatencyTester:
         self.manager.latency_stop_button.setEnabled(False)  # Disable Stop button
         self.latency_process = None  # Clear the process reference
     
-    def handle_latency_error(self, error):
+    def handle_latency_error(self, error: QProcess.ProcessError) -> None:
         """Handles errors occurring during the jack_delay process execution."""
         error_string = self.latency_process.errorString() if self.latency_process else "Unknown error"
         self.manager.latency_results_text.append(f"\nError running jack_delay: {error} - {error_string}")
@@ -204,21 +224,22 @@ class LatencyTester:
         self.manager.latency_run_button.setEnabled(True)
         self.manager.latency_stop_button.setEnabled(False)  # Disable Stop button on error
     
-    def _populate_latency_combos(self):
-        """Populates the latency test combo boxes using python-jack."""
+    def _populate_latency_combos(self) -> None:
+        """Populates the latency test combo boxes using JackService."""
         capture_ports = []  # Physical capture devices (JACK outputs)
         playback_ports = []  # Physical playback devices (JACK inputs)
         try:
+            jack_service = get_jack_service()
             # Get physical capture ports (System Output -> JACK Input)
-            jack_capture_ports = self.manager.client.get_ports(is_physical=True, is_audio=True, is_output=True)
+            jack_capture_ports = jack_service.get_ports(is_physical=True, is_audio=True, is_output=True)
             capture_ports = sorted([port.name for port in jack_capture_ports])
             
             # Get physical playback ports (System Input <- JACK Output)
-            jack_playback_ports = self.manager.client.get_ports(is_physical=True, is_audio=True, is_input=True)
+            jack_playback_ports = jack_service.get_ports(is_physical=True, is_audio=True, is_input=True)
             playback_ports = sorted([port.name for port in jack_playback_ports])
             
         except Exception as e:
-            print(f"Error getting physical JACK ports: {e}")
+            logger.error(f"Error getting physical JACK ports: {e}")
             # Optionally display an error in the UI
         
         # Block signals while populating to avoid triggering handlers prematurely
@@ -263,19 +284,19 @@ class LatencyTester:
         self.manager.latency_input_combo.blockSignals(False)
         self.manager.latency_output_combo.blockSignals(False)
     
-    def _on_latency_input_selected(self, index):
+    def _on_latency_input_selected(self, index: int) -> None:
         """Stores the selected physical input port alias."""
         self.latency_selected_input_alias = self.manager.latency_input_combo.itemData(index)
         # Attempt connection if output is also selected and test is running
         self._attempt_latency_auto_connection()
     
-    def _on_latency_output_selected(self, index):
+    def _on_latency_output_selected(self, index: int) -> None:
         """Stores the selected physical output port alias."""
         self.latency_selected_output_alias = self.manager.latency_output_combo.itemData(index)
         # Attempt connection if input is also selected and test is running
         self._attempt_latency_auto_connection()
     
-    def _attempt_latency_auto_connection(self):
+    def _attempt_latency_auto_connection(self) -> None:
         """Connects selected physical ports to jack_delay if ports are selected."""
         # Only connect if both an input and output alias have been selected from the dropdowns.
         if (self.latency_selected_input_alias and
@@ -286,23 +307,24 @@ class LatencyTester:
             output_to_connect = self.latency_selected_output_alias  # This is the physical playback port alias
             input_to_connect = self.latency_selected_input_alias    # This is the physical capture port alias
             
-            print(f"Attempting auto-connection: jack_delay:out -> {output_to_connect}")
-            print(f"Attempting auto-connection: {input_to_connect} -> jack_delay:in")
+            logger.debug(f"Attempting auto-connection: jack_delay:out -> {output_to_connect}")
+            logger.debug(f"Attempting auto-connection: {input_to_connect} -> jack_delay:in")
             
             try:
+                jack_service = get_jack_service()
                 # Connect jack_delay output to the selected physical playback port
                 # Ensure the target port exists before connecting
-                if any(p.name == output_to_connect for p in self.manager.client.get_ports(is_input=True, is_audio=True)):
-                    self.manager.make_connection("jack_delay:out", output_to_connect)
+                if any(p.name == output_to_connect for p in jack_service.get_ports(is_input=True, is_audio=True)):
+                    self.manager.jack_handler.make_connection("jack_delay:out", output_to_connect)
                 else:
-                    print(f"Warning: Target output port '{output_to_connect}' not found.")
+                    logger.warning(f"Warning: Target output port '{output_to_connect}' not found.")
                 
                 # Connect the selected physical capture port to jack_delay input
                 # Ensure the target port exists before connecting
-                if any(p.name == input_to_connect for p in self.manager.client.get_ports(is_output=True, is_audio=True)):
-                    self.manager.make_connection(input_to_connect, "jack_delay:in")
+                if any(p.name == input_to_connect for p in jack_service.get_ports(is_output=True, is_audio=True)):
+                    self.manager.jack_handler.make_connection(input_to_connect, "jack_delay:in")
                 else:
-                    print(f"Warning: Target input port '{input_to_connect}' not found.")
+                    logger.warning(f"Warning: Target input port '{input_to_connect}' not found.")
                 
                 self.manager.latency_results_text.append("\nTry different ports if you're seeing this message after clicking 'Start measurement' button")
                 # Refresh the audio tab view to show the new connections
@@ -310,5 +332,5 @@ class LatencyTester:
                     self.manager.refresh_ports()
                 
             except Exception as e:
-                print(f"Error during latency auto-connection: {e}")
+                logger.error(f"Error during latency auto-connection: {e}")
                 self.manager.latency_results_text.append(f"\nError auto-connecting: {e}")

@@ -1,8 +1,13 @@
+"""
+Shared widget factory functions used across Cables UI components.
+"""
 from PyQt6.QtWidgets import QToolButton, QApplication
 from PyQt6.QtGui import QIcon, QAction
 from PyQt6.QtCore import QSize
 
-def create_action_button(parent_widget, action: QAction, icon_path: str = None, tooltip: str = "", fixed_size: QSize = None, min_width: int = None) -> QToolButton:
+TOOLBAR_BUTTON_MIN_WIDTH = 130
+
+def create_action_button(parent_widget, action: QAction, icon_path: str = None, tooltip: str = "", fixed_size: QSize = None, min_width: int = TOOLBAR_BUTTON_MIN_WIDTH) -> QToolButton:
     button = QToolButton(parent_widget)
     if icon_path:
         button.setIcon(QIcon.fromTheme(icon_path, QIcon(icon_path))) # Fallback to path if not in theme
@@ -17,7 +22,7 @@ def create_action_button(parent_widget, action: QAction, icon_path: str = None, 
     
     if fixed_size:
         button.setFixedSize(fixed_size)
-    if min_width is not None: # Check for None explicitly as 0 could be a valid (though unlikely) min_width
+    elif min_width is not None:
         button.setMinimumWidth(min_width)
         
     # Add any other common styling or properties

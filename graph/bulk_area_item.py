@@ -1,7 +1,13 @@
 # --- PyQt Graphical Items - BulkAreaItem ---
+"""
+QGraphicsItem representing a bulk connection area on a node for drag-based mass connect/disconnect.
+"""
+
+import logging
 
 from PyQt6.QtWidgets import (
-    QGraphicsItem, QStyleOptionGraphicsItem, QWidget, QStyle, QGraphicsSceneHoverEvent, QMenu
+    QGraphicsItem, QStyleOptionGraphicsItem, QWidget, QStyle, QGraphicsSceneHoverEvent, QMenu,
+    QGraphicsSceneMouseEvent, QGraphicsSceneContextMenuEvent
 )
 from PyQt6.QtGui import (
     QPainter, QPen, QBrush, QColor
@@ -12,6 +18,9 @@ from PyQt6.QtCore import (
 
 from . import constants # Import the new constants module
 import typing
+from typing import Any
+
+logger = logging.getLogger(__name__)
 
 if typing.TYPE_CHECKING:
     from .node_item import NodeItem
@@ -21,7 +30,7 @@ if typing.TYPE_CHECKING:
 
 class BulkAreaItem(QGraphicsItem):
     """A selectable item representing the 'IN' or 'OUT' bulk connection area of a NodeItem."""
-    def __init__(self, parent_node: 'NodeItem', is_input: bool):
+    def __init__(self, parent_node: 'NodeItem', is_input: bool) -> None:
         super().__init__(parent_node)
         self.parent_node = parent_node
         self.is_input = is_input
@@ -38,10 +47,10 @@ class BulkAreaItem(QGraphicsItem):
         # self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemSendsScenePositionChanges) # Not needed if parent moves
 
 
-    def boundingRect(self):
+    def boundingRect(self) -> QRectF:
         return self._bounding_rect
 
-    def paint(self, painter: QPainter, option: QStyleOptionGraphicsItem, widget: QWidget | None = None):
+    def paint(self, painter: QPainter, option: QStyleOptionGraphicsItem, widget: QWidget | None = None) -> None:
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         is_selected = bool(option.state & QStyle.StateFlag.State_Selected)
 
@@ -65,17 +74,17 @@ class BulkAreaItem(QGraphicsItem):
             painter.setPen(QPen(constants.SELECTION_BORDER_COLOR, 1.5))
             painter.drawRect(self.boundingRect())
 
-    def hoverEnterEvent(self, event: QGraphicsSceneHoverEvent):
+    def hoverEnterEvent(self, event: QGraphicsSceneHoverEvent) -> None:
         self._is_hovered = True
         self.update()
         super().hoverEnterEvent(event)
 
-    def hoverLeaveEvent(self, event: QGraphicsSceneHoverEvent):
+    def hoverLeaveEvent(self, event: QGraphicsSceneHoverEvent) -> None:
         self._is_hovered = False
         self.update()
         super().hoverLeaveEvent(event)
 
-    def mousePressEvent(self, event):
+    def mousePressEvent(self, event: 'QGraphicsSceneMouseEvent') -> None:
         """Handle selection and start potential bulk drag."""
         # Let selection run first
         super().mousePressEvent(event)
@@ -87,7 +96,7 @@ class BulkAreaItem(QGraphicsItem):
             self._mouse_press_pos = None
         # Do not accept the event here, let it propagate fully
 
-    def mouseDoubleClickEvent(self, event):
+    def mouseDoubleClickEvent(self, event: 'QGraphicsSceneMouseEvent') -> None:
         """Handle double-click to select the bulk area and all ports connected to any port in it."""
         if event.button() == Qt.MouseButton.LeftButton:
             items_to_select = [self]  # Include the bulk area itself
@@ -115,30 +124,30 @@ class BulkAreaItem(QGraphicsItem):
     # def mouseMoveEvent(self, event): ...
     # def mouseReleaseEvent(self, event): ...
 
-    def contextMenuEvent(self, event):
+    def contextMenuEvent(self, event: 'QGraphicsSceneContextMenuEvent') -> None:
         """Show context menu for disconnecting all."""
         menu = QMenu()
         action_text = "Disconnect all INs" if self.is_input else "Disconnect all OUTs"
         disconnect_action = menu.addAction(action_text)
 
         # Define a new method to handle the disconnection logic
-        def handle_bulk_disconnect():
+        def handle_bulk_disconnect() -> None:
             current_scene = self.scene()
             if not current_scene or not hasattr(current_scene, 'jack_connection_handler'):
-                print(f"Error: Scene or JackConnectionHandler not available for bulk disconnect from {self.parent_node.client_name}")
+                logger.error(f"Scene or JackConnectionHandler not available for bulk disconnect from {self.parent_node.client_name}")
                 return
 
             connection_handler = current_scene.jack_connection_handler
             ports_to_process = self.parent_node.input_ports if self.is_input else self.parent_node.output_ports
             
-            print(f"BulkAreaItem: Disconnecting {'inputs' if self.is_input else 'outputs'} for {self.parent_node.client_name}")
+            logger.info(f"BulkAreaItem: Disconnecting {'inputs' if self.is_input else 'outputs'} for {self.parent_node.client_name}")
             for port_item in ports_to_process.values():
                 try:
-                    print(f"  Requesting disconnect for port: {port_item.port_name}")
+                    logger.debug(f"  Requesting disconnect for port: {port_item.port_name}")
                     connection_handler.disconnect_node(port_item.port_name)
                 except Exception as e:
-                    print(f"  Error disconnecting port {port_item.port_name}: {e}")
-            print(f"Finished request to disconnect {'inputs' if self.is_input else 'outputs'} for {self.parent_node.client_name}")
+                    logger.error(f"  Error disconnecting port {port_item.port_name}: {e}")
+            logger.info(f"Finished request to disconnect {'inputs' if self.is_input else 'outputs'} for {self.parent_node.client_name}")
 
         disconnect_action.triggered.connect(handle_bulk_disconnect)
 
@@ -150,7 +159,7 @@ class BulkAreaItem(QGraphicsItem):
         menu.exec(event.screenPos())
         event.accept()
 
-    def get_connection_point(self):
+    def get_connection_point(self) -> QPointF:
         """Return the scene coordinates of the center of the bulk connection area."""
         return self.mapToScene(self.boundingRect().center())
 
@@ -201,7 +210,7 @@ class BulkAreaItem(QGraphicsItem):
                     return True # Found a connection from a source port to a sink port on the target node
         return False
 
-    def itemChange(self, change, value):
+    def itemChange(self, change: QGraphicsItem.GraphicsItemChange, value: Any) -> Any:
         """Handle selection synchronization with associated PortItems and other BulkAreaItems."""
         if change == QGraphicsItem.GraphicsItemChange.ItemSelectedHasChanged:
             from .node_item import NodeItem # Local import for isinstance and logic
@@ -279,13 +288,13 @@ class BulkAreaItem(QGraphicsItem):
                     self._is_handling_selection_change = False
         return super().itemChange(change, value)
 
-    def set_drag_highlight(self, highlighted: bool):
+    def set_drag_highlight(self, highlighted: bool) -> None:
         """Externally set the highlight state for drag hover."""
         if self._is_drag_highlighted != highlighted:
             self._is_drag_highlighted = highlighted
             self.update()
 
-    def _highlight_connected_bulk_areas(self):
+    def _highlight_connected_bulk_areas(self) -> None:
         """Highlight bulk areas connected to this one via the home bulk area's ports."""
         from .node_item import NodeItem  # Local import for isinstance
 
@@ -304,7 +313,7 @@ class BulkAreaItem(QGraphicsItem):
                 if self._is_connected_to_other_bulk(target_bulk_on_other_node):
                     target_bulk_on_other_node.set_connection_highlighted(True)
 
-    def set_connection_highlighted(self, highlighted: bool):
+    def set_connection_highlighted(self, highlighted: bool) -> None:
         """Set the connection highlighting state."""
         if self._connection_highlighted != highlighted:
             self._connection_highlighted = highlighted

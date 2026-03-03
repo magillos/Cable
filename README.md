@@ -9,7 +9,7 @@ If you wonder what Latency Offset option does, look [here](https://pipewire.page
 
 ## Run
 To run, clone repository and start with `python Cable.py`. You will need python jack client, see [here](https://pypi.org/project/JACK-Client/), python PyQT6, jack_delay (or jack-example-tools), pyalsaaudio and aj-snapshot installed:
-`sudo apt install python3-jack-client libqt6svg6 jack-delay python3-pyqt6 python3-dbus python3-requests python3-packaging aj-snapshot python3-alsaaudio pipewire-jack` 
+`sudo apt install python3-jack-client libqt6svg6 jack-delay python3-pyqt6 python3-dbus python3-requests python3-packaging aj-snapshot python3-alsaaudio pipewire-jack python3-graphviz` 
 
 
 ## Install

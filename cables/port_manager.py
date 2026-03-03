@@ -1,13 +1,27 @@
 # cables/port_manager.py
+"""
+Manages port discovery, filtering, and population of Audio/MIDI tree widgets.
+"""
 import jack
-import re
 from PyQt6.QtCore import Qt
-from cables import jack_utils # Import the new jack_utils module
+from cables.jack_service import get_jack_service
+from cables.utils.sort_utils import natural_sort_key_for_full_port_name
+
+import logging
+from typing import TYPE_CHECKING, Optional, List, Dict, Any, Tuple, Set
+
+if TYPE_CHECKING:
+    from cables.connection_manager import JackConnectionManager
+    from cables.features.node_visibility_manager import NodeVisibilityManager
+    from cables.ui.port_tree_widget import PortTreeWidget
+    from PyQt6.QtWidgets import QLineEdit, QTreeWidget
+
+logger = logging.getLogger(__name__)
 
 class PortManager:
     """Manages fetching, sorting, and filtering of JACK ports."""
 
-    def __init__(self, connection_manager, jack_client, input_filter_edit, output_filter_edit):
+    def __init__(self, connection_manager: 'JackConnectionManager', jack_client: Optional[jack.Client], input_filter_edit: Optional['QLineEdit'], output_filter_edit: Optional['QLineEdit']) -> None:
         """
         Initialize the PortManager. Trees are set later via set_trees().
 
@@ -21,19 +35,20 @@ class PortManager:
         self.jack_client = jack_client
         self.input_filter_edit = input_filter_edit
         self.output_filter_edit = output_filter_edit
+        self._jack_service = get_jack_service()
         
         # Node visibility manager will be set by JackConnectionManager
-        self.node_visibility_manager = None
+        self.node_visibility_manager: Optional['NodeVisibilityManager'] = None
 
         # Initialize trees as None, they will be set by set_trees()
-        self.input_tree = None
-        self.output_tree = None
-        self.midi_input_tree = None
-        self.midi_output_tree = None
+        self.input_tree: Optional['PortTreeWidget'] = None
+        self.output_tree: Optional['PortTreeWidget'] = None
+        self.midi_input_tree: Optional['PortTreeWidget'] = None
+        self.midi_output_tree: Optional['PortTreeWidget'] = None
 
         # Do NOT connect filter signals here yet
 
-    def set_trees(self, input_tree, output_tree, midi_input_tree, midi_output_tree):
+    def set_trees(self, input_tree: 'PortTreeWidget', output_tree: 'PortTreeWidget', midi_input_tree: 'PortTreeWidget', midi_output_tree: 'PortTreeWidget') -> None:
         """
         Set the tree widgets and connect filter signals. Called after trees are created.
 
@@ -84,7 +99,7 @@ class PortManager:
             except TypeError: pass
             self.output_filter_edit.textChanged.connect(self._handle_filter_change)
 
-    def set_node_visibility_manager(self, node_visibility_manager):
+    def set_node_visibility_manager(self, node_visibility_manager: 'NodeVisibilityManager') -> None:
         """
         Set the node visibility manager.
         
@@ -93,7 +108,7 @@ class PortManager:
         """
         self.node_visibility_manager = node_visibility_manager
 
-    def _get_ports(self, is_midi_tab: bool):
+    def _get_ports(self, is_midi_tab: bool) -> Tuple[List[str], List[str]]:
         """
         Get the input and output ports using jack_utils.
 
@@ -112,13 +127,12 @@ class PortManager:
         try:
             if is_midi_tab:
                 # For MIDI tab, get MIDI ports
-                input_port_objects = jack_utils.get_all_jack_ports(self.jack_client, is_input=True, is_midi=True)
-                output_port_objects = jack_utils.get_all_jack_ports(self.jack_client, is_output=True, is_midi=True)
+                input_port_objects = self._jack_service.get_ports(is_input=True, is_midi=True)
+                output_port_objects = self._jack_service.get_ports(is_output=True, is_midi=True)
             else:
                 # For Audio tab, get Audio ports (explicitly not MIDI)
-                # jack.Client.get_ports(is_audio=True) is the most direct way.
-                input_port_objects = jack_utils.get_all_jack_ports(self.jack_client, is_input=True, is_audio=True)
-                output_port_objects = jack_utils.get_all_jack_ports(self.jack_client, is_output=True, is_audio=True)
+                input_port_objects = self._jack_service.get_ports(is_input=True, is_audio=True)
+                output_port_objects = self._jack_service.get_ports(is_output=True, is_audio=True)
 
             # Filter ports by visibility if node_visibility_manager is available
             if self.node_visibility_manager:
@@ -143,13 +157,13 @@ class PortManager:
             output_port_names = self._sort_ports(output_port_names)
 
         except jack.JackError as e: # This might be redundant if jack_utils handles it, but good for safety.
-            print(f"Error getting ports via jack_utils: {e}")
+            logger.error(f"Error getting ports via jack_utils: {e}")
             # jack_utils functions return [] on JackError, so lists will be empty.
             pass
         
         return input_port_names, output_port_names
 
-    def _sort_ports(self, port_names):
+    def _sort_ports(self, port_names: List[str]) -> List[str]:
         """
         Sort port names in a logical order, grouping by base name.
         
@@ -175,49 +189,9 @@ class PortManager:
         Returns:
             list: The sorted port names
         """
-        def get_enhanced_sort_key(port_name):
-            """Enhanced sort key that groups ports logically"""
-            def tryint(text):
-                try:
-                    return int(text)
-                except ValueError:
-                    return text.lower()
+        return sorted(port_names, key=natural_sort_key_for_full_port_name)
 
-            # Split the port name into client and port parts
-            if ':' in port_name:
-                client_part, port_part = port_name.split(':', 1)
-            else:
-                client_part, port_part = '', port_name
-            
-            # Extract base name and suffix from port part
-            # Look for patterns like "input_FL-448" or "output_1-mono"
-            base_name = port_part
-            suffix = ''
-            
-            # Try to find a suffix pattern (dash followed by numbers/text)
-            suffix_match = re.search(r'[-_](\d+.*?)$', port_part)
-            if suffix_match:
-                suffix = suffix_match.group(1)
-                base_name = port_part[:suffix_match.start()]
-            
-            # Create sort key components
-            client_key = [tryint(part) for part in re.split(r'(\d+)', client_part.lower())]
-            base_name_key = [tryint(part) for part in re.split(r'(\d+)', base_name.lower())]
-            
-            # For the desired sorting behavior:
-            # 1. First show all base ports (no suffix) sorted by base name
-            # 2. Then show suffixed ports, grouped by suffix value, with base names sorted within each suffix group
-            if suffix:
-                suffix_key = [tryint(part) for part in re.split(r'(\d+)', suffix.lower())]
-                # For suffixed ports: sort by (client, suffix, base_name)
-                return (client_key, [1], suffix_key, base_name_key)  # [1] puts suffixed ports after base ports
-            else:
-                # For base ports: sort by (client, base_name)
-                return (client_key, [0], base_name_key, [])  # [0] puts base ports first
-
-        return sorted(port_names, key=get_enhanced_sort_key)
-
-    def filter_ports(self, tree_widget, filter_text):
+    def filter_ports(self, tree_widget: Optional['QTreeWidget'], filter_text: str) -> None:
         """
         Filters the items in the specified tree widget based on the filter text.
 
@@ -280,7 +254,7 @@ class PortManager:
         # Call the method on the connection_manager instance
         self.connection_manager.refresh_visualizations()
 
-    def _handle_filter_change(self):
+    def _handle_filter_change(self) -> None:
         """Handles text changes in the shared filter boxes."""
         # Access tab_widget through ui_manager
         tab_widget = self.connection_manager.ui_manager.tab_widget

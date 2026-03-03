@@ -1,14 +1,19 @@
 # --- PyQt Graphical Items - ConnectionItem ---
+"""
+QGraphicsPathItem representing a visual connection line between two ports.
+"""
 
 from PyQt6.QtWidgets import (
     QGraphicsPathItem, QStyleOptionGraphicsItem, QWidget, QStyle
 )
 from PyQt6.QtGui import (
-    QPainter, QPen, QPainterPath, QPalette
+    QPainter, QPen, QPainterPath, QPalette, QColor
 )
 from PyQt6.QtCore import (
     Qt, QPointF
 )
+
+from cable_core import config_keys as keys
 
 from . import constants # Import the new constants module
 
@@ -18,25 +23,23 @@ from . import constants # Import the new constants module
 
 class ConnectionItem(QGraphicsPathItem):
     """A bezier curve connecting two PortItems."""
-    def __init__(self, source_port: 'PortItem', dest_port: 'PortItem'):
+    def __init__(self, source_port: 'PortItem', dest_port: 'PortItem', client_color: QColor | None = None) -> None:
         super().__init__()
         self.source_port = source_port
         self.dest_port = dest_port
+        self._client_color = client_color
 
         # Add this connection to the ports' lists
         self.source_port.connections.append(self)
         self.dest_port.connections.append(self)
 
         # Store base pen properties, paint method will adjust width/color
-        # self._base_pen = QPen(constants.CONNECTION_COLOR, constants.CONNECTION_WIDTH)
-        # self._highlight_pen = QPen(constants.CONNECTION_HIGHLIGHT_COLOR, constants.CONNECTION_HIGHLIGHT_WIDTH)
-        # Pens will be created in paint() using palette colors
         self.setPen(QPen(Qt.GlobalColor.black, constants.CONNECTION_WIDTH)) # Placeholder, will be overridden in paint
         self.setZValue(-1) # Draw behind nodes/ports
 
         self.update_path()
 
-    def update_path(self):
+    def update_path(self) -> None:
         """Recalculates the bezier curve path based on port positions."""
         if not self.source_port or not self.dest_port: return # Port removed?
 
@@ -55,66 +58,49 @@ class ConnectionItem(QGraphicsPathItem):
         # Control points for bezier curve
         dx = abs(p1.x() - p2.x())
         
-        # This is the robust logic for control points:
-        # c1x will be offset from p1.x by (dx * connection_factor)
-        # c2x will be offset from p2.x by -(dx * connection_factor)
-        # This creates a symmetrical curve.
-        # If p1.x < p2.x (standard left to right):
-        #   c1x = p1.x + offset (moves right from p1)
-        #   c2x = p2.x - offset (moves left from p2)
-        # If p1.x > p2.x (loop back, e.g. self-connection from output on right to input on left):
-        #   dx is still positive.
-        #   c1x = p1.x + offset (moves further right from p1, creating the outward loop)
-        #   c2x = p2.x - offset (moves further left from p2, creating the outward loop)
-        
         c1x = p1.x() + dx * connection_factor
         c1y = p1.y()
-        c2x = p2.x() - dx * connection_factor # Note the minus sign here is key
+        c2x = p2.x() - dx * connection_factor
         c2y = p2.y()
 
         path.cubicTo(c1x, c1y, c2x, c2y, p2.x(), p2.y())
         self.setPath(path)
 
-    # --- Add this method ---
-    def paint(self, painter: QPainter, option: QStyleOptionGraphicsItem, widget: QWidget | None = None):
+    def _get_line_thickness(self) -> float:
+        """Get connection line thickness from config, falling back to constants."""
+        scene = self.scene()
+        if scene and hasattr(scene, 'main_config_manager') and scene.main_config_manager:
+            return scene.main_config_manager.get_int_setting(
+                keys.CONNECTION_LINE_THICKNESS, constants.CONNECTION_WIDTH)
+        return constants.CONNECTION_WIDTH
+
+    def paint(self, painter: QPainter, option: QStyleOptionGraphicsItem, widget: QWidget | None = None) -> None:
         """Paints the connection, highlighting if connected ports are selected."""
         is_highlighted = False
-        # Check source_port validity before accessing isSelected()
         if self.source_port and self.source_port.isSelected():
             is_highlighted = True
-        # Check dest_port validity before accessing isSelected()
         if self.dest_port and self.dest_port.isSelected():
             is_highlighted = True
 
-        # Create pens dynamically using palette colors
-        palette = option.palette if option else self.scene().palette() # Get palette from option or scene
+        width = self._get_line_thickness()
+        highlight_width = width * 2
 
         if is_highlighted:
-            # Use a brighter color for highlighted connections
-            # Instead of using palette.Highlight, use a brighter color
             highlight_color = constants.CONNECTION_HIGHLIGHT_COLOR
-            current_pen = QPen(highlight_color, constants.CONNECTION_HIGHLIGHT_WIDTH)
+            current_pen = QPen(highlight_color, highlight_width)
+        elif self._client_color is not None:
+            current_pen = QPen(self._client_color, width)
         else:
-            # Use a darker color for normal connections
             base_color = constants.CONNECTION_COLOR
-            current_pen = QPen(base_color, constants.CONNECTION_WIDTH)
+            current_pen = QPen(base_color, width)
 
         painter.setPen(current_pen)
-        painter.drawPath(self.path()) # Draw the path with the selected pen
+        painter.drawPath(self.path())
 
-        # Optionally, draw selection highlight if the connection itself is selected
-        # if option.state & QStyle.StateFlag.State_Selected:
-        #     painter.setPen(QPen(constants.SELECTION_BORDER_COLOR, 1, Qt.PenStyle.DashLine))
-        #     painter.drawPath(self.shape()) # Draw outline using shape
-    # --- End Add ---
-
-    # --- Ensure this method is correctly indented ---
-    def destroy(self):
+    def destroy(self) -> None:
         """Remove connection from ports and scene."""
-        # Check source_port validity before accessing connections
         if self.source_port and self in self.source_port.connections:
              self.source_port.connections.remove(self)
-        # Check dest_port validity before accessing connections
         if self.dest_port and self in self.dest_port.connections:
              self.dest_port.connections.remove(self)
         if self.scene():

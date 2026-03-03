@@ -1,6 +1,8 @@
 """
 ConnectionHistory - Tracks connection actions for undo/redo functionality
 """
+from typing import List, Optional, Tuple
+
 
 class ConnectionHistory:
     """
@@ -10,12 +12,12 @@ class ConnectionHistory:
     and provides methods to undo and redo these actions.
     """
     
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize the connection history."""
-        self.history = []
-        self.current_index = -1
+        self.history: List[Tuple[str, str, str, bool]] = []
+        self.current_index: int = -1
     
-    def add_action(self, action, output_name, input_name, is_midi):
+    def add_action(self, action: str, output_name: str, input_name: str, is_midi: bool) -> None:
         """
         Add a connection action to the history.
         
@@ -30,7 +32,7 @@ class ConnectionHistory:
         self.history.append((action, output_name, input_name, is_midi))
         self.current_index += 1
     
-    def can_undo(self):
+    def can_undo(self) -> bool:
         """
         Check if there are actions that can be undone.
         
@@ -39,7 +41,7 @@ class ConnectionHistory:
         """
         return self.current_index >= 0
     
-    def can_redo(self):
+    def can_redo(self) -> bool:
         """
         Check if there are actions that can be redone.
         
@@ -48,7 +50,7 @@ class ConnectionHistory:
         """
         return self.current_index < len(self.history) - 1
     
-    def undo(self):
+    def undo(self) -> Optional[Tuple[str, str, str, bool]]:
         """
         Undo the last action.
         
@@ -64,7 +66,7 @@ class ConnectionHistory:
             return (inverse_action, output_name, input_name, is_midi)
         return None
     
-    def redo(self):
+    def redo(self) -> Optional[Tuple[str, str, str, bool]]:
         """
         Redo the next action.
         

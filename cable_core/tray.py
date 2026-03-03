@@ -1,86 +1,44 @@
+"""
+System tray icon and menu management for Cable.
+"""
+
 import os
 import sys
+from typing import Optional
 from PyQt6.QtWidgets import (QSystemTrayIcon, QMenu, QApplication, QMessageBox, 
-                             QLabel, QWidgetAction)
+                             QLabel, QWidgetAction, QWidget)
 from PyQt6.QtGui import QIcon, QAction, QActionGroup
-from PyQt6.QtCore import Qt, QProcess
+from PyQt6.QtCore import Qt, QProcess, QPoint
 
-from cable_core.other_settings_dialog import OtherSettingsDialog # Import the new dialog
-from cable_core.dialogs import AppImagePathDialog # Import AppImage dialog
+import logging
+logger = logging.getLogger(__name__)
+
+from cable_core.app_config import load_app_icon
+from cable_core import config_keys as keys
+from cable_core.other_settings_dialog import OtherSettingsDialog
+from cable_core.dialogs import AppImagePathDialog
 
 class TrayManager:
-    def __init__(self, app):
+    def __init__(self, app: QWidget) -> None:
         self.app = app
-        self.tray_icon = None
-        self.autostart_action = None
-        self.autostart_version_action = None # Add placeholder for version menu action
-        self.cable_action = None
-        self.cables_action = None
+        self.tray_icon: Optional[QSystemTrayIcon] = None
+        self.autostart_action: Optional[QAction] = None
+        self.autostart_version_action: Optional[QAction] = None # Add placeholder for version menu action
+        self.cable_action: Optional[QAction] = None
+        self.cables_action: Optional[QAction] = None
 
-    def setup_tray_icon(self):
+    def setup_tray_icon(self) -> None:
         if not self.tray_icon:
             # Check if integrated mode is enabled
-            self.integrated_mode = self.app.config_manager.get_bool('integrate_cable_and_cables', False)
-            print(f"Setting up tray icon with tray_click_opens_cables: {self.app.tray_click_opens_cables}, integrated_mode: {self.integrated_mode}")
+            self.integrated_mode = self.app.config_manager.get_bool(keys.INTEGRATE_CABLE_AND_CABLES, False)
+            logger.debug(f"Setting up tray icon with tray_click_opens_cables: {self.app.tray_click_opens_cables}, integrated_mode: {self.integrated_mode}")
             self.tray_icon = QSystemTrayIcon(self.app) # Parent is the app
 
-            # --- Icon Loading Logic ---
-            app_icon = None
-            icon_name = "jack-plug.svg" # Icon filename
-            icon_theme_name = "jack-plug" # Theme icon name (without extension)
-
-            # Determine base path - prioritize PyInstaller bundle path if available
-            if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-                # Running as a PyInstaller bundle (AppImage)
-                base_path = sys._MEIPASS
-                print(f"Running frozen, using base path: {base_path}")
-                # 1. Try loading from PyInstaller bundle path (_MEIPASS)
-                #    (--add-data "jack-plug.svg:." places it in the root of _MEIPASS)
-                bundle_icon_path = os.path.join(base_path, icon_name)
-                print(f"Attempting to load icon from bundle path: {bundle_icon_path}")
-                if os.path.exists(bundle_icon_path):
-                    bundle_icon = QIcon(bundle_icon_path)
-                    if not bundle_icon.isNull():
-                        print("Found valid icon in bundle directory.")
-                        app_icon = bundle_icon
-                    else:
-                        print(f"Warning: Found file at {bundle_icon_path}, but it's not a valid icon.")
-                else:
-                    print("Icon not found in bundle directory.")
-            else:
-                # Running as a normal script
-                base_path = os.path.dirname(os.path.abspath(sys.argv[0]))
-                print(f"Running as script, using base path: {base_path}")
-                # 1. Try loading from the script's directory
-                local_icon_path = os.path.join(base_path, icon_name)
-                print(f"Attempting to load icon from local path: {local_icon_path}")
-                if os.path.exists(local_icon_path):
-                    local_icon = QIcon(local_icon_path)
-                    if not local_icon.isNull():
-                        print("Found valid icon in script directory.")
-                        app_icon = local_icon
-                    else:
-                        print(f"Warning: Found file at {local_icon_path}, but it's not a valid icon.")
-                else:
-                    print("Icon not found in script directory.")
-
-            # 2. If local/bundle icon not found/valid, try loading from the theme
-            if app_icon is None:
-                print(f"Attempting to load icon '{icon_theme_name}' from theme.")
-                theme_icon = QIcon.fromTheme(icon_theme_name)
-                if not theme_icon.isNull():
-                    print("Found valid icon in theme.")
-                    app_icon = theme_icon
-                else:
-                    print(f"Warning: Icon '{icon_theme_name}' not found in theme.")
-
-            # 3. Set the icon (use fallback if all else failed)
+            app_icon = load_app_icon()
             if app_icon:
                 self.tray_icon.setIcon(app_icon)
             else:
-                print("Using fallback icon 'application-x-executable'.")
                 self.tray_icon.setIcon(QIcon.fromTheme("application-x-executable"))
-            # --- End Icon Loading Logic ---
 
             # Create the menu
             tray_menu = QMenu(self.app) # Parent is the app
@@ -158,9 +116,9 @@ class TrayManager:
         # Show the tray icon
         self.tray_icon.show()
 
-    def set_tray_click_target(self, opens_cables):
+    def set_tray_click_target(self, opens_cables: bool) -> None:
         """Update which application opens on tray icon click"""
-        print(f"Setting tray click target - opens_cables: {opens_cables}")
+        logger.debug(f"Setting tray click target - opens_cables: {opens_cables}")
         self.app.tray_click_opens_cables = opens_cables
 
         # Update the menu item checked states (handled by action group)
@@ -168,9 +126,9 @@ class TrayManager:
              self.cable_action.setChecked(not opens_cables)
              self.cables_action.setChecked(opens_cables)
 
-        self.app.config_manager.save_settings() # Use app's config manager
+        self.app.config_manager.save_settings(self.app._get_settings_dict())
 
-    def toggle_tray_icon(self, state):
+    def toggle_tray_icon(self, state: int) -> None:
         state_enum = Qt.CheckState(state)
         if state_enum == Qt.CheckState.Checked:
             self.app.tray_enabled = True # Update app state
@@ -178,15 +136,9 @@ class TrayManager:
         else: # Trying to disable the tray icon
             # Prevent disabling tray if autostart is enabled
             if self.app.autostart_enabled:
-                print("Cannot disable tray icon while autostart is enabled.")
+                logger.info("Cannot disable tray icon while autostart is enabled.")
                 # Block signals to prevent recursion, revert the checkbox, then unblock
-                self.app.tray_toggle_checkbox.blockSignals(True)
-                self.app.tray_toggle_checkbox.setChecked(True)
-                self.app.tray_toggle_checkbox.blockSignals(False)
-                # Also ensure the corresponding menu action is checked
-                # Find the action in the version context menu (if it exists)
-                # This is a bit indirect, maybe better to have a direct reference?
-                # For now, let's assume the checkbox state change handles the menu via connections.
+                self.app.revert_tray_checkbox()
                 return # Stop processing
 
             # Proceed with disabling if autostart is off
@@ -194,21 +146,20 @@ class TrayManager:
             if self.tray_icon:
                 self.tray_icon.hide()
                 self.tray_icon = None
-        self.app.config_manager.save_settings() # Use app's config manager
+        self.app.config_manager.save_settings(self.app._get_settings_dict())
 
-    def handle_show_action(self):
+    def handle_show_action(self) -> None:
         """Show the main Cable window"""
         if not self.app.isVisible():
             # Force refresh settings when showing from tray
-            self.app.pipewire_manager.load_current_settings() # Use pipewire_manager
-            # Refresh device and node lists when shown from tray
-            print("Refreshing devices/nodes from handle_show_action") # Debug print
-            self.app.pipewire_manager.load_devices() # Use pipewire_manager
-            self.app.pipewire_manager.load_nodes() # Use pipewire_manager
+            self.app._apply_current_settings()
+            logger.debug("Refreshing devices/nodes from handle_show_action")
+            self.app._apply_devices()
+            self.app._apply_nodes()
             self.app.show()  # Use app method
             self.app.activateWindow() # Use app method
 
-    def handle_cables_action(self):
+    def handle_cables_action(self) -> None:
         """Handle selection of 'Cables' from tray menu"""
         # When embedded, show/hide the parent Cables window instead of launching a new process
         if getattr(self.app, 'embedded', False):
@@ -216,7 +167,7 @@ class TrayManager:
             return
         self.app.process_manager._ensure_connection_manager_visible() # Use process_manager
 
-    def _toggle_parent_window(self):
+    def _toggle_parent_window(self) -> None:
         """Toggle visibility of the parent Cables window when embedded."""
         # Find the top-level parent window (Cables/JackConnectionManager)
         parent_window = self.app.window()
@@ -228,7 +179,7 @@ class TrayManager:
             else:
                 parent_window.hide()
 
-    def tray_icon_activated(self, reason):
+    def tray_icon_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         """Handle tray icon activation (clicks)"""
         if reason == QSystemTrayIcon.ActivationReason.Trigger:  # Left click
             # When embedded, toggle the parent Cables window
@@ -250,39 +201,39 @@ class TrayManager:
                     self.app.process_manager.launch_connection_manager() # Use process_manager
                 else:
                     # Process is already running, just terminate it (toggle behavior)
-                    print("Connection manager is already running, closing it")
+                    logger.debug("Connection manager is already running, closing it")
                     self.app.process_manager.connection_manager_process.terminate() # Use process_manager
                     # Don't schedule a relaunch
             else:
                 if self.app.isMinimized() or not self.app.isVisible():
                     # Force refresh settings before showing
-                    print("Refreshing devices/nodes from tray_icon_activated") # Debug print
-                    self.app.pipewire_manager.load_current_settings() # Use pipewire_manager
-                    self.app.pipewire_manager.load_devices() # Use pipewire_manager
-                    self.app.pipewire_manager.load_nodes() # Use pipewire_manager
+                    logger.debug("Refreshing devices/nodes from tray_icon_activated")
+                    self.app._apply_current_settings()
+                    self.app._apply_devices()
+                    self.app._apply_nodes()
                     self.app.show()  # Use app method
                     self.app.activateWindow()  # Use app method
                 else:
                     self.app.hide()  # Use app method
 
-    def quit_app(self):
+    def quit_app(self) -> None:
         if self.tray_icon:
             self.tray_icon.hide()
         # The cleanup is handled by the aboutToQuit signal in Cable.py
         # This method should just quit the application.
         QApplication.instance().quit()
 
-    def show_version_context_menu(self, pos):
+    def show_version_context_menu(self, pos: QPoint) -> None:
         """Shows the context menu for the version label."""
         context_menu = QMenu(self.app) # Parent is the app
 
         # Add tray icon toggle at the top
         tray_action = QAction("Enable tray icon", self.app)
         tray_action.setCheckable(True)
-        tray_action.setChecked(self.app.tray_toggle_checkbox.isChecked())
+        tray_action.setChecked(self.app.is_tray_checked())
         # Disable the tray action if autostart is enabled
         tray_action.setEnabled(not self.app.autostart_enabled)
-        tray_action.toggled.connect(self.app.tray_toggle_checkbox.setChecked) # Connect action toggle to app's checkbox
+        tray_action.toggled.connect(self.app.set_tray_checkbox)
         context_menu.addAction(tray_action)
 
         # Add Autostart toggle (below tray icon toggle)
@@ -304,16 +255,16 @@ class TrayManager:
         # Add remember settings toggle
         remember_action = QAction("Save quantum and sample rate", self.app)
         remember_action.setCheckable(True)
-        remember_action.setChecked(self.app.remember_settings_checkbox.isChecked())
-        remember_action.toggled.connect(self.app.remember_settings_checkbox.setChecked) # Connect action toggle to app's checkbox
+        remember_action.setChecked(self.app.is_remember_settings_checked())
+        remember_action.toggled.connect(self.app.set_remember_settings_checked)
         context_menu.addAction(remember_action)
 
         # Add restore only minimized toggle
         restore_minimized_action = QAction("Restore above only when app is auto-started", self.app)
         restore_minimized_action.setCheckable(True)
-        restore_minimized_action.setChecked(self.app.restore_only_minimized_checkbox.isChecked())
-        restore_minimized_action.setEnabled(self.app.remember_settings_checkbox.isChecked()) # Sync enabled state from app's checkbox
-        restore_minimized_action.toggled.connect(self.app.restore_only_minimized_checkbox.setChecked) # Connect action toggle to app's checkbox
+        restore_minimized_action.setChecked(self.app.is_restore_only_minimized_checked())
+        restore_minimized_action.setEnabled(self.app.is_remember_settings_checked())
+        restore_minimized_action.toggled.connect(self.app.set_restore_only_minimized_checked)
         context_menu.addAction(restore_minimized_action)
 
         # Add separator between restore settings and update options
@@ -348,7 +299,7 @@ class TrayManager:
         startup_check_action = QAction("Check for new version at start", self.app)
         startup_check_action.setCheckable(True)
         startup_check_action.setChecked(self.app.check_updates_at_start) # Check app state
-        startup_check_action.toggled.connect(self.app.config_manager.toggle_startup_check) # Connect to config_manager method (already correct, just confirming)
+        startup_check_action.toggled.connect(self._handle_toggle_startup_check)
         context_menu.addAction(startup_check_action)
 
         download_action = QAction("Download from GitHub", self.app)
@@ -384,14 +335,19 @@ class TrayManager:
         context_menu.addAction(coffee_widget_action)
 
         # Show the menu at the global position of the click
-        context_menu.exec(self.app.settings_button.mapToGlobal(pos)) # Use app's settings button
+        context_menu.exec(self.app.get_settings_button_global_pos(pos))
 
-    def _show_other_settings_dialog(self):
+    def _show_other_settings_dialog(self) -> None:
         """Opens the Other Settings dialog."""
         dialog = OtherSettingsDialog(parent=self.app, config_manager=self.app.config_manager)
         dialog.exec()
 
-    def toggle_autostart(self, checked):
+    def _handle_toggle_startup_check(self, checked: bool) -> None:
+        """Handle startup check toggle — update app state and persist."""
+        self.app.check_updates_at_start = checked
+        self.app.config_manager.toggle_startup_check(checked)
+
+    def toggle_autostart(self, checked: bool) -> None:
         """Toggle autostart setting and sync menu actions."""
         try:
             if checked:
@@ -402,6 +358,8 @@ class TrayManager:
                     if dialog.exec() == dialog.DialogCode.Accepted:
                         appimage_path = dialog.get_appimage_path()
                         if appimage_path and os.path.exists(appimage_path):
+                            self.app.appimage_path = appimage_path
+                            self.app.autostart_manager = self.app.autostart_manager.__class__(self.app.flatpak_env, appimage_path)
                             self.app.config_manager.save_appimage_path(appimage_path)
                         else:
                             QMessageBox.warning(self.app, "Invalid Path",
@@ -421,8 +379,9 @@ class TrayManager:
                 if self.app.autostart_manager.enable_autostart():
                     self.app.autostart_enabled = True # Update app state
                     # Also enable the tray icon when enabling autostart
-                    self.app.tray_toggle_checkbox.setChecked(True)
-                    print("Autostart enabled (and tray icon)")
+                    self.app.set_tray_checkbox(True)
+                    self.toggle_tray_icon(Qt.CheckState.Checked)
+                    logger.info("Autostart enabled (and tray icon)")
                 else:
                     QMessageBox.critical(self.app, "Error", # Use self.app as parent
                                       "Failed to enable autostart.\nCheck permissions and try again.")
@@ -433,7 +392,7 @@ class TrayManager:
             else:
                 if self.app.autostart_manager.disable_autostart():
                     self.app.autostart_enabled = False # Update app state
-                    print("Autostart disabled")
+                    logger.info("Autostart disabled")
                 else:
                     QMessageBox.critical(self.app, "Error", # Use self.app as parent
                                       "Failed to disable autostart.\nCheck permissions and try again.")
@@ -443,10 +402,10 @@ class TrayManager:
                     return
 
             # Save settings via ConfigManager *after* successful toggle
-            self.app.config_manager.save_settings() # Use app's config manager
+            self.app.config_manager.save_settings(self.app._get_settings_dict())
 
             # Update the enabled state of the main checkbox based on autostart state
-            self.app.tray_toggle_checkbox.setEnabled(not self.app.autostart_enabled)
+            self.app.set_tray_checkbox_enabled(not self.app.autostart_enabled)
 
         except Exception as e:
             QMessageBox.critical(self.app, "Error", # Use self.app as parent

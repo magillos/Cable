@@ -2,10 +2,14 @@
 # Removed re and traceback as they are not used directly by PortItem.
 # re is used by natural_sort_key in node_item.py
 # traceback is used by NodeItem in node_item.py
+"""
+QGraphicsItem representing a single JACK audio or MIDI port within a node.
+"""
 
 from PyQt6.QtWidgets import (
     QGraphicsItem, QGraphicsTextItem, QGraphicsPathItem, QMenu,
-    QStyleOptionGraphicsItem, QWidget, QStyle, QGraphicsSceneHoverEvent # Import QStyle and QGraphicsSceneHoverEvent
+    QStyleOptionGraphicsItem, QWidget, QStyle, QGraphicsSceneHoverEvent, # Import QStyle and QGraphicsSceneHoverEvent
+    QGraphicsSceneMouseEvent, QGraphicsSceneContextMenuEvent
 )
 from PyQt6.QtGui import (
     QPainter, QPen, QBrush, QColor, QPainterPath, QFont, QAction, QPolygonF,
@@ -14,6 +18,7 @@ from PyQt6.QtGui import (
 from PyQt6.QtCore import (
     Qt, QPointF, QRectF, QLineF, QEvent, QSize # Import QSize
 )
+from typing import Any, List
 
 from . import constants # Import the new constants module
 # Note: JackHandler is needed for context menu actions within PortItem
@@ -26,7 +31,7 @@ from . import constants # Import the new constants module
 
 class PortItem(QGraphicsItem):
     """Represents a single input or output port on a NodeItem."""
-    def __init__(self, parent_node: 'NodeItem', port_name, port_obj, is_input):
+    def __init__(self, parent_node: 'NodeItem', port_name: str, port_obj: Any, is_input: bool) -> None:
         super().__init__(parent_node)
         self.parent_node = parent_node
         self.port_name = port_name
@@ -60,7 +65,7 @@ class PortItem(QGraphicsItem):
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemSendsScenePositionChanges)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable) # Enable selection
 
-    def _calculate_required_width(self):
+    def _calculate_required_width(self) -> float:
         """Calculate the minimum width needed to display this port's text properly"""
         font = QFont()
         font.setPointSize(8)  # Match font in paint method
@@ -80,7 +85,7 @@ class PortItem(QGraphicsItem):
         # Ensure minimum width
         return max(constants.PORT_WIDTH_MIN, required_width)
 
-    def calculate_layout(self, y_pos):
+    def calculate_layout(self, y_pos: float) -> float:
         """Calculates the position and bounding rect based on parent."""
         x_pos = 0 if self.is_input else self.parent_node.boundingRect().width() - self.calculated_width
 
@@ -92,16 +97,16 @@ class PortItem(QGraphicsItem):
 
         return self._bounding_rect.height() + constants.NODE_VMARGIN
 
-    def boundingRect(self):
+    def boundingRect(self) -> QRectF:
         return self._bounding_rect
 
-    def shape(self):
+    def shape(self) -> QPainterPath:
         """Defines the detailed shape used for collision detection and mouse events."""
         path = QPainterPath()
         path.addRect(self.boundingRect())
         return path
 
-    def paint(self, painter: QPainter, option: QStyleOptionGraphicsItem, widget: QWidget | None = None):
+    def paint(self, painter: QPainter, option: QStyleOptionGraphicsItem, widget: QWidget | None = None) -> None:
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         # Port background / type indicator
@@ -157,7 +162,7 @@ class PortItem(QGraphicsItem):
             painter.setPen(QPen(constants.SELECTION_BORDER_COLOR, 1.5))
             painter.drawRect(self.boundingRect())
 
-    def get_connection_point(self):
+    def get_connection_point(self) -> QPointF:
         """Return the scene coordinates for the connection.
         If the parent node is folded, this will be a point on the node's header.
         Otherwise, it's the center of the port's connection indicator.
@@ -198,7 +203,7 @@ class PortItem(QGraphicsItem):
                 center_x = self.boundingRect().width() - (constants.PORT_HEIGHT / 2) # Center of the square indicator on right
             return self.mapToScene(QPointF(center_x, center_y))
 
-    def itemChange(self, change, value):
+    def itemChange(self, change: QGraphicsItem.GraphicsItemChange, value: Any) -> Any:
         """Update connection lines when the port (node) moves and handle selection synchronization."""
         if change == QGraphicsItem.GraphicsItemChange.ItemScenePositionHasChanged:
             for conn in self.connections:
@@ -281,7 +286,7 @@ class PortItem(QGraphicsItem):
             
         return super().itemChange(change, value)
 
-    def mousePressEvent(self, event):
+    def mousePressEvent(self, event: QGraphicsSceneMouseEvent) -> None:
         """Handle selection and start potential drag connection."""
         # Let selection run first
         super().mousePressEvent(event)
@@ -293,7 +298,7 @@ class PortItem(QGraphicsItem):
             self._mouse_press_pos = None
         # Do not accept the event here, let it propagate fully
 
-    def mouseDoubleClickEvent(self, event):
+    def mouseDoubleClickEvent(self, event: QGraphicsSceneMouseEvent) -> None:
         """Handle double-click to select connected ports."""
         if event.button() == Qt.MouseButton.LeftButton:
             items_to_select = [self]
@@ -315,7 +320,7 @@ class PortItem(QGraphicsItem):
     # def mouseMoveEvent(self, event): ...
     # def mouseReleaseEvent(self, event): ...
 
-    def contextMenuEvent(self, event):
+    def contextMenuEvent(self, event: QGraphicsSceneContextMenuEvent) -> None:
         """Show context menu to disconnect."""
         menu = QMenu()
         # Accessing the scene and then the handler is necessary here.
@@ -365,13 +370,13 @@ class PortItem(QGraphicsItem):
         menu.exec(event.screenPos())
 
 
-    def set_drag_highlight(self, highlighted: bool):
+    def set_drag_highlight(self, highlighted: bool) -> None:
         """Externally set the highlight state, e.g., during connection drag."""
         if self._is_drag_highlighted != highlighted:
             self._is_drag_highlighted = highlighted
             self.update() # Trigger repaint
 
-    def set_connection_highlighted(self, highlighted: bool):
+    def set_connection_highlighted(self, highlighted: bool) -> None:
         """Set the connection highlighting state."""
         if self._connection_highlighted != highlighted:
             self._connection_highlighted = highlighted

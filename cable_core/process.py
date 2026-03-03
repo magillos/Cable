@@ -1,13 +1,25 @@
+"""
+Process management for launching connection-manager.py as a child process.
+"""
+
 import os
 import sys
+from typing import Optional, TYPE_CHECKING
 from PyQt6.QtCore import QProcess, QTimer
+from PyQt6.QtWidgets import QWidget
+
+if TYPE_CHECKING:
+    pass  # PipeWireSettingsApp forward ref handled via QWidget
+
+import logging
+logger = logging.getLogger(__name__)
 
 class ProcessManager:
-    def __init__(self, app):
+    def __init__(self, app: QWidget) -> None:
         self.app = app
-        self.connection_manager_process = None
+        self.connection_manager_process: Optional[QProcess] = None
 
-    def launch_connection_manager(self, headless=False, stop_daemon=False):
+    def launch_connection_manager(self, headless: bool = False, stop_daemon: bool = False) -> None:
         """Launch connection-manager.py as an independent process."""
         try:
             possible_paths = [
@@ -39,32 +51,32 @@ class ProcessManager:
             self.connection_manager_process.setArguments(arguments)
 
             self.connection_manager_process.start()
-            print(f"Started connection manager with args: {arguments}")
+            logger.info(f"Started connection manager with args: {arguments}")
         except Exception as e:
-            print(f"Error launching connection manager: {e}")
+            logger.error(f"Error launching connection manager: {e}")
 
 
-    def on_connection_manager_closed(self, exitCode, exitStatus):
+    def on_connection_manager_closed(self, exitCode: int, exitStatus: QProcess.ExitStatus) -> None:
         """Handle the connection manager process closing"""
-        print(f"Connection manager process exited with code {exitCode}, status {exitStatus}")
+        logger.debug(f"Connection manager process exited with code {exitCode}, status {exitStatus}")
         # Reset the process object so we can create a new one next time
         self.connection_manager_process = None
 
-    def terminate_connection_manager(self):
+    def terminate_connection_manager(self) -> None:
         """Terminates the connection manager process if it is running."""
         if self.connection_manager_process and self.connection_manager_process.state() == QProcess.ProcessState.Running:
-            print("Terminating connection manager process...")
+            logger.debug("Terminating connection manager process...")
             self.connection_manager_process.terminate()
             self.connection_manager_process.waitForFinished(5000) # Wait up to 5 seconds
             if self.connection_manager_process.state() == QProcess.ProcessState.Running:
-                print("Connection manager process did not terminate gracefully, killing.")
+                logger.debug("Connection manager process did not terminate gracefully, killing.")
                 self.connection_manager_process.kill()
             else:
-                print("Connection manager process terminated.")
+                logger.debug("Connection manager process terminated.")
         else:
-            print("Connection manager process is not running.")
+            logger.debug("Connection manager process is not running.")
 
-    def _ensure_connection_manager_visible(self):
+    def _ensure_connection_manager_visible(self) -> None:
         """Launches connection manager if not running, otherwise terminates and relaunches to bring to front."""
         if self.connection_manager_process is None or (
             hasattr(self.connection_manager_process, 'state') and
@@ -74,11 +86,11 @@ class ProcessManager:
             self.launch_connection_manager()
         else:
             # As a workaround, kill and restart it to bring to front
-            print("Connection manager process already running, bringing to front")
+            logger.debug("Connection manager process already running, bringing to front")
             self.connection_manager_process.terminate()
             # Wait a brief moment for termination before relaunching
             QTimer.singleShot(500, self.launch_connection_manager)
 
-    def open_cables(self):
+    def open_cables(self) -> None:
         """Open the Cables window (used by main app button and tray)"""
         self._ensure_connection_manager_visible()

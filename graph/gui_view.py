@@ -1,12 +1,31 @@
+"""
+QGraphicsView providing zoom, pan, context menus, and wallpaper for the graph scene.
+"""
 import os
-from PyQt6.QtWidgets import QGraphicsView, QMenu, QDialog, QVBoxLayout, QDialogButtonBox, QLabel, QCheckBox, QFileDialog, QHBoxLayout, QPushButton, QButtonGroup, QRadioButton
-from PyQt6.QtGui import QPainter, QCursor, QMouseEvent, QPixmap, QBrush, QFont # Import QMouseEvent
+from PyQt6.QtWidgets import QGraphicsView, QMenu, QDialog, QVBoxLayout, QDialogButtonBox, QLabel, QCheckBox, QFileDialog, QHBoxLayout, QPushButton, QButtonGroup, QRadioButton, QWidget
+from PyQt6.QtGui import QPainter, QCursor, QMouseEvent, QPixmap, QBrush, QFont, QWheelEvent, QKeyEvent, QContextMenuEvent # Import QMouseEvent
 from PyQt6.QtCore import Qt, pyqtSignal, QPointF
+from typing import Optional, Tuple
+
+import logging
+logger = logging.getLogger(__name__)
 
 # Import JackGraphScene for type hinting
 from .gui_scene import JackGraphScene
 from . import constants # Import constants
+from cable_core import config_keys as keys
 from cable_core.dialogs import CombinedSinkSourceDialog
+from cable_core.config import ConfigManager as CableCoreConfigManager
+
+# Shared ConfigManager instance for wallpaper settings
+_cable_core_config = None
+
+def _get_cable_core_config() -> CableCoreConfigManager:
+    """Get or create the shared ConfigManager instance."""
+    global _cable_core_config
+    if _cable_core_config is None:
+        _cable_core_config = CableCoreConfigManager()
+    return _cable_core_config
 
 class JackGraphView(QGraphicsView):
     """The view widget for the JACK graph scene."""
@@ -14,7 +33,7 @@ class JackGraphView(QGraphicsView):
     fullscreen_request_signal = pyqtSignal()
     zoom_changed = pyqtSignal(float) # Signal to emit when zoom level changes
  
-    def __init__(self, scene: JackGraphScene, parent=None):
+    def __init__(self, scene: JackGraphScene, parent: Optional[QWidget] = None) -> None:
         super().__init__(scene, parent)
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
         # Set DragMode - RubberBandDrag allows selecting items, ScrollHandDrag allows panning.
@@ -50,7 +69,7 @@ class JackGraphView(QGraphicsView):
         self.max_zoom_scale = 5.0  # Maximum zoom level (e.g., 500%)
 
 
-    def _update_scrollbar_visibility(self):
+    def _update_scrollbar_visibility(self) -> None:
         """
         Updates the visibility of scrollbars based on whether all scene items
         are currently visible within the viewport.
@@ -90,7 +109,7 @@ class JackGraphView(QGraphicsView):
             self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
             self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
-    def wheelEvent(self, event):
+    def wheelEvent(self, event: QWheelEvent) -> None:
         """Handle mouse wheel events for zooming and scrolling."""
         # Check if Ctrl key is pressed for zooming
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
@@ -127,7 +146,7 @@ class JackGraphView(QGraphicsView):
         # Update scrollbars after zoom, as visible area might change relative to scene content
         self._update_scrollbar_visibility()
 
-    def mousePressEvent(self, event: QMouseEvent):
+    def mousePressEvent(self, event: QMouseEvent) -> None:
         """Override mouse press to set closed hand cursor during drag or initiate panning."""
         if event.button() == Qt.MouseButton.MiddleButton or \
            (event.button() == Qt.MouseButton.LeftButton and (event.modifiers() & Qt.KeyboardModifier.ShiftModifier)):
@@ -141,7 +160,7 @@ class JackGraphView(QGraphicsView):
             if self.dragMode() == QGraphicsView.DragMode.ScrollHandDrag and event.button() == Qt.MouseButton.LeftButton:
                 self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
 
-    def mouseMoveEvent(self, event: QMouseEvent):
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
         """Handle mouse move for panning."""
         if self._is_panning and self._last_pan_pos is not None:
             self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor) # Indicate grabbing
@@ -157,7 +176,7 @@ class JackGraphView(QGraphicsView):
         else:
             super().mouseMoveEvent(event)
 
-    def mouseReleaseEvent(self, event: QMouseEvent):
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         """Override mouse release to reset cursor after drag or panning."""
         if self._is_panning and (event.button() == Qt.MouseButton.LeftButton or event.button() == Qt.MouseButton.MiddleButton):
             self._is_panning = False
@@ -173,7 +192,7 @@ class JackGraphView(QGraphicsView):
         # Update scrollbars after mouse release (e.g., after dragging an item or panning)
         self._update_scrollbar_visibility()
 
-    def mouseDoubleClickEvent(self, event: QMouseEvent):
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
         """Handle mouse double-click events.
         Allows items in the scene to handle it first (e.g., for folding nodes).
         If not handled by an item, toggles fullscreen.
@@ -200,7 +219,7 @@ class JackGraphView(QGraphicsView):
             # we also don't toggle fullscreen from the view level.
             # This prevents fullscreen if double-clicking a non-interactive part of an item.
 
-    def zoom_in(self):
+    def zoom_in(self) -> None:
         """Scales the view to zoom in."""
         # Use a consistent zoom factor for button and shortcut zooming
         zoom_factor = self.zoom_factor_base
@@ -211,7 +230,7 @@ class JackGraphView(QGraphicsView):
             self.scale(self.max_zoom_scale / current_scale, self.max_zoom_scale / current_scale)
         self.zoom_changed.emit(self.get_zoom_level()) # Emit signal
  
-    def zoom_out(self):
+    def zoom_out(self) -> None:
         """Scales the view to zoom out."""
         # Use a consistent zoom factor for button and shortcut zooming
         zoom_factor = 1.0 / self.zoom_factor_base # This is actually scale_down_factor
@@ -224,11 +243,11 @@ class JackGraphView(QGraphicsView):
              self.scale(self.min_zoom_scale / current_scale, self.min_zoom_scale / current_scale)
         self.zoom_changed.emit(self.get_zoom_level()) # Emit signal
 
-    def get_zoom_level(self):
+    def get_zoom_level(self) -> float:
         """Returns the current horizontal scale factor (zoom level) of the view."""
         return self.transform().m11() # m11 is horizontal scale, m22 is vertical
 
-    def set_zoom_level(self, zoom_level):
+    def set_zoom_level(self, zoom_level: float) -> None:
         """Sets the view's zoom level to the specified value.
 
         Args:
@@ -255,7 +274,7 @@ class JackGraphView(QGraphicsView):
         self._update_scrollbar_visibility() # Update after explicit zoom set
         self.zoom_changed.emit(self.get_zoom_level()) # Emit signal
  
-    def keyPressEvent(self, event):
+    def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key.Key_U and (event.modifiers() & Qt.KeyboardModifier.AltModifier):
             graph_mw = self.scene().parent()
             if graph_mw and hasattr(graph_mw, 'untangle_action'):
@@ -275,7 +294,7 @@ class JackGraphView(QGraphicsView):
         else:
             super().keyPressEvent(event) # Pass to base class for other keys
 
-    def contextMenuEvent(self, event):
+    def contextMenuEvent(self, event: QContextMenuEvent) -> None:
         """Show a context menu when right-clicking on empty areas of the canvas."""
         # First, let's check if there's an item under the cursor
         item_under_cursor = self.itemAt(event.pos())
@@ -285,15 +304,30 @@ class JackGraphView(QGraphicsView):
             menu = QMenu(self)
             create_combined_action = menu.addAction("Create virtual sink/source")
             unload_all_sinks_action = menu.addAction("Unload all sinks")
+            remove_saved_sinks_action = menu.addAction("Remove all saved virtual sinks")
+            menu.addSeparator()
+            unhide_all_nodes_action = menu.addAction("Unhide all nodes")
+            unsplit_all_nodes_action = menu.addAction("Unsplit all nodes")
+            
+            # Gray out "Unsplit all nodes" when I/O layout is active
+            main_window = self.scene().parent()
+            if main_window and hasattr(main_window, 'current_untangle_setting'):
+                # I/O layout is represented by 0
+                unsplit_all_nodes_action.setEnabled(main_window.current_untangle_setting != 0)
+            
             menu.addSeparator()
             wallpaper_action = menu.addAction("Wallpaper")
 
             # Connect to handlers
             clicked_scene_pos = self.mapToScene(event.pos())
+            logger.debug(f"Context menu clicked at scene position: {clicked_scene_pos}")
             create_combined_action.triggered.connect(
                 lambda checked=False, pos=clicked_scene_pos: self._show_combined_sink_dialog(pos)
             )
             unload_all_sinks_action.triggered.connect(self._unload_all_sinks)
+            remove_saved_sinks_action.triggered.connect(self._remove_all_saved_virtual_sinks)
+            unhide_all_nodes_action.triggered.connect(self._unhide_all_nodes)
+            unsplit_all_nodes_action.triggered.connect(self._unsplit_all_nodes)
             wallpaper_action.triggered.connect(self._show_wallpaper_dialog)
 
             menu.exec(event.globalPos())
@@ -302,7 +336,7 @@ class JackGraphView(QGraphicsView):
             # If there's an item, pass the event to the parent implementation
             super().contextMenuEvent(event)
             
-    def _show_combined_sink_dialog(self, scene_pos: QPointF | None = None):
+    def _show_combined_sink_dialog(self, scene_pos: Optional[QPointF] = None) -> None:
         """Show the dialog for creating a combined virtual sink/source."""
         dialog = CombinedSinkSourceDialog(self)
         result = dialog.exec()
@@ -311,7 +345,7 @@ class JackGraphView(QGraphicsView):
             sink_name, channel_map = dialog.get_values()
             self._create_combined_sink_source(sink_name, channel_map, scene_pos)
 
-    def _show_wallpaper_dialog(self):
+    def _show_wallpaper_dialog(self) -> None:
         """Show a dialog to select wallpaper image and set it as background."""
         # Create wallpaper dialog
         dialog = QDialog(self.window())
@@ -322,14 +356,11 @@ class JackGraphView(QGraphicsView):
         layout = QVBoxLayout(dialog)
 
         # Get current settings using cable_core ConfigManager
-        cable_core_config = None
         current_scaling = "scaled"
         try:
-            from cable_core.config import ConfigManager
-            cable_core_config = ConfigManager()
-            current_scaling = cable_core_config.get_str_setting("_graph_wallpaper_scaling", "scaled")
+            current_scaling = _get_cable_core_config().get_str_setting(keys.GRAPH_WALLPAPER_SCALING, "scaled")
         except Exception as e:
-            print(f"Warning: Could not read wallpaper config: {e}")
+            logger.warning(f"Warning: Could not read wallpaper config: {e}")
 
         # Scaling options
         scaling_group = QButtonGroup(dialog)
@@ -378,7 +409,7 @@ class JackGraphView(QGraphicsView):
 
         dialog.exec()
 
-    def _select_wallpaper_file(self, parent_dialog, scaling_group):
+    def _select_wallpaper_file(self, parent_dialog: QDialog, scaling_group: QButtonGroup) -> None:
         """Open file dialog to select wallpaper image."""
         file_dialog = QFileDialog(self)
         file_dialog.setWindowTitle("Select Wallpaper Image")
@@ -387,13 +418,11 @@ class JackGraphView(QGraphicsView):
 
         # Try to start from the last wallpaper directory
         try:
-            from cable_core.config import ConfigManager
-            cable_core_config = ConfigManager()
-            last_dir = cable_core_config.get_str_setting("_graph_wallpaper_last_dir", "")
+            last_dir = _get_cable_core_config().get_str_setting(keys.GRAPH_WALLPAPER_LAST_DIR, "")
             if last_dir and os.path.exists(last_dir):
                 file_dialog.setDirectory(last_dir)
         except Exception as e:
-            print(f"Warning: Could not set last wallpaper directory: {e}")
+            logger.warning(f"Warning: Could not set last wallpaper directory: {e}")
 
         if file_dialog.exec() == QDialog.DialogCode.Accepted:
             selected_files = file_dialog.selectedFiles()
@@ -402,12 +431,10 @@ class JackGraphView(QGraphicsView):
 
                 # Save the directory for next time
                 try:
-                    from cable_core.config import ConfigManager
-                    cable_core_config = ConfigManager()
                     image_dir = os.path.dirname(image_path)
-                    cable_core_config.set_str_setting("_graph_wallpaper_last_dir", image_dir)
+                    _get_cable_core_config().set_str_setting(keys.GRAPH_WALLPAPER_LAST_DIR, image_dir)
                 except Exception as e:
-                    print(f"Warning: Could not save last wallpaper directory: {e}")
+                    logger.warning(f"Warning: Could not save last wallpaper directory: {e}")
 
                 # Get scaling mode
                 scaling_mode = "scaled"
@@ -419,39 +446,36 @@ class JackGraphView(QGraphicsView):
                 self._set_wallpaper(image_path, scaling_mode)
                 parent_dialog.accept()
 
-    def _set_wallpaper(self, image_path, scaling_mode="scaled"):
+    def _set_wallpaper(self, image_path: str, scaling_mode: str = "scaled") -> None:
         """Set the wallpaper image as background."""
         try:
-            from cable_core.config import ConfigManager
-            cable_core_config = ConfigManager()
-            cable_core_config.set_str_setting('_graph_wallpaper_path', image_path)
-            cable_core_config.set_str_setting('_graph_wallpaper_scaling', scaling_mode)
+            config = _get_cable_core_config()
+            config.set_str_setting(keys.GRAPH_WALLPAPER_PATH, image_path)
+            config.set_str_setting(keys.GRAPH_WALLPAPER_SCALING, scaling_mode)
             self._load_wallpaper()
-            print(f"Set wallpaper to: {image_path}, mode: {scaling_mode}")
+            logger.info(f"Set wallpaper to: {image_path}, mode: {scaling_mode}")
         except Exception as e:
-            print(f"Error setting wallpaper: {e}")
+            logger.error(f"Error setting wallpaper: {e}")
 
-    def _clear_wallpaper(self, parent_dialog=None):
+    def _clear_wallpaper(self, parent_dialog: Optional[QDialog] = None) -> None:
         """Clear the wallpaper (no background image)."""
         try:
-            from cable_core.config import ConfigManager
-            cable_core_config = ConfigManager()
-            cable_core_config.set_str_setting('_graph_wallpaper_path', '')
-            cable_core_config.set_str_setting('_graph_wallpaper_scaling', 'scaled')
+            config = _get_cable_core_config()
+            config.set_str_setting(keys.GRAPH_WALLPAPER_PATH, '')
+            config.set_str_setting(keys.GRAPH_WALLPAPER_SCALING, 'scaled')
             self._load_wallpaper()
-            print("Cleared wallpaper")
+            logger.info("Cleared wallpaper")
             if parent_dialog:
                 parent_dialog.accept()
         except Exception as e:
-            print(f"Error clearing wallpaper: {e}")
+            logger.error(f"Error clearing wallpaper: {e}")
 
-    def _save_wallpaper_settings(self, parent_dialog, scaling_group):
+    def _save_wallpaper_settings(self, parent_dialog: QDialog, scaling_group: QButtonGroup) -> None:
         """Save the wallpaper settings when dialog is accepted."""
         try:
-            from cable_core.config import ConfigManager
-            cable_core_config = ConfigManager()
-            current_wallpaper = cable_core_config.get_str_setting('_graph_wallpaper_path', '')
-            current_scaling = cable_core_config.get_str_setting('_graph_wallpaper_scaling', 'scaled')
+            config = _get_cable_core_config()
+            current_wallpaper = config.get_str_setting(keys.GRAPH_WALLPAPER_PATH, '')
+            current_scaling = config.get_str_setting(keys.GRAPH_WALLPAPER_SCALING, 'scaled')
 
             # Update scaling if changed
             scaling_mode = "scaled"
@@ -460,34 +484,32 @@ class JackGraphView(QGraphicsView):
                 scaling_mode = "centered"
 
             if scaling_mode != current_scaling:
-                cable_core_config.set_str_setting('_graph_wallpaper_scaling', scaling_mode)
+                config.set_str_setting(keys.GRAPH_WALLPAPER_SCALING, scaling_mode)
                 if current_wallpaper:
                     self._load_wallpaper()  # Reload with new scaling
 
             parent_dialog.accept()
         except Exception as e:
-            print(f"Error saving wallpaper settings: {e}")
+            logger.error(f"Error saving wallpaper settings: {e}")
 
-    def _load_wallpaper(self):
+    def _load_wallpaper(self) -> None:
         """Load and set the wallpaper image as background."""
         try:
-            # Always use cable_core ConfigManager for wallpaper settings
-            from cable_core.config import ConfigManager
-            cable_core_config = ConfigManager()
+            config = _get_cable_core_config()
 
             # Try to migrate old wallpaper setting if it exists but new ones don't
-            wallpaper_path = cable_core_config.get_str_setting('_graph_wallpaper_path', '')
+            wallpaper_path = config.get_str_setting(keys.GRAPH_WALLPAPER_PATH, '')
             if not wallpaper_path:
                 # Check for old wallpaper setting to migrate
-                old_wallpaper = cable_core_config.get_str_setting('graph_wallpaper', '')
+                old_wallpaper = config.get_str_setting('graph_wallpaper', '')
                 if old_wallpaper and os.path.exists(old_wallpaper):
                     wallpaper_path = old_wallpaper
-                    cable_core_config.set_str_setting('_graph_wallpaper_path', wallpaper_path)
+                    config.set_str_setting(keys.GRAPH_WALLPAPER_PATH, wallpaper_path)
                     # Clean up old setting
-                    cable_core_config.set_str_setting('graph_wallpaper', '')
-                    print(f"Migrated old wallpaper setting: {wallpaper_path}")
+                    config.set_str_setting('graph_wallpaper', '')
+                    logger.info(f"Migrated old wallpaper setting: {wallpaper_path}")
 
-            scaling_mode = cable_core_config.get_str_setting('_graph_wallpaper_scaling', 'scaled')
+            scaling_mode = config.get_str_setting(keys.GRAPH_WALLPAPER_SCALING, 'scaled')
 
             if wallpaper_path and os.path.exists(wallpaper_path):
                 # Load the image
@@ -497,19 +519,19 @@ class JackGraphView(QGraphicsView):
                     # Set the pixmap as background brush for the scene
                     brush = QBrush(pixmap)
                     self.scene().setBackgroundBrush(brush)
-                    print(f"Loaded wallpaper: {wallpaper_path}, mode: {scaling_mode}")
+                    logger.info(f"Loaded wallpaper: {wallpaper_path}, mode: {scaling_mode}")
                 else:
-                    print(f"Invalid image file: {wallpaper_path}")
+                    logger.debug(f"Invalid image file: {wallpaper_path}")
                     self.scene().setBackgroundBrush(QBrush())
             else:
                 # Clear background
                 self.scene().setBackgroundBrush(QBrush())
 
         except Exception as e:
-            print(f"Error loading wallpaper: {e}")
+            logger.error(f"Error loading wallpaper: {e}")
             self.scene().setBackgroundBrush(QBrush())
 
-    def _reload_wallpaper_if_needed(self):
+    def _reload_wallpaper_if_needed(self) -> None:
         """Reload wallpaper when scene size changes significantly (throttled to prevent spam)."""
         try:
             scene_rect = self.scene().sceneRect()
@@ -517,9 +539,7 @@ class JackGraphView(QGraphicsView):
 
             # Only reload if scene size changed significantly and wallpaper wasn't recently loaded
             if self._last_scene_size != current_size and current_size[0] > 100 and current_size[1] > 100:
-                from cable_core.config import ConfigManager
-                cable_core_config = ConfigManager()
-                wallpaper_path = cable_core_config.get_str_setting('_graph_wallpaper_path', '')
+                wallpaper_path = _get_cable_core_config().get_str_setting(keys.GRAPH_WALLPAPER_PATH, '')
 
                 if wallpaper_path and os.path.exists(wallpaper_path) and not self._wallpaper_loaded:
                     self._last_scene_size = current_size
@@ -527,9 +547,9 @@ class JackGraphView(QGraphicsView):
                     self._load_wallpaper()
 
         except Exception as e:
-            print(f"Error checking wallpaper reload: {e}")
+            logger.error(f"Error checking wallpaper reload: {e}")
 
-    def _scale_pixmap_for_mode(self, original_pixmap, scaling_mode):
+    def _scale_pixmap_for_mode(self, original_pixmap: QPixmap, scaling_mode: str) -> QPixmap:
         """Scale the pixmap according to the selected scaling mode."""
         # Get scene rect for scaling calculations
         scene_rect = self.scene().sceneRect()
@@ -550,7 +570,7 @@ class JackGraphView(QGraphicsView):
             else:
                 return original_pixmap
 
-    def _show_unload_all_sinks_confirmation_dialog(self):
+    def _show_unload_all_sinks_confirmation_dialog(self) -> Tuple[bool, bool]:
         """
         Show a confirmation dialog for unloading all sinks with 'don't show again' checkbox.
 
@@ -590,7 +610,7 @@ class JackGraphView(QGraphicsView):
 
         return result, checkbox.isChecked()
 
-    def _create_combined_sink_source(self, sink_name: str, channel_map: str, scene_pos: QPointF | None = None):
+    def _create_combined_sink_source(self, sink_name: str, channel_map: str, scene_pos: Optional[QPointF] = None) -> None:
         """Execute the pactl command to create the combined virtual sink/source."""
         import subprocess
         import json
@@ -611,6 +631,7 @@ class JackGraphView(QGraphicsView):
 
         scene = self.scene()
         if scene_pos is not None and scene is not None and hasattr(scene, 'register_pending_node_position'):
+            logger.info(f"Registering pending position {scene_pos} for sink {sink_name}")
             scene.register_pending_node_position(sink_name, scene_pos)
 
         try:
@@ -620,22 +641,21 @@ class JackGraphView(QGraphicsView):
             # Save the module ID to config
             self._save_module_id(sink_name, module_id)
 
-            print(f"Created combined virtual sink/source: {sink_name} with channel map {channel_map}")
-            print(f"Module ID: {module_id}")
+            logger.info(f"Created combined virtual sink/source: {sink_name} with channel map {channel_map}")
+            logger.debug(f"Module ID: {module_id}")
         except subprocess.CalledProcessError as e:
             if scene_pos is not None and scene is not None and hasattr(scene, 'unregister_pending_node_position'):
                 scene.unregister_pending_node_position(sink_name)
-            print(f"Error creating combined virtual sink/source: {e}")
+            logger.error(f"Error creating combined virtual sink/source: {e}")
 
-    def _save_module_id(self, sink_name: str, module_id: str):
+    def _save_module_id(self, sink_name: str, module_id: str) -> None:
         """Save the module ID to config file for later unloading."""
         try:
             import json
-            from cable_core.config import ConfigManager
-            config_manager = ConfigManager()
+            config = _get_cable_core_config()
 
             # Get existing module IDs, or initialize empty dict
-            module_ids_json = config_manager.get_str_setting('virtual_sink_module_ids', '{}')
+            module_ids_json = config.get_str_setting(keys.VIRTUAL_SINK_MODULE_IDS, '{}')
             try:
                 module_ids = json.loads(module_ids_json) if module_ids_json else {}
             except json.JSONDecodeError:
@@ -645,12 +665,12 @@ class JackGraphView(QGraphicsView):
             module_ids[sink_name] = module_id
 
             # Save back to config
-            config_manager.set_str_setting('virtual_sink_module_ids', json.dumps(module_ids))
+            config.set_str_setting(keys.VIRTUAL_SINK_MODULE_IDS, json.dumps(module_ids))
 
         except Exception as e:
-            print(f"Error saving module ID for {sink_name}: {e}")
+            logger.error(f"Error saving module ID for {sink_name}: {e}")
 
-    def _unload_all_sinks(self):
+    def _unload_all_sinks(self) -> None:
         """Unload all virtual sinks in the system."""
         import subprocess
 
@@ -664,26 +684,14 @@ class JackGraphView(QGraphicsView):
                 if main_window and hasattr(main_window, 'config_manager'):
                     config_manager = main_window.config_manager
                 else:
-                    # Fallback to creating one (but this might cause issues)
-                    try:
-                        from cables.config.config_manager import ConfigManager
-                        config_manager = ConfigManager()
-                    except ImportError:
-                        # Try cable_core as last resort
-                        try:
-                            from cable_core.config import ConfigManager as CoreConfigManager
-                            config_manager = CoreConfigManager()
-                            if hasattr(config_manager, 'set_bool_setting'):
-                                # This is the cable_core version, alias for compatibility
-                                config_manager.set_bool = config_manager.set_bool_setting
-                        except ImportError:
-                            print("Warning: Could not import ConfigManager")
+                    # Fallback to using shared config instance
+                    config_manager = _get_cable_core_config()
 
                 show_confirmation = True
                 if config_manager:
-                    show_confirmation = config_manager.get_bool('show_unload_all_sinks_confirmation', default=True)
+                    show_confirmation = config_manager.get_bool(keys.SHOW_UNLOAD_ALL_SINKS_CONFIRMATION, default=True)
             except Exception as e:
-                print(f"Warning: Could not read config for unload confirmation: {e}")
+                logger.warning(f"Warning: Could not read config for unload confirmation: {e}")
 
             if show_confirmation:
                 confirmed, dont_show_again = self._show_unload_all_sinks_confirmation_dialog()
@@ -694,11 +702,11 @@ class JackGraphView(QGraphicsView):
                 if dont_show_again and config_manager:
                     try:
                         if hasattr(config_manager, 'set_bool'):
-                            config_manager.set_bool('show_unload_all_sinks_confirmation', False)
+                            config_manager.set_bool(keys.SHOW_UNLOAD_ALL_SINKS_CONFIRMATION, False)
                         else:
-                            print("Warning: ConfigManager does not have set_bool method")
+                            logger.warning("Warning: ConfigManager does not have set_bool method")
                     except Exception as e:
-                        print(f"Warning: Could not save config: {e}")
+                        logger.warning(f"Warning: Could not save config: {e}")
 
             # Get all modules to find null-sink modules
             list_command = ["pactl", "list", "modules"]
@@ -718,7 +726,7 @@ class JackGraphView(QGraphicsView):
                     current_module_id = None
 
             if not null_sink_modules:
-                print("No virtual sinks to unload")
+                logger.debug("No virtual sinks to unload")
                 return
 
             # Unload each null-sink module
@@ -727,26 +735,112 @@ class JackGraphView(QGraphicsView):
                 try:
                     command = ["pactl", "unload-module", str(module_id)]
                     subprocess.run(command, check=True, capture_output=True, text=True)
-                    print(f"Unloaded virtual sink module {module_id}")
+                    logger.info(f"Unloaded virtual sink module {module_id}")
                     unloaded_count += 1
                 except subprocess.CalledProcessError as e:
-                    print(f"Error unloading module {module_id}: {e}")
+                    logger.error(f"Error unloading module {module_id}: {e}")
 
             # Clear the module IDs from config if any were unloaded (preserves backward compatibility)
             if unloaded_count > 0:
                 try:
-                    from cable_core.config import ConfigManager
-                    config_manager = ConfigManager()
-                    config_manager.set_str_setting('virtual_sink_module_ids', '{}')
+                    _get_cable_core_config().set_str_setting(keys.VIRTUAL_SINK_MODULE_IDS, '{}')
                 except Exception as e:
-                    print(f"Warning: Could not clear config: {e}")
+                    logger.warning(f"Warning: Could not clear config: {e}")
 
-                print(f"Successfully unloaded {unloaded_count} virtual sink(s)")
+                logger.info(f"Successfully unloaded {unloaded_count} virtual sink(s)")
 
         except Exception as e:
-            print(f"Error unloading virtual sinks: {e}")
+            logger.error(f"Error unloading virtual sinks: {e}")
 
-    def _request_save_layout(self):
+    def _remove_all_saved_virtual_sinks(self) -> None:
+        """Clear all virtual sinks stored for recreation at auto-start."""
+        try:
+            # Use the connection_manager's config so node_item reads the same cache
+            scene = self.scene()
+            cm = getattr(scene, 'connection_manager', None) if scene else None
+            config = getattr(cm, 'config_manager', None) if cm else _get_cable_core_config()
+            config.set_str_setting(keys.VIRTUAL_SINKS_RECREATE_AT_AUTOSTART, '{}')
+            logger.info("Removed all saved virtual sinks from autostart config")
+
+            # Repaint virtual sink nodes to remove reddish border
+            scene = self.scene()
+            if scene:
+                from .node_item import NodeItem
+                for item in scene.items():
+                    if isinstance(item, NodeItem) and getattr(item, 'is_virtual_sink', False):
+                        item.update()
+        except Exception as e:
+            logger.error(f"Error removing saved virtual sinks: {e}")
+
+    def _unhide_all_nodes(self) -> None:
+        """Unhide all hidden nodes in the graph."""
+        try:
+            scene = self.scene()
+            if not scene:
+                return
+            
+            # Get the connection_manager from the scene
+            if hasattr(scene, 'connection_manager') and scene.connection_manager:
+                connection_manager = scene.connection_manager
+                
+                # Get the node_visibility_manager
+                if hasattr(connection_manager, 'node_visibility_manager') and connection_manager.node_visibility_manager:
+                    connection_manager.node_visibility_manager.unhide_all_nodes()
+                    logger.info("All nodes have been unhidden")
+                else:
+                    logger.warning("NodeVisibilityManager not available")
+            else:
+                logger.warning("Connection manager not available")
+                
+        except Exception as e:
+            logger.error(f"Error unhiding all nodes: {e}")
+
+    def _unsplit_all_nodes(self) -> None:
+        """Unsplit all split nodes in the graph and reapply active untangle layout."""
+        try:
+            scene = self.scene()
+            if not scene:
+                return
+            
+            # Find all nodes that are split origins
+            from .node_item import NodeItem
+            split_nodes = []
+            for item in scene.items():
+                if isinstance(item, NodeItem) and getattr(item, 'is_split_origin', False):
+                    split_nodes.append(item)
+            
+            if not split_nodes:
+                logger.debug("No split nodes to unsplit")
+                return
+            
+            # Unsplit each node
+            unsplit_count = 0
+            for node in split_nodes:
+                try:
+                    if hasattr(node, 'split_handler') and node.split_handler:
+                        node.split_handler.unsplit_node(save_state=True)
+                        unsplit_count += 1
+                except Exception as e:
+                    logger.error(f"Error unsplitting node {node.client_name}: {e}")
+            
+            logger.info(f"Successfully unsplit {unsplit_count} node(s)")
+            
+            # Reapply currently active untangle layout
+            main_window = self.scene().parent()
+            if main_window and hasattr(main_window, 'current_untangle_setting') and hasattr(main_window, '_apply_untangle_layout'):
+                # If there's an active untangle setting, reapply it
+                if main_window.untangle_button_clicked and main_window.current_untangle_setting != -1:  # -1 is ORIGINAL_LAYOUT
+                    logger.debug(f"Reapplying active untangle layout: {main_window.current_untangle_setting}")
+                    main_window._apply_untangle_layout(main_window.current_untangle_setting)
+                else:
+                    # If no untangle option is active, apply Auto layout
+                    logger.debug("No active untangle layout, applying Auto layout")
+                    main_window._apply_untangle_layout(-2)  # -2 is AUTO_LAYOUT
+                
+        except Exception as e:
+            logger.error(f"Error unsplitting all nodes: {e}")
+
+    def _request_save_layout(self) -> None:
         """Signal to the main window to save the current layout."""
         # We'll emit a signal that can be connected to a method in MainWindow
         # Since we don't have a dedicated signal for this yet, we'll create one
@@ -755,4 +849,4 @@ class JackGraphView(QGraphicsView):
             main_window = self.scene().parent()
             if hasattr(main_window, 'save_current_layout'):
                 main_window.save_current_layout()
-                print("Requested to save current layout")
+                logger.debug("Requested to save current layout")

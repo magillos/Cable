@@ -5,8 +5,12 @@ Enhanced PresetManager - Manages connection presets with layout information
 import os
 import json
 from pathlib import Path
-from PyQt6.QtWidgets import QMessageBox
+from typing import Any, Dict, List, Optional, Tuple
+from PyQt6.QtWidgets import QMessageBox, QWidget
 from .preset_manager import PresetManager
+
+import logging
+logger = logging.getLogger(__name__)
 
 
 class EnhancedPresetManager(PresetManager):
@@ -17,7 +21,7 @@ class EnhancedPresetManager(PresetManager):
     Layout data includes node positions, split/fold states, node visibility settings, and graph zoom level.
     """
     
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize the EnhancedPresetManager."""
         super().__init__()
         self.layout_presets_dir = os.path.join(self.config_dir, 'layout_presets')
@@ -27,9 +31,9 @@ class EnhancedPresetManager(PresetManager):
             try:
                 os.makedirs(self.layout_presets_dir)
             except OSError as e:
-                print(f"Error creating layout presets directory {self.layout_presets_dir}: {e}")
+                logger.error(f"Error creating layout presets directory {self.layout_presets_dir}: {e}")
     
-    def get_preset_names(self):
+    def get_preset_names(self) -> List[str]:
         """
         Get preset names without visual indicators.
         
@@ -47,7 +51,7 @@ class EnhancedPresetManager(PresetManager):
                     
         return sorted(names)
     
-    def _get_clean_preset_name(self, display_name):
+    def _get_clean_preset_name(self, display_name: str) -> str:
         """
         Extract the clean preset name from a display name.
         
@@ -60,7 +64,7 @@ class EnhancedPresetManager(PresetManager):
         # No longer need to handle [+Layout] suffix, but keep method for compatibility
         return display_name
     
-    def save_preset_with_layout(self, name, node_states=None, graph_zoom_level=None, node_visibility_data=None, parent_widget=None, confirm_overwrite=True):
+    def save_preset_with_layout(self, name: str, node_states: Optional[Dict[str, Any]] = None, graph_zoom_level: Optional[float] = None, node_visibility_data: Optional[Dict[str, Any]] = None, parent_widget: Optional[QWidget] = None, confirm_overwrite: bool = True) -> bool:
         """
         Save both connection preset (via aj-snapshot) and layout data.
         
@@ -83,25 +87,28 @@ class EnhancedPresetManager(PresetManager):
         clean_name = self._get_clean_preset_name(name)
         
         # First save the connection preset using the base class
-        print(f"EnhancedPresetManager: About to call base class save_preset for '{clean_name}'")
+        logger.debug(f"EnhancedPresetManager: About to call base class save_preset for '{clean_name}'")
         if not super().save_preset(clean_name, parent_widget, confirm_overwrite):
-            print(f"EnhancedPresetManager: Base class save_preset failed for '{clean_name}'")
+            logger.debug(f"EnhancedPresetManager: Base class save_preset failed for '{clean_name}'")
             return False
-        print(f"EnhancedPresetManager: Base class save_preset succeeded for '{clean_name}'")
+        logger.debug(f"EnhancedPresetManager: Base class save_preset succeeded for '{clean_name}'")
         
         # Then save the layout data if provided
         if node_states is not None or node_visibility_data is not None:
-            print(f"EnhancedPresetManager: Saving layout data for '{clean_name}'")
+            logger.debug(f"EnhancedPresetManager: Saving layout data for '{clean_name}'")
             layout_file = os.path.join(self.layout_presets_dir, f"{clean_name}.json")
             
             try:
                 unified_clients = {}
                 if node_states:
                     for client_name, state in node_states.items():
-                        if state.get('is_unified'):
+                        if state.get('is_input_unified') or state.get('is_output_unified'):
                             unified_clients[client_name] = {
-                                'virtual_sink_name': state.get('unified_virtual_sink_name'),
-                                'channel_map': 'stereo' # Currently hardcoded to stereo
+                                'is_input_unified': state.get('is_input_unified', False),
+                                'is_output_unified': state.get('is_output_unified', False),
+                                'unified_input_sink_name': state.get('unified_input_sink_name'),
+                                'unified_output_sink_name': state.get('unified_output_sink_name'),
+                                'channel_map': 'stereo'
                             }
 
                 layout_data = {
@@ -111,25 +118,25 @@ class EnhancedPresetManager(PresetManager):
                     'unified_clients': unified_clients
                 }
                 
-                print(f"EnhancedPresetManager: Writing JSON to {layout_file}")
+                logger.debug(f"EnhancedPresetManager: Writing JSON to {layout_file}")
                 with open(layout_file, 'w') as f:
                     json.dump(layout_data, f, indent=4, default=self._json_serializer)
                     
-                print(f"Layout data for preset '{clean_name}' saved to {layout_file}")
+                logger.info(f"Layout data for preset '{clean_name}' saved to {layout_file}")
                 
             except Exception as e:
                 error_message = f"Connection preset saved, but error saving layout data for '{clean_name}': {e}"
-                print(error_message)
+                logger.debug(error_message)
                 import traceback
                 traceback.print_exc()
                 QMessageBox.warning(parent_widget, "Layout Save Warning", error_message)
                 # Don't return False here - connection preset was saved successfully
         else:
-            print(f"EnhancedPresetManager: No layout data to save for '{clean_name}'")
+            logger.debug(f"EnhancedPresetManager: No layout data to save for '{clean_name}'")
         
         return True
     
-    def load_and_apply_preset_with_layout(self, name, strict_mode=False, daemon_mode=False, apply_layout=True):
+    def load_and_apply_preset_with_layout(self, name: str, strict_mode: bool = False, daemon_mode: bool = False, apply_layout: bool = True) -> Tuple[bool, Optional[Dict[str, Any]]]:
         """
         Load and apply both connection preset and layout data.
         
@@ -162,17 +169,17 @@ class EnhancedPresetManager(PresetManager):
                     # Convert position data back to QPointF objects
                     layout_data = self._deserialize_layout_data(layout_data)
                     
-                    print(f"Layout data for preset '{clean_name}' loaded from {layout_file}")
+                    logger.info(f"Layout data for preset '{clean_name}' loaded from {layout_file}")
                     
                 except Exception as e:
-                    print(f"Error loading layout data for preset '{clean_name}': {e}")
+                    logger.error(f"Error loading layout data for preset '{clean_name}': {e}")
                     # Don't fail the entire operation if layout loading fails
             else:
-                print(f"No layout data found for preset '{clean_name}'")
+                logger.debug(f"No layout data found for preset '{clean_name}'")
         
         return connection_success, layout_data
     
-    def delete_preset_with_layout(self, name):
+    def delete_preset_with_layout(self, name: str) -> bool:
         """
         Delete both connection preset and layout data.
         
@@ -195,14 +202,14 @@ class EnhancedPresetManager(PresetManager):
         if os.path.exists(layout_file):
             try:
                 os.remove(layout_file)
-                print(f"Layout data for preset '{clean_name}' deleted from {layout_file}")
+                logger.info(f"Layout data for preset '{clean_name}' deleted from {layout_file}")
             except OSError as e:
-                print(f"Error deleting layout file {layout_file}: {e}")
+                logger.error(f"Error deleting layout file {layout_file}: {e}")
                 layout_deleted = False
         
         return connection_deleted and layout_deleted
     
-    def _json_serializer(self, obj):
+    def _json_serializer(self, obj: Any) -> Any:
         """
         Custom JSON serializer for Qt objects.
         
@@ -223,7 +230,7 @@ class EnhancedPresetManager(PresetManager):
         # Fallback for other non-serializable objects
         return str(obj)
     
-    def _deserialize_layout_data(self, layout_data):
+    def _deserialize_layout_data(self, layout_data: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         """
         Convert serialized position data back to QPointF objects.
         

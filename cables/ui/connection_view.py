@@ -6,6 +6,16 @@ from PyQt6.QtWidgets import QGraphicsView
 from PyQt6.QtCore import QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QPainter
 
+import logging
+from typing import TYPE_CHECKING, Optional, Callable, Any
+
+if TYPE_CHECKING:
+    from PyQt6.QtWidgets import QGraphicsScene, QWidget
+    from PyQt6.QtGui import QResizeEvent
+    import jack
+
+logger = logging.getLogger(__name__)
+
 
 class ConnectionView(QGraphicsView):
     """
@@ -18,7 +28,7 @@ class ConnectionView(QGraphicsView):
     # Signal to trigger refresh from any thread safely
     refresh_requested = pyqtSignal()
     
-    def __init__(self, scene, parent=None):
+    def __init__(self, scene: 'QGraphicsScene', parent: Optional['QWidget'] = None) -> None:
         """
         Initialize the ConnectionView.
         
@@ -52,7 +62,7 @@ class ConnectionView(QGraphicsView):
         # Legacy timer for compatibility (will be removed/unused)
         self.refresh_timer = QTimer()
     
-    def set_refresh_callback(self, callback):
+    def set_refresh_callback(self, callback: Callable[[], Any]) -> None:
         """
         Set the callback function for refreshing connections.
         
@@ -64,27 +74,27 @@ class ConnectionView(QGraphicsView):
         try:
             self._refresh_timer.timeout.disconnect()
         except TypeError:
-            pass
+            logger.debug("TypeError suppressed")
         self._refresh_timer.timeout.connect(self._do_refresh)
     
-    def _schedule_refresh(self):
+    def _schedule_refresh(self) -> None:
         """Schedule a debounced refresh - restarts the timer if already running."""
         if not self._refresh_timer.isActive():
             self._refresh_timer.start()
     
-    def _do_refresh(self):
+    def _do_refresh(self) -> None:
         """Execute the refresh callback."""
         if self._refresh_callback:
             self._refresh_callback()
     
-    def request_refresh(self):
+    def request_refresh(self) -> None:
         """
         Request a connection refresh. This is debounced to ~60fps.
         Safe to call from any context.
         """
         self.refresh_requested.emit()
     
-    def start_refresh_timer(self, refresh_callback, interval=1000):
+    def start_refresh_timer(self, refresh_callback: Callable[[], Any], interval: int = 1000) -> None:
         """
         Legacy method - now sets up event-driven refresh instead.
         The interval parameter is ignored; refresh is event-driven with debouncing.
@@ -97,7 +107,7 @@ class ConnectionView(QGraphicsView):
         # Do an initial refresh
         self._schedule_refresh()
     
-    def resizeEvent(self, event):
+    def resizeEvent(self, event: Optional['QResizeEvent']) -> None:
         """
         Handle resize events to maintain the view of the scene.
         
@@ -109,7 +119,7 @@ class ConnectionView(QGraphicsView):
         # Schedule refresh after resize to update connection positions
         self._schedule_refresh()
     
-    def connect_to_jack(self, jack_client):
+    def connect_to_jack(self, jack_client: 'jack.Client') -> None:
         """
         Connect to JACK client and initialize port monitoring.
         
@@ -119,7 +129,7 @@ class ConnectionView(QGraphicsView):
         self.jack_client = jack_client
         self._port_cache = {}
     
-    def connect_to_jack_signals(self, client):
+    def connect_to_jack_signals(self, client: 'jack.Client') -> None:
         """
         Connect JACK client signals to view update handlers.
         
@@ -128,10 +138,10 @@ class ConnectionView(QGraphicsView):
         """
         pass
     
-    def _on_port_registered(self, port):
+    def _on_port_registered(self, port: Any) -> None:
         """Handle port registration events."""
         self.refresh_requested.emit()
     
-    def _on_connection_changed(self, port1, port2, is_connected):
+    def _on_connection_changed(self, port1: Any, port2: Any, is_connected: bool) -> None:
         """Handle connection change events."""
         self.refresh_requested.emit()

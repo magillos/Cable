@@ -1,23 +1,31 @@
+"""
+Mouse and drag interaction handler for the graph scene (port dragging, bulk connections, rubber-band selection).
+"""
+import logging
 import typing
 import traceback
 from PyQt6.QtWidgets import QGraphicsSceneMouseEvent, QGraphicsItem, QGraphicsPathItem, QApplication
 from PyQt6.QtGui import QPen, QPainterPath, QColor
 from PyQt6.QtCore import Qt, QPointF, QTimer # Added QTimer
 
+logger = logging.getLogger(__name__)
+
 # Import constants and other necessary types
 from . import constants
 from .port_item import PortItem
 from .bulk_area_item import BulkAreaItem
 from .node_item import NodeItem
-from . import graph_drag_helpers # Added import for the new helpers
+from . import graph_drag_helpers
+from .graph_drag_helpers import get_ports_in_visual_order
 
 if typing.TYPE_CHECKING:
     from .gui_scene import JackGraphScene
     from .node_item import NodeItem
     from .connection_item import ConnectionItem # Corrected import
     from .jack_handler import JackHandler
-    from .config_utils import ConfigManager
+    from .config_utils import GraphConfigManager
     from cables.jack_connection_handler import JackConnectionHandler # Added for type hint
+from typing import TYPE_CHECKING, List, Optional, Tuple, Any, Dict, Set, Union
 
 
 class GraphInteractionHandler:
@@ -38,7 +46,7 @@ class GraphInteractionHandler:
     _processing_selection: bool = False
     _last_mouse_pos: typing.Optional[QPointF] = None # Needed for release event item check
 
-    def __init__(self, scene: 'JackGraphScene', jack_handler: 'JackHandler', config_manager: 'ConfigManager', jack_connection_handler: 'JackConnectionHandler'):
+    def __init__(self, scene: 'JackGraphScene', jack_handler: 'JackHandler', config_manager: 'GraphConfigManager', jack_connection_handler: 'JackConnectionHandler') -> None:
         self.scene = scene
         self.jack_handler = jack_handler # This is GraphJackHandler, for querying
         self.config_manager = config_manager # Keep if needed for future interaction logic
@@ -61,7 +69,7 @@ class GraphInteractionHandler:
         self._is_in_auto_selection_cascade = False
         self._is_double_click = False
 
-    def clear_all_connection_highlights(self):
+    def clear_all_connection_highlights(self) -> None:
         """Clear connection highlighting from all PortItems and BulkAreaItems in the scene."""
         if not self.scene:
             return
@@ -70,7 +78,7 @@ class GraphInteractionHandler:
             if hasattr(item, 'set_connection_highlighted'):
                 item.set_connection_highlighted(False)
 
-    def _select_items(self, items_to_select: list[QGraphicsItem]):
+    def _select_items(self, items_to_select: List[QGraphicsItem]) -> None:
         """Adds the given items to the scene's current selection."""
         if not items_to_select or not self.scene:
             return
@@ -108,7 +116,7 @@ class GraphInteractionHandler:
             self._processing_selection = False
  
  
-    def _select_remaining_items_deferred(self, items: list[QGraphicsItem]):
+    def _select_remaining_items_deferred(self, items: List[QGraphicsItem]) -> None:
         """Selects items deferred by QTimer.singleShot. Resets _processing_selection flag."""
         try:
             for item_to_select in items:
@@ -121,7 +129,7 @@ class GraphInteractionHandler:
 
     # --- Drag Initiation ---
 
-    def start_connection_drag(self, source_port: 'PortItem', is_disconnect_drag: bool = False):
+    def start_connection_drag(self, source_port: 'PortItem', is_disconnect_drag: bool = False) -> None:
         """Initiate drawing the temporary connection line."""
         if self._drag_connection_line: # Should not happen, but cleanup just in case
             self.scene.removeItem(self._drag_connection_line)
@@ -140,7 +148,7 @@ class GraphInteractionHandler:
         self.update_drag_line(source_port.mapToScene(source_port.boundingRect().center())) # Start line near source port
 
 
-    def start_bulk_connection_drag(self, source_item: 'BulkAreaItem', is_input_area: bool, is_disconnect_drag: bool):
+    def start_bulk_connection_drag(self, source_item: 'BulkAreaItem', is_input_area: bool, is_disconnect_drag: bool) -> None:
         """Initiate drawing the temporary connection line for a bulk drag."""
         # is_input_area is redundant now as source_item.is_input tells us
         if self._drag_connection_line: # Cleanup just in case
@@ -165,7 +173,7 @@ class GraphInteractionHandler:
 
     # --- Drag Update ---
 
-    def update_drag_line(self, cursor_pos: QPointF):
+    def update_drag_line(self, cursor_pos: QPointF) -> None:
         """Update the end point of the temporary drag line (handles both port and bulk drags)."""
         if not self._drag_connection_line:
             return
@@ -198,7 +206,7 @@ class GraphInteractionHandler:
 
     # --- Drag Finalization ---
  
-    def _handle_port_to_port_interaction(self, source_port: 'PortItem', target_port: 'PortItem'):
+    def _handle_port_to_port_interaction(self, source_port: 'PortItem', target_port: 'PortItem') -> None:
         """Handles connection/disconnection logic between two PortItems."""
         source_parent_node = source_port.parent_node
         if source_parent_node == target_port.parent_node and \
@@ -230,32 +238,58 @@ class GraphInteractionHandler:
                     self.jack_connection_handler.make_connection(out_p_item.port_name, in_p_item.port_name)
                 self._select_items([source_port, target_port])
         except Exception as e:
-            print(f"Error in _handle_port_to_port_interaction: {e}")
+            logger.error(f"Error in _handle_port_to_port_interaction: {e}")
 
-    def _handle_port_to_bulk_interaction(self, source_port: 'PortItem', target_bulk_area: 'BulkAreaItem'):
-        """Handles connection/disconnection logic between a PortItem and a BulkAreaItem."""
+    def _handle_port_to_bulk_interaction(self, source_port: 'PortItem', target_bulk_area: 'BulkAreaItem') -> None:
+        """Handles connection/disconnection logic between a PortItem and a BulkAreaItem.
+        
+        Sequential mapping: finds the source port's index among its siblings and pairs
+        source_siblings[source_idx + i] → target_ports[i] for each target port.
+        """
         source_parent_node = source_port.parent_node
         if source_parent_node == target_bulk_area.parent_node and \
            (source_parent_node.is_split_origin or source_parent_node.is_split_part):
             return # Silently disallow self-connection to bulk on split nodes
         
-        compatible_target_ports: list[PortItem] = []
+        # Get target ports from the bulk area (in visual order)
         if not source_port.is_input and target_bulk_area.is_input: # Source OUT, Target Bulk IN
-            compatible_target_ports.extend(target_bulk_area.parent_node.input_ports.values())
+            target_ports = get_ports_in_visual_order(target_bulk_area.parent_node.input_ports)
         elif source_port.is_input and not target_bulk_area.is_input: # Source IN, Target Bulk OUT
-            compatible_target_ports.extend(target_bulk_area.parent_node.output_ports.values())
+            target_ports = get_ports_in_visual_order(target_bulk_area.parent_node.output_ports)
         else:
             return # Invalid port-to-bulk type combination
 
-        if not compatible_target_ports:
+        if not target_ports:
+            return
+
+        # Get source port's siblings in visual order and find its index
+        if not source_port.is_input:
+            source_siblings = get_ports_in_visual_order(source_parent_node.output_ports)
+        else:
+            source_siblings = get_ports_in_visual_order(source_parent_node.input_ports)
+
+        try:
+            source_idx = source_siblings.index(source_port)
+        except ValueError:
+            return
+
+        # Build sequential pairs: source_siblings[source_idx + i] → target_ports[i]
+        pairs: list[tuple[PortItem, PortItem]] = []
+        for i, t_port in enumerate(target_ports):
+            s_idx = source_idx + i
+            if s_idx >= len(source_siblings):
+                break
+            pairs.append((source_siblings[s_idx], t_port))
+
+        if not pairs:
             return
 
         num_already_connected = 0
         connections_to_make: list[tuple[PortItem, PortItem]] = []
         connections_to_break: list[tuple[PortItem, PortItem]] = []
 
-        for port_in_bulk in compatible_target_ports:
-            out_p, in_p = (source_port, port_in_bulk) if not source_port.is_input else (port_in_bulk, source_port)
+        for s_port, t_port in pairs:
+            out_p, in_p = (s_port, t_port) if not s_port.is_input else (t_port, s_port)
             if any(conn.source_port == out_p and conn.dest_port == in_p for conn in out_p.connections):
                 num_already_connected += 1
                 connections_to_break.append((out_p, in_p))
@@ -263,25 +297,25 @@ class GraphInteractionHandler:
                 connections_to_make.append((out_p, in_p))
         
         action_performed = False
-        if num_already_connected == len(compatible_target_ports) and connections_to_break: # All compatible are connected
+        if num_already_connected == len(pairs) and connections_to_break: # All pairs are connected
             for out_p, in_p in connections_to_break:
                 try:
                     if out_p.is_midi: self.jack_connection_handler.break_midi_connection(out_p.port_name, in_p.port_name)
                     else: self.jack_connection_handler.break_connection(out_p.port_name, in_p.port_name)
                     action_performed = True
-                except Exception as e: print(f"Error breaking port-to-bulk connection: {e}")
+                except Exception as e: logger.error(f"Error breaking port-to-bulk connection: {e}")
         elif connections_to_make: # Connect missing ones
             for out_p, in_p in connections_to_make:
                 try:
                     if out_p.is_midi: self.jack_connection_handler.make_midi_connection(out_p.port_name, in_p.port_name)
                     else: self.jack_connection_handler.make_connection(out_p.port_name, in_p.port_name)
                     action_performed = True
-                except Exception as e: print(f"Error making port-to-bulk connection: {e}")
+                except Exception as e: logger.error(f"Error making port-to-bulk connection: {e}")
         
         if action_performed:
              self._select_items([source_port, target_bulk_area])
 
-    def end_connection_drag(self, source_port: 'PortItem', target_item: QGraphicsItem | None, _is_disconnect_drag_hint: bool):
+    def end_connection_drag(self, source_port: 'PortItem', target_item: Optional[QGraphicsItem], _is_disconnect_drag_hint: bool) -> None:
         """Finalize drag from a PortItem: connect or disconnect based on existing connections."""
         if not source_port:
             return
@@ -307,8 +341,12 @@ class GraphInteractionHandler:
                         return True
         return False
 
-    def _handle_bulk_to_port_interaction(self, source_bulk_area: 'BulkAreaItem', target_port: 'PortItem'):
-        """Handles connection/disconnection logic between a BulkAreaItem and a PortItem."""
+    def _handle_bulk_to_port_interaction(self, source_bulk_area: 'BulkAreaItem', target_port: 'PortItem') -> None:
+        """Handles connection/disconnection logic between a BulkAreaItem and a PortItem.
+        
+        Sequential mapping: finds the target port's index among its siblings and pairs
+        source_ports[i] → target_siblings[target_idx + i] for each source port.
+        """
         source_node = source_bulk_area.parent_node
         if not source_node: return
 
@@ -317,17 +355,43 @@ class GraphInteractionHandler:
            (source_node.is_split_origin or source_node.is_split_part):
             return
 
-        source_ports_to_consider = source_node.input_ports.values() if source_bulk_area.is_input else source_node.output_ports.values()
-        compatible_source_ports = [sp for sp in source_ports_to_consider if sp.is_input != target_port.is_input]
+        # Get source ports in visual order
+        if source_bulk_area.is_input:
+            source_ports = get_ports_in_visual_order(source_node.input_ports)
+        else:
+            source_ports = get_ports_in_visual_order(source_node.output_ports)
+        source_ports = [sp for sp in source_ports if sp.is_input != target_port.is_input]
 
-        if not compatible_source_ports: return
+        if not source_ports: return
+
+        # Get target port's siblings in visual order and find its index
+        target_node = target_port.parent_node
+        if target_port.is_input:
+            target_siblings = get_ports_in_visual_order(target_node.input_ports)
+        else:
+            target_siblings = get_ports_in_visual_order(target_node.output_ports)
+
+        try:
+            target_idx = target_siblings.index(target_port)
+        except ValueError:
+            return
+
+        # Build sequential pairs: source_ports[i] → target_siblings[target_idx + i]
+        pairs: list[tuple[PortItem, PortItem]] = []
+        for i, s_port in enumerate(source_ports):
+            t_idx = target_idx + i
+            if t_idx >= len(target_siblings):
+                break
+            pairs.append((s_port, target_siblings[t_idx]))
+
+        if not pairs: return
 
         num_already_connected = 0
         connections_to_make: list[tuple[PortItem, PortItem]] = []
         connections_to_break: list[tuple[PortItem, PortItem]] = []
 
-        for s_port in compatible_source_ports:
-            out_p, in_p = (s_port, target_port) if not s_port.is_input else (target_port, s_port)
+        for s_port, t_port in pairs:
+            out_p, in_p = (s_port, t_port) if not s_port.is_input else (t_port, s_port)
             if any(conn.source_port == out_p and conn.dest_port == in_p for conn in out_p.connections):
                 num_already_connected += 1
                 connections_to_break.append((out_p, in_p))
@@ -335,25 +399,25 @@ class GraphInteractionHandler:
                 connections_to_make.append((out_p, in_p))
         
         action_performed = False
-        if num_already_connected == len(compatible_source_ports) and connections_to_break: # All compatible are connected
+        if num_already_connected == len(pairs) and connections_to_break: # All pairs are connected
             for out_p, in_p in connections_to_break:
                 try:
                     if out_p.is_midi: self.jack_connection_handler.break_midi_connection(out_p.port_name, in_p.port_name)
                     else: self.jack_connection_handler.break_connection(out_p.port_name, in_p.port_name)
                     action_performed = True
-                except Exception as e: print(f"Error breaking bulk-to-port connection: {e}")
+                except Exception as e: logger.error(f"Error breaking bulk-to-port connection: {e}")
         elif connections_to_make: # Connect missing ones
             for out_p, in_p in connections_to_make:
                 try:
                     if out_p.is_midi: self.jack_connection_handler.make_midi_connection(out_p.port_name, in_p.port_name)
                     else: self.jack_connection_handler.make_connection(out_p.port_name, in_p.port_name)
                     action_performed = True
-                except Exception as e: print(f"Error making bulk-to-port connection: {e}")
+                except Exception as e: logger.error(f"Error making bulk-to-port connection: {e}")
         
         if action_performed:
              self._select_items([source_bulk_area, target_port])
 
-    def _handle_bulk_to_bulk_interaction(self, source_bulk_area: 'BulkAreaItem', target_bulk_area: 'BulkAreaItem'):
+    def _handle_bulk_to_bulk_interaction(self, source_bulk_area: 'BulkAreaItem', target_bulk_area: 'BulkAreaItem') -> None:
         """Handles connection/disconnection logic between two BulkAreaItems."""
         source_node = source_bulk_area.parent_node
         target_node = target_bulk_area.parent_node
@@ -390,7 +454,7 @@ class GraphInteractionHandler:
                             if conn_item.source_port.is_midi: self.jack_connection_handler.break_midi_connection(conn_item.source_port.port_name, conn_item.dest_port.port_name)
                             else: self.jack_connection_handler.break_connection(conn_item.source_port.port_name, conn_item.dest_port.port_name)
                             action_performed = True
-                        except Exception as e: print(f"Error breaking bulk-to-bulk pair: {e}")
+                        except Exception as e: logger.error(f"Error breaking bulk-to-bulk pair: {e}")
         else: # Make connections
             try:
                 output_port_names = [p.port_name for p in out_ports_list]
@@ -398,12 +462,12 @@ class GraphInteractionHandler:
                 self.jack_connection_handler.make_multiple_connections(output_port_names, input_port_names)
                 action_performed = True
             except Exception as e:
-                print(f"Error in bulk make_multiple_connections: {e}")
+                logger.error(f"Error in bulk make_multiple_connections: {e}")
         
         if action_performed:
             self._select_items([source_bulk_area, target_bulk_area])
 
-    def end_bulk_connection_drag(self, source_bulk_item: 'BulkAreaItem', target_item_at_release: QGraphicsItem | None, _is_source_input_area: bool, _is_disconnect_drag_hint: bool):
+    def end_bulk_connection_drag(self, source_bulk_item: 'BulkAreaItem', target_item_at_release: Optional[QGraphicsItem], _is_source_input_area: bool, _is_disconnect_drag_hint: bool) -> None:
         """Finalize bulk drag: connect or disconnect based on existing connections."""
         source_node = source_bulk_item.parent_node
         if not source_node: return
@@ -435,12 +499,12 @@ class GraphInteractionHandler:
         # else: Target is not a resolvable Port or BulkArea.
 
     # --- Stereo Node Drop Logic ---
-    def handle_node_drop_connection(self, source_node: 'NodeItem', target_node: 'NodeItem'):
+    def handle_node_drop_connection(self, source_node: 'NodeItem', target_node: 'NodeItem') -> None:
         """Attempts to create a stereo connection when a node is dropped onto another."""
         if not source_node.output_ports or not target_node.input_ports:
             return
 
-        def find_port_with_suffix(port_dict, suffix_list):
+        def find_port_with_suffix(port_dict: Dict[str, 'PortItem'], suffix_list: List[str]) -> Optional['PortItem']:
             for port_item in port_dict.values():
                 for suffix in suffix_list:
                     if port_item.short_name.endswith(suffix): return port_item
@@ -462,7 +526,7 @@ class GraphInteractionHandler:
                 else: self.jack_connection_handler.make_connection(right_out.port_name, right_in.port_name)
                 connection_made_this_drop = True
         except Exception as e:
-            print(f"Error during node drop stereo connection: {e}")
+            logger.error(f"Error during node drop stereo connection: {e}")
 
         if connection_made_this_drop:
             self._select_items([source_node, target_node])
@@ -470,7 +534,7 @@ class GraphInteractionHandler:
 
     # --- Mouse Events ---
 
-    def mousePressEvent(self, event: QGraphicsSceneMouseEvent):
+    def mousePressEvent(self, event: QGraphicsSceneMouseEvent) -> None:
         """Handle press events: store potential drag item."""
         # Need PortItem, BulkAreaItem, NodeItem for type checks
 
@@ -529,7 +593,7 @@ class GraphInteractionHandler:
         
         return False # Should not be reached if item_to_drag was valid PortItem or BulkAreaItem
 
-    def _update_active_drag_visuals(self, event: QGraphicsSceneMouseEvent):
+    def _update_active_drag_visuals(self, event: QGraphicsSceneMouseEvent) -> None:
         """Updates drag line, highlights, and line color during an active custom drag."""
         if not self._drag_connection_line: return
 
@@ -617,7 +681,7 @@ class GraphInteractionHandler:
         return False # Event not consumed (e.g. standard move or rubber band selection)
 
 
-    def _clear_drag_highlights(self):
+    def _clear_drag_highlights(self) -> None:
         """Clears any active drag highlights on ports or bulk areas."""
         if self._drag_hovered_port:
             self._drag_hovered_port.set_drag_highlight(False)
@@ -670,7 +734,7 @@ class GraphInteractionHandler:
         self.end_bulk_connection_drag(source_bulk_item, target_item_at_release, is_source_input, is_disconnect_hint)
         return True
 
-    def _finalize_node_drop_if_applicable(self, event: QGraphicsSceneMouseEvent, moved_node: typing.Optional['NodeItem']):
+    def _finalize_node_drop_if_applicable(self, event: QGraphicsSceneMouseEvent, moved_node: Optional['NodeItem']) -> None:
         """Handles node-on-node drop if applicable."""
         if not moved_node: # No node was being tracked for a move/drop
             return
@@ -683,7 +747,7 @@ class GraphInteractionHandler:
             self.handle_node_drop_connection(moved_node, target_item_at_drop)
             # The scene's superclass method will handle the item's final position update.
 
-    def mouseReleaseEvent(self, event: QGraphicsSceneMouseEvent) -> tuple[typing.Optional['NodeItem'], bool]:
+    def mouseReleaseEvent(self, event: QGraphicsSceneMouseEvent) -> Tuple[Optional['NodeItem'], bool]:
         """Handle end of drag or node drop. Returns (moved_node, consumed_by_custom_drag_end)."""
         moved_node_before_reset = self._moved_node # Store before any state is reset by finalize helpers
         consumed_by_custom_drag_end = False

@@ -6,15 +6,19 @@ import os
 import subprocess
 import signal
 import sys
+import logging
+from typing import Any, Dict, List, Optional
 from subprocess import DEVNULL
-from PyQt6.QtWidgets import QMessageBox
+from PyQt6.QtWidgets import QMessageBox, QWidget
+
+logger = logging.getLogger(__name__)
 
 class PresetManager:
     """
     Manages connection presets for the Cables application.
     """
     
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize the PresetManager."""
         self.config_dir = os.path.expanduser('~/.config/cable')
         self.presets_dir = os.path.join(self.config_dir, 'presets')
@@ -26,9 +30,9 @@ class PresetManager:
                     os.makedirs(self.config_dir)
                 os.makedirs(self.presets_dir)
             except OSError as e:
-                print(f"Error creating presets directory {self.presets_dir}: {e}")
+                logger.error(f"Error creating presets directory {self.presets_dir}: {e}")
     
-    def load_presets(self):
+    def load_presets(self) -> Dict[str, Dict[str, Any]]:
         presets = {}
         if not os.path.exists(self.presets_dir):
             return presets
@@ -39,7 +43,7 @@ class PresetManager:
                 presets[preset_name] = {}
         return presets
     
-    def get_preset_names(self):
+    def get_preset_names(self) -> List[str]:
         names = []
         if not os.path.exists(self.presets_dir):
             return names
@@ -48,10 +52,10 @@ class PresetManager:
                 names.append(filename[:-5])
         return sorted(names)
     
-    def load_and_apply_preset(self, name, strict_mode=False, daemon_mode=False):
+    def load_and_apply_preset(self, name: str, strict_mode: bool = False, daemon_mode: bool = False) -> bool:
         preset_file = os.path.join(self.presets_dir, f"{name}.snap")
         if not os.path.exists(preset_file):
-            print(f"Preset file not found: {preset_file}")
+            logger.warning(f"Preset file not found: {preset_file}")
             return False
         
         if daemon_mode:
@@ -63,33 +67,33 @@ class PresetManager:
                 command.append("-x")
             command.append(preset_file)
             
-            print(f"Executing: {' '.join(command)}")
+            logger.info(f"Executing: {' '.join(command)}")
             result = subprocess.run(command, capture_output=True, text=True, check=True)
-            print(f"aj-snapshot stdout:\n{result.stdout}")
+            logger.debug(f"aj-snapshot stdout:\n{result.stdout}")
             if result.stderr:
-                print(f"aj-snapshot stderr:\n{result.stderr}")
+                logger.debug(f"aj-snapshot stderr:\n{result.stderr}")
             return True
         except subprocess.CalledProcessError as e:
-            print(f"Error applying preset '{name}' with aj-snapshot: {e}")
-            print(f"aj-snapshot stdout:\n{e.stdout}")
-            print(f"aj-snapshot stderr:\n{e.stderr}")
+            logger.error(f"Error applying preset '{name}' with aj-snapshot: {e}")
+            logger.debug(f"aj-snapshot stdout:\n{e.stdout}")
+            logger.debug(f"aj-snapshot stderr:\n{e.stderr}")
             return False
         except Exception as e:
-            print(f"Unexpected error applying preset '{name}': {e}")
+            logger.error(f"Unexpected error applying preset '{name}': {e}")
             return False
     
-    def save_preset(self, name, parent_widget=None, confirm_overwrite=True):
-        print(f"PresetManager.save_preset called with name='{name}', confirm_overwrite={confirm_overwrite}")
+    def save_preset(self, name: str, parent_widget: Optional[QWidget] = None, confirm_overwrite: bool = True) -> bool:
+        logger.debug(f"PresetManager.save_preset called with name='{name}', confirm_overwrite={confirm_overwrite}")
         
         if not name:
             QMessageBox.warning(parent_widget, "Save Error", "Preset name cannot be empty.")
             return False
         
         preset_file = os.path.join(self.presets_dir, f"{name}.snap")
-        print(f"Preset file path: {preset_file}")
+        logger.debug(f"Preset file path: {preset_file}")
         
         if confirm_overwrite and os.path.exists(preset_file):
-            print(f"Preset file exists, showing overwrite confirmation dialog")
+            logger.debug(f"Preset file exists, showing overwrite confirmation dialog")
             try:
                 # Create the message box explicitly to have more control
                 msgBox = QMessageBox(parent_widget)
@@ -101,15 +105,15 @@ class PresetManager:
                 
                 # Ensure the dialog is modal and properly handled
                 msgBox.setModal(True)
-                print("About to show overwrite confirmation dialog")
+                logger.debug("About to show overwrite confirmation dialog")
                 reply = msgBox.exec()
-                print(f"Dialog reply: {reply}")
+                logger.debug(f"Dialog reply: {reply}")
                 
                 if reply == QMessageBox.StandardButton.No:
-                    print(f"Overwrite cancelled for preset '{name}'.")
+                    logger.info(f"Overwrite cancelled for preset '{name}'.")
                     return False
             except Exception as e:
-                print(f"Error showing overwrite confirmation dialog: {e}")
+                logger.error(f"Error showing overwrite confirmation dialog: {e}")
                 import traceback
                 traceback.print_exc()
                 # If dialog fails, assume user wants to cancel
@@ -121,51 +125,51 @@ class PresetManager:
                 command.append("-f")
             command.append(preset_file)
             
-            print(f"Executing: {' '.join(command)}")
+            logger.info(f"Executing: {' '.join(command)}")
             # Add timeout to prevent hanging
             result = subprocess.run(command, capture_output=True, text=True, check=True, timeout=30)
-            print(f"aj-snapshot stdout:\n{result.stdout}")
+            logger.debug(f"aj-snapshot stdout:\n{result.stdout}")
             if result.stderr:
-                print(f"aj-snapshot stderr:\n{result.stderr}")
-            print(f"Preset '{name}' saved to {preset_file}")
+                logger.debug(f"aj-snapshot stderr:\n{result.stderr}")
+            logger.info(f"Preset '{name}' saved to {preset_file}")
             return True
         except subprocess.TimeoutExpired as e:
             error_message = f"Timeout saving preset '{name}' with aj-snapshot (30s limit exceeded)"
-            print(error_message)
+            logger.error(error_message)
             QMessageBox.critical(parent_widget, "Save Error", error_message)
             return False
         except subprocess.CalledProcessError as e:
             error_message = f"Error saving preset '{name}' with aj-snapshot: {e}\n" \
                             f"Stdout: {e.stdout}\nStderr: {e.stderr}"
-            print(error_message)
+            logger.error(error_message)
             QMessageBox.critical(parent_widget, "Save Error", error_message)
             return False
         except Exception as e:
             error_message = f"Unexpected error saving preset '{name}': {e}"
-            print(error_message)
+            logger.error(error_message)
             QMessageBox.critical(parent_widget, "Save Error", error_message)
             return False
     
-    def delete_preset(self, name):
+    def delete_preset(self, name: str) -> bool:
         preset_file = os.path.join(self.presets_dir, f"{name}.snap")
         if os.path.exists(preset_file):
             try:
                 os.remove(preset_file)
-                print(f"Preset '{name}' deleted from {preset_file}")
+                logger.info(f"Preset '{name}' deleted from {preset_file}")
                 return True
             except OSError as e:
-                print(f"Error deleting preset file {preset_file}: {e}")
+                logger.error(f"Error deleting preset file {preset_file}: {e}")
                 return False
         else:
-            print(f"Preset file not found for deletion: {preset_file}")
+            logger.warning(f"Preset file not found for deletion: {preset_file}")
             return False
 
-    def start_daemon_mode(self, preset_name, strict_mode=False):
+    def start_daemon_mode(self, preset_name: str, strict_mode: bool = False) -> bool:
         self.stop_daemon_mode()
 
         preset_file = os.path.join(self.presets_dir, f"{preset_name}.snap")
         if not os.path.exists(preset_file):
-            print(f"Cannot start daemon: Preset file not found: {preset_file}")
+            logger.warning(f"Cannot start daemon: Preset file not found: {preset_file}")
             return False
 
         command = ["aj-snapshot", "-d"]
@@ -177,43 +181,43 @@ class PresetManager:
             process = subprocess.Popen(command, preexec_fn=os.setsid, stdout=DEVNULL, stderr=DEVNULL)
             with open(self.pid_file, 'w') as f:
                 f.write(str(process.pid))
-            print(f"aj-snapshot daemon started for '{preset_name}' with PID: {process.pid}")
+            logger.info(f"aj-snapshot daemon started for '{preset_name}' with PID: {process.pid}")
             return True
         except Exception as e:
-            print(f"Error starting aj-snapshot daemon: {e}")
+            logger.error(f"Error starting aj-snapshot daemon: {e}")
             return False
 
-    def stop_daemon_mode(self):
+    def stop_daemon_mode(self) -> bool:
         stopped = False
         
         if os.path.exists(self.pid_file):
             try:
                 with open(self.pid_file, 'r') as f:
                     pid = int(f.read().strip())
-                print(f"Attempting to stop aj-snapshot daemon with PID: {pid}")
+                logger.info(f"Attempting to stop aj-snapshot daemon with PID: {pid}")
                 try:
                     os.killpg(os.getpgid(pid), signal.SIGTERM)
-                    print(f"Sent SIGTERM to process group of PID {pid}.")
+                    logger.info(f"Sent SIGTERM to process group of PID {pid}.")
                     stopped = True
                 except ProcessLookupError:
-                    print(f"Process with PID {pid} not found. It may have already been terminated.")
+                    logger.info(f"Process with PID {pid} not found. It may have already been terminated.")
                 except Exception as e:
-                    print(f"Error sending SIGTERM to process group {pid}: {e}")
+                    logger.warning(f"Error sending SIGTERM to process group {pid}: {e}")
                     try:
                         os.kill(pid, signal.SIGTERM)
-                        print(f"Sent SIGTERM to PID {pid} directly.")
+                        logger.info(f"Sent SIGTERM to PID {pid} directly.")
                         stopped = True
                     except ProcessLookupError:
-                        print(f"Process {pid} not found.")
+                        logger.info(f"Process {pid} not found.")
                     except Exception as e2:
-                        print(f"Failed to kill process with PID {pid}: {e2}")
+                        logger.error(f"Failed to kill process with PID {pid}: {e2}")
             except (IOError, ValueError) as e:
-                print(f"Error reading PID file: {e}")
+                logger.error(f"Error reading PID file: {e}")
             finally:
                 if os.path.exists(self.pid_file):
                     os.remove(self.pid_file)
         else:
-            print("No aj-snapshot daemon PID file found.")
+            logger.info("No aj-snapshot daemon PID file found.")
         
         # Fallback: kill any remaining aj-snapshot daemon processes
         try:
@@ -222,9 +226,9 @@ class PresetManager:
                 capture_output=True, text=True
             )
             if result.returncode == 0:
-                print("Killed remaining aj-snapshot daemon processes via pkill.")
+                logger.info("Killed remaining aj-snapshot daemon processes via pkill.")
                 stopped = True
         except Exception as e:
-            print(f"pkill fallback failed: {e}")
+            logger.warning(f"pkill fallback failed: {e}")
         
         return stopped or True

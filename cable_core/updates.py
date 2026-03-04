@@ -65,6 +65,8 @@ class UpdateManager:
                 logger.info("Newer version found!")
                 self.update_available = True
                 self.latest_version = latest_version
+                if manual_check:
+                    show_timed_messagebox(self.app, QMessageBox.Icon.Information, "Update Check", f"Update available: v{latest_version}", duration=1000)
             else:
                 logger.info("Application is up to date.")
                 self.update_available = False

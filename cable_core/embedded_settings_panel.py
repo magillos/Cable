@@ -136,6 +136,7 @@ class EmbeddedSettingsPanel(QWidget):
         """Load all settings from config."""
         self.tray_checkbox.blockSignals(True)
         self.tray_checkbox.setChecked(self.app.tray_enabled)
+        self.tray_checkbox.setEnabled(not self.app.autostart_enabled)
         self.tray_checkbox.blockSignals(False)
         
         self.autostart_checkbox.blockSignals(True)

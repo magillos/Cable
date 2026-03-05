@@ -499,6 +499,23 @@ class JackGraphScene(QGraphicsScene):
         if node:
             logger.debug(f"Removing node: {client_name}")
 
+            # Preserve unified state in node_configs so it is restored
+            # when the client reappears (e.g. audio stream restarts).
+            if node.is_input_unified or node.is_output_unified:
+                config = self.node_configs.get(client_name, {})
+                if node.is_input_unified:
+                    config['is_input_unified'] = True
+                    config['unified_input_sink_name'] = node.unified_input_sink_name
+                if node.is_output_unified:
+                    config['is_output_unified'] = True
+                    config['unified_output_sink_name'] = node.unified_output_sink_name
+                # Save current position so the node reappears in the same spot
+                pos = node.scenePos()
+                if pos and (pos.x() != 0 or pos.y() != 0):
+                    config['pos'] = pos
+                self.node_configs[client_name] = config
+                logger.debug(f"Preserved unified state in node_configs for {client_name}")
+
             if unload_unified_sinks:
                 if hasattr(node, 'is_input_unified') and node.is_input_unified:
                     logger.debug(f"Unloading input unified sink for node {client_name} before removal")

@@ -99,12 +99,43 @@ def _channel_order_index(name: str) -> int:
     return _CHANNEL_ORDER.get(suffix, 1000)
 
 
+def _port_type_prefix_key(name: str) -> List[Union[int, str]]:
+    """
+    Extract a sort key for the port type prefix (part before the channel suffix).
+    
+    This ensures ports with different type prefixes (e.g. capture_FL vs monitor_FL)
+    are grouped by type first, then sorted by channel within each type.
+    
+    For 'capture_FL' returns the natural sort key of 'capture'.
+    For 'input_FL-448' returns the natural sort key of 'input'.
+    For names without a recognized channel suffix, returns an empty key.
+    """
+    _KNOWN_CHANNELS = {
+        'FL', 'FR', 'FC', 'LFE', 'SL', 'SR', 'RL', 'RR',
+        'L', 'R', 'C', 'LEFT', 'RIGHT', 'CENTER', 'MONO', 'SUB', 'BL', 'BR',
+    }
+    upper = name.upper()
+    if '_' not in upper:
+        return ['']
+    # Strip any dash-numeric suffix first (e.g. "input_FL-448" → "input_FL")
+    base = re.sub(r'-\d+.*$', '', upper)
+    if '_' not in base:
+        return ['']
+    prefix, suffix = base.rsplit('_', 1)
+    if suffix in _KNOWN_CHANNELS:
+        return [tryint(p) for p in re.split(r'(\d+)', prefix.lower())]
+    return ['']
+
+
 def natural_sort_key_for_port_item(port_item: object) -> Tuple[List[int], ...]:
     """
     Wrapper for natural_sort_key that works with PortItem objects.
     Uses channel-map-aware ordering so surround ports appear in the
     conventional audio channel order (FL, FR, FC, LFE, RL, RR, SL, SR)
     rather than alphabetically.
+    
+    Ports are grouped by type prefix first (e.g. capture before monitor),
+    then sorted by channel within each group.
     
     Args:
         port_item: A PortItem object with a short_name attribute.
@@ -115,9 +146,9 @@ def natural_sort_key_for_port_item(port_item: object) -> Tuple[List[int], ...]:
     name = port_item.short_name
     base_key = natural_sort_key(name)
     channel_idx = _channel_order_index(name)
-    # Prepend channel index so known channels sort by map order,
-    # while the rest fall through to natural sort.
-    return ([base_key[0][0]], [channel_idx], base_key[1], base_key[2])
+    prefix_key = _port_type_prefix_key(name)
+    # Group by type prefix first, then by channel map order within each group.
+    return ([base_key[0][0]], prefix_key, [channel_idx], base_key[1], base_key[2])
 
 
 def simple_natural_sort_key(text: str) -> List[Union[int, str]]:
@@ -182,13 +213,14 @@ def natural_sort_key_for_full_port_name(port_name: str) -> Tuple[List[Union[int,
     base_name_key = [tryint(part) for part in re.split(r'(\d+)', base_name.lower())]
     channel_idx = _channel_order_index(port_part)
     
+    prefix_key = _port_type_prefix_key(port_part)
+    
     # For the desired sorting behavior:
-    # 1. First show all base ports (no suffix) sorted by channel map order
-    # 2. Then show suffixed ports, grouped by suffix value, sorted by channel map order within each group
+    # 1. Group by port type prefix (e.g. capture before monitor)
+    # 2. First show all base ports (no suffix) sorted by channel map order
+    # 3. Then show suffixed ports, grouped by suffix value, sorted by channel map order within each group
     if suffix:
         suffix_key = [tryint(part) for part in re.split(r'(\d+)', suffix.lower())]
-        # For suffixed ports: sort by (client, suffix, channel_order, base_name)
-        return (client_key, [1], suffix_key, [channel_idx], base_name_key)
+        return (client_key, prefix_key, [1], suffix_key, [channel_idx], base_name_key)
     else:
-        # For base ports: sort by (client, channel_order, base_name)
-        return (client_key, [0], [channel_idx], base_name_key, [])
+        return (client_key, prefix_key, [0], [channel_idx], base_name_key, [])

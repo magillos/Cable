@@ -44,6 +44,8 @@ class JackGraphView(QGraphicsView):
         # self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag) # Enable panning with mouse drag
         self._is_panning = False
         self._last_pan_pos = None
+        self._rubber_band_used = False
+        self.rubberBandChanged.connect(self._on_rubber_band_changed)
 
         # Wallpaper reload throttling
         self._last_scene_size = None
@@ -146,6 +148,11 @@ class JackGraphView(QGraphicsView):
         # Update scrollbars after zoom, as visible area might change relative to scene content
         self._update_scrollbar_visibility()
 
+    def _on_rubber_band_changed(self, rubberBandRect, fromScenePoint, toScenePoint) -> None:
+        """Track whether a rubber band drag actually occurred."""
+        if not rubberBandRect.isNull():
+            self._rubber_band_used = True
+
     def mousePressEvent(self, event: QMouseEvent) -> None:
         """Override mouse press to set closed hand cursor during drag or initiate panning."""
         if event.button() == Qt.MouseButton.MiddleButton or \
@@ -188,7 +195,16 @@ class JackGraphView(QGraphicsView):
             # Original logic for ScrollHandDrag if it was set some other way
             if self.dragMode() == QGraphicsView.DragMode.ScrollHandDrag and event.button() == Qt.MouseButton.LeftButton:
                 self.viewport().setCursor(Qt.CursorShape.ArrowCursor) # Explicitly set back to Arrow
-        
+
+            # After rubber band drag, deselect ports and bulk areas so
+            # only nodes remain selected.  Regular clicks are unaffected.
+            if self._rubber_band_used and event.button() == Qt.MouseButton.LeftButton:
+                self._rubber_band_used = False
+                from .node_item import NodeItem
+                for item in self.scene().selectedItems():
+                    if not isinstance(item, NodeItem):
+                        item.setSelected(False)
+
         # Update scrollbars after mouse release (e.g., after dragging an item or panning)
         self._update_scrollbar_visibility()
 

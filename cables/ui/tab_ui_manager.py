@@ -169,10 +169,10 @@ class TabUIManager:
         splitter.addWidget(middle_widget)
         splitter.addWidget(input_widget)
         
-        # Set minimum widths
-        output_widget.setMinimumWidth(150)
-        input_widget.setMinimumWidth(150)
-        middle_widget.setMinimumWidth(50)
+        # Set minimum widths (kept small to allow window resizing on small screens)
+        output_widget.setMinimumWidth(50)
+        input_widget.setMinimumWidth(50)
+        middle_widget.setMinimumWidth(20)
         
         # Load saved splitter sizes or use defaults
         connection_view_initial_width = manager.config_manager.get_int_setting(

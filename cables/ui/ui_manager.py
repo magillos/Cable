@@ -164,6 +164,7 @@ class UIManager:
 
     def _setup_ui(self) -> None:
         """Set up the main UI layout and widgets."""
+        self.main_window.setMinimumSize(400, 300)
         main_widget = QWidget()
         self.main_window.setCentralWidget(main_widget)
         main_layout = QVBoxLayout(main_widget)

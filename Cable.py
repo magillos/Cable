@@ -302,19 +302,34 @@ class PipeWireSettingsApp(QWidget):
             
             main_layout.addWidget(self.embedded_splitter)
         else:
-            # Original vertical layout for standalone mode
-            main_layout.addWidget(quantum_group)
-            main_layout.addWidget(sample_rate_group)
-            main_layout.addWidget(profile_group)
-            main_layout.addWidget(latency_group)
-            main_layout.addWidget(restart_group)
+            # Original vertical layout for standalone mode — wrapped in scroll area
+            # so the window can shrink below the natural content size.
+            scroll_content = QWidget()
+            scroll_layout = QVBoxLayout(scroll_content)
+            scroll_layout.setContentsMargins(0, 0, 0, 0)
+            scroll_layout.setSpacing(10)
+            scroll_layout.addWidget(quantum_group)
+            scroll_layout.addWidget(sample_rate_group)
+            scroll_layout.addWidget(profile_group)
+            scroll_layout.addWidget(latency_group)
+            scroll_layout.addWidget(restart_group)
 
+            #Connections button
+            self.cables_button = QPushButton("Cables")
+            self.cables_button.clicked.connect(self.process_manager.open_cables)
+            scroll_layout.addWidget(self.cables_button)
 
+            scroll_area = QScrollArea()
+            scroll_area.setWidget(scroll_content)
+            scroll_area.setWidgetResizable(True)
+            scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)
+            main_layout.addWidget(scroll_area)
 
-        #Connections button
-        self.cables_button = QPushButton("Cables")
-        self.cables_button.clicked.connect(self.process_manager.open_cables)
-        main_layout.addWidget(self.cables_button)
+        if self.embedded:
+            #Connections button (outside scroll area for embedded mode)
+            self.cables_button = QPushButton("Cables")
+            self.cables_button.clicked.connect(self.process_manager.open_cables)
+            main_layout.addWidget(self.cables_button)
 
         self.setLayout(main_layout)
         self.setWindowTitle('Cable')

@@ -63,6 +63,8 @@ class PresetHandler:
         self.original_preset_layout_data: Optional[Dict[str, Any]] = None
         self.save_button_initially_enabled: bool = False
         self.unified_clients: Dict[str, Any] = {}
+        
+
 
     def show_preset_menu(self) -> None:
         """Populates the preset management menu. Assumes menu is sender()."""
@@ -70,9 +72,12 @@ class PresetHandler:
         if not menu or not isinstance(menu, QMenu):
             logger.error("Error: show_preset_menu called without a valid QMenu sender.")
             return
-        
+
+        # Update preset button styles based on daemon state
+        self._update_preset_button_styles()
+
         menu.clear() # Clear previous items before repopulating
-        
+
         preset_names = self.manager.preset_manager.get_preset_names()
 
         # --- Save Section ---
@@ -430,6 +435,9 @@ class PresetHandler:
                 self.manager.save_preset_action.setEnabled(False)
             logger.debug(f"Load Success: Set active_preset in config to '{name}'")
             self.manager.refresh_ports()
+            
+            # Update preset button styles to reflect daemon state
+            self._update_preset_button_styles()
 
             if not is_startup:
                 show_timed_messagebox(self.manager, QMessageBox.Icon.Information,
@@ -450,6 +458,8 @@ class PresetHandler:
                 self.manager.save_preset_action.setEnabled(False)
             logger.debug("Load Success (partial): Set active_preset in config.")
             self.manager.refresh_ports()
+            # Update preset button styles to reflect daemon state
+            self._update_preset_button_styles()
             return True
 
     def _delete_selected_preset(self, name: str) -> None:
@@ -662,6 +672,43 @@ class PresetHandler:
             self.load_selected_preset(self.current_preset_name)
         elif checked:
             logger.debug("No active preset to start daemon mode with.")
+        
+        # Update button styles to reflect the new daemon state
+        # Use QTimer to ensure daemon state is updated after any preset loading
+        QTimer.singleShot(100, self._update_preset_button_styles)
+
+    def _update_preset_button_styles(self) -> None:
+        """
+        Update preset button text color based on daemon state.
+        When aj-snapshot daemon is running, "Presets" text is shown in red.
+        """
+        # Check if daemon is running
+        daemon_active = self.manager.preset_manager.is_daemon_running()
+        
+        # Get references to preset buttons
+        bottom_button = None
+        graph_button = None
+        
+        # Get bottom toolbar button from ui_manager
+        if hasattr(self.manager, 'ui_manager') and self.manager.ui_manager:
+            bottom_button = getattr(self.manager.ui_manager, 'bottom_presets_button', None)
+        
+        # Get graph tab button from graph_main_window
+        graph_window = self.manager._get_graph_main_window()
+        if graph_window:
+            graph_button = getattr(graph_window, 'preset_button', None)
+        
+        # Update button styles
+        buttons_to_update = [b for b in [bottom_button, graph_button] if b is not None]
+        
+        for button in buttons_to_update:
+            if daemon_active:
+                button.setText("Presets ●")
+            else:
+                button.setText("Presets")
+        
+        if buttons_to_update:
+            logger.debug(f"Preset button styles updated: daemon_active={daemon_active}")
 
     def _unhide_all_nodes(self) -> None:
         """Unhide all nodes by resetting node visibility settings."""

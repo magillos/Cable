@@ -187,9 +187,32 @@ class PresetManager:
             logger.error(f"Error starting aj-snapshot daemon: {e}")
             return False
 
+    def is_daemon_running(self) -> bool:
+        """
+        Check if aj-snapshot daemon is currently running.
+        
+        Returns:
+            bool: True if daemon is running, False otherwise
+        """
+        if os.path.exists(self.pid_file):
+            try:
+                with open(self.pid_file, 'r') as f:
+                    pid = int(f.read().strip())
+                # Check if process exists
+                os.kill(pid, 0)  # Signal 0 doesn't kill, just checks existence
+                logger.debug(f"aj-snapshot daemon is running with PID: {pid}")
+                return True
+            except (IOError, ValueError, ProcessLookupError, PermissionError):
+                # PID file exists but process is not running
+                logger.debug("aj-snapshot PID file exists but process is not running")
+                return False
+        else:
+            logger.debug("No aj-snapshot daemon PID file found")
+            return False
+
     def stop_daemon_mode(self) -> bool:
         stopped = False
-        
+
         if os.path.exists(self.pid_file):
             try:
                 with open(self.pid_file, 'r') as f:
@@ -218,7 +241,7 @@ class PresetManager:
                     os.remove(self.pid_file)
         else:
             logger.info("No aj-snapshot daemon PID file found.")
-        
+
         # Fallback: kill any remaining aj-snapshot daemon processes
         try:
             result = subprocess.run(
@@ -230,5 +253,5 @@ class PresetManager:
                 stopped = True
         except Exception as e:
             logger.warning(f"pkill fallback failed: {e}")
-        
+
         return stopped or True

@@ -10,13 +10,19 @@ import os
 import signal
 import logging
 
-# Initialize verbose mode before any other imports that might print
 # Add the script directory to path first so we can import cable_core
 script_dir = os.path.dirname(os.path.abspath(__file__))
 if script_dir not in sys.path:
     sys.path.insert(0, script_dir)
+
+# Pre-parse arguments to check for verbose flag before setting up logging
+# This allows verbose output during import phase
+_pre_parser = argparse.ArgumentParser(add_help=False)
+_pre_parser.add_argument('-v', '--verbose', action='store_true', default=False)
+_pre_args, _remaining = _pre_parser.parse_known_args()
+
 from cable_core.logging_config import setup_logging
-setup_logging()
+setup_logging(verbose_override=_pre_args.verbose)
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QTimer
@@ -38,6 +44,8 @@ def main() -> int:
     parser.add_argument('--headless', action='store_true', help='Run in headless mode to apply startup preset')
     parser.add_argument('--stop-daemon', action='store_true', help='Stop the aj-snapshot daemon')
     parser.add_argument('--minimized', action='store_true', help='Start application minimized to tray')
+    parser.add_argument('-v', '--verbose', action='store_true',
+                        help='Enable verbose output for this session (overrides config setting)')
     args = parser.parse_args()
 
     if args.stop_daemon:

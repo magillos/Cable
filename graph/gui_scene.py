@@ -64,6 +64,10 @@ class JackGraphScene(QGraphicsScene):
         self._first_refresh_done = False
         self._in_full_refresh = False
 
+        # Optional managers - initialized to None, set via setters
+        self.node_visibility_manager: Optional['NodeVisibilityManager'] = None
+        self.view: Optional[Any] = None  # Set by main_window
+
         # Initialize config manager for saving/loading node configurations
         self.node_config_manager = GraphConfigManager()
         self.main_config_manager = self.connection_manager.config_manager
@@ -241,12 +245,10 @@ class JackGraphScene(QGraphicsScene):
             if client_name in self.nodes:
                 self._update_node_ports(client_name, ports_to_process)
 
-                if hasattr(self.nodes[client_name], 'check_if_virtual_sink'):
-                    self.nodes[client_name].check_if_virtual_sink(client_name)
-                    self.nodes[client_name].update()
-
-                if hasattr(self.nodes[client_name], 'ensure_unified_sink_exists'):
-                    self.nodes[client_name].ensure_unified_sink_exists()
+                # These methods always exist on NodeItem
+                self.nodes[client_name].check_if_virtual_sink(client_name)
+                self.nodes[client_name].update()
+                self.nodes[client_name].ensure_unified_sink_exists()
             else:
                 node = self.add_node(client_name, ports_to_process, original_client_name)
                 if node:
@@ -267,8 +269,9 @@ class JackGraphScene(QGraphicsScene):
                         new_node_y_offset += 100
 
                     # Apply preset unification for newly created nodes
-                    if hasattr(self.connection_manager, 'preset_handler') and self.connection_manager.preset_handler:
-                        unified_clients = self.connection_manager.preset_handler.unified_clients
+                    preset_handler = getattr(self.connection_manager, 'preset_handler', None)
+                    if preset_handler:
+                        unified_clients = preset_handler.unified_clients
                         if client_name in unified_clients:
                             node.unify_from_preset(unified_clients[client_name])
 
@@ -437,13 +440,13 @@ class JackGraphScene(QGraphicsScene):
             NodeItem: The created node, or None if creation failed
         """
         # Check if we should show this node based on visibility settings
-        if hasattr(self, 'node_visibility_manager') and self.node_visibility_manager:
+        if self.node_visibility_manager:
             # Determine if this is a MIDI client
             is_midi = False
             if client_ports:
                 # Check if any port is a MIDI port
                 for port_name, port_obj in client_ports.items():
-                    if hasattr(port_obj, 'is_midi') and port_obj.is_midi:
+                    if getattr(port_obj, 'is_midi', False):
                         is_midi = True
                         break
             
@@ -460,6 +463,9 @@ class JackGraphScene(QGraphicsScene):
             # Pass the required jack_handler and config_manager to the NodeItem constructor
             node = NodeItem(client_name, self.graph_jack_handler, self.node_config_manager, ports_to_add=client_ports, original_client_name=original_client_name)
             self.addItem(node)
+            
+            # Re-check virtual sink status now that node has a scene
+            node.check_if_virtual_sink(client_name)
             
             # IMPORTANT: Layout ports AFTER the node has been added to the scene
             # This prevents "Cannot layout ports: Node is not in a scene" errors.
@@ -517,14 +523,15 @@ class JackGraphScene(QGraphicsScene):
                 logger.debug(f"Preserved unified state in node_configs for {client_name}")
 
             if unload_unified_sinks:
-                if hasattr(node, 'is_input_unified') and node.is_input_unified:
+                # These properties always exist on NodeItem
+                if node.is_input_unified:
                     logger.debug(f"Unloading input unified sink for node {client_name} before removal")
                     try:
                         node._unload_unified_sink(is_input=True)
                     except Exception as e:
                         logger.error(f"Error unloading input unified sink: {e}")
 
-                if hasattr(node, 'is_output_unified') and node.is_output_unified:
+                if node.is_output_unified:
                     logger.debug(f"Unloading output unified sink for node {client_name} before removal")
                     try:
                         node._unload_unified_sink(is_input=False)
@@ -767,8 +774,10 @@ class JackGraphScene(QGraphicsScene):
         nodes_to_save = {client_name_key: node_item}
         
         current_zoom = None
-        if hasattr(self, 'view') and self.view and hasattr(self.view, 'get_zoom_level'):
-            current_zoom = self.view.get_zoom_level()
+        if self.view is not None:
+            get_zoom = getattr(self.view, 'get_zoom_level', None)
+            if get_zoom is not None:
+                current_zoom = get_zoom()
             
         # print(f"JackGraphScene: Requesting specific save for node '{client_name_key}'. Zoom: {current_zoom}") # DEBUG
         self.node_config_manager.save_node_states(nodes_to_save, graph_zoom_level=current_zoom)
@@ -1005,7 +1014,7 @@ class JackGraphScene(QGraphicsScene):
         of a split node should be visible. It checks the visibility settings and
         hides/shows the appropriate split parts.
         """
-        if not hasattr(self, 'node_visibility_manager') or not self.node_visibility_manager:
+        if not self.node_visibility_manager:
             return
         
         for node in list(self.nodes.values()):
@@ -1020,12 +1029,12 @@ class JackGraphScene(QGraphicsScene):
             is_midi = False
             if node.split_input_node:
                 for port_item in node.split_input_node.input_ports.values():
-                    if hasattr(port_item.port_obj, 'is_midi') and port_item.port_obj.is_midi:
+                    if getattr(port_item.port_obj, 'is_midi', False):
                         is_midi = True
                         break
             if not is_midi and node.split_output_node:
                 for port_item in node.split_output_node.output_ports.values():
-                    if hasattr(port_item.port_obj, 'is_midi') and port_item.port_obj.is_midi:
+                    if getattr(port_item.port_obj, 'is_midi', False):
                         is_midi = True
                         break
             
@@ -1043,12 +1052,10 @@ class JackGraphScene(QGraphicsScene):
                     if should_hide:
                         node.split_input_node.hide()
                         # Also hide connections for this part
-                        if hasattr(self, 'connection_mgr'):
-                            self.connection_mgr.update_node_connections_visibility(node.split_input_node, False)
+                        self.connection_mgr.update_node_connections_visibility(node.split_input_node, False)
                     else:
                         node.split_input_node.show()
-                        if hasattr(self, 'connection_mgr'):
-                            self.connection_mgr.update_node_connections_visibility(node.split_input_node, True)
+                        self.connection_mgr.update_node_connections_visibility(node.split_input_node, True)
             
             if node.split_output_node:
                 should_hide = not output_visible
@@ -1057,12 +1064,10 @@ class JackGraphScene(QGraphicsScene):
                     if should_hide:
                         node.split_output_node.hide()
                         # Also hide connections for this part
-                        if hasattr(self, 'connection_mgr'):
-                            self.connection_mgr.update_node_connections_visibility(node.split_output_node, False)
+                        self.connection_mgr.update_node_connections_visibility(node.split_output_node, False)
                     else:
                         node.split_output_node.show()
-                        if hasattr(self, 'connection_mgr'):
-                            self.connection_mgr.update_node_connections_visibility(node.split_output_node, True)
+                        self.connection_mgr.update_node_connections_visibility(node.split_output_node, True)
 
     def _cleanup_orphaned_unified_sinks(self, all_ports: List[jack.Port]) -> None:
         """
@@ -1070,9 +1075,10 @@ class JackGraphScene(QGraphicsScene):
         This handles the edge case where the graph app is closed and reopened, but some
         JACK clients have disappeared while their unified sinks remain active.
         """
-        if hasattr(self.connection_manager, 'unified_sink_manager'):
+        unified_sink_manager = getattr(self.connection_manager, 'unified_sink_manager', None)
+        if unified_sink_manager:
             try:
-                return self.connection_manager.unified_sink_manager.cleanup_orphaned_unified_sinks(all_ports)
+                return unified_sink_manager.cleanup_orphaned_unified_sinks(all_ports)
             except Exception as e:
                 logger.error(f"Error during unified sink cleanup: {e}")
                 return 0
@@ -1085,8 +1091,8 @@ class JackGraphScene(QGraphicsScene):
         """Returns a list of all unified nodes in the scene."""
         unified_nodes = []
         for node in self.nodes.values():
-            if (hasattr(node, 'is_input_unified') and node.is_input_unified) or \
-               (hasattr(node, 'is_output_unified') and node.is_output_unified):
+            # These properties always exist on NodeItem
+            if node.is_input_unified or node.is_output_unified:
                 unified_nodes.append(node)
         return unified_nodes
 
@@ -1115,13 +1121,13 @@ class JackGraphScene(QGraphicsScene):
                 if node.split_input_node:
                     current_configs[client_name]['split_input_pos'] = node.split_input_node.scenePos()
                     # Store fold state of input part
-                    if hasattr(node.split_input_node, 'input_part_folded'):
-                        current_configs[client_name]['input_part_folded'] = node.split_input_node.input_part_folded
+                if getattr(node.split_input_node, 'input_part_folded', False):
+                    current_configs[client_name]['input_part_folded'] = node.split_input_node.input_part_folded
                 
                 if node.split_output_node:
                     current_configs[client_name]['split_output_pos'] = node.split_output_node.scenePos()
                     # Store fold state of output part
-                    if hasattr(node.split_output_node, 'output_part_folded'):
+                    if getattr(node.split_output_node, 'output_part_folded', False):
                         current_configs[client_name]['output_part_folded'] = node.split_output_node.output_part_folded
             else:
                 # For non-split nodes, store position and other attributes
@@ -1131,29 +1137,32 @@ class JackGraphScene(QGraphicsScene):
                 }
                 
                 # Store fold state if available
-                if hasattr(node, 'is_folded'):
+                if getattr(node, 'is_folded', False):
                     current_configs[client_name]['is_folded'] = node.is_folded
                 
                 # Store split position history if available (for nodes that were split before)
-                if hasattr(node, 'split_input_node') and node.split_input_node:
-                    current_configs[client_name]['split_input_pos'] = node.split_input_node.scenePos()
-                elif hasattr(node, 'config') and node.config and 'split_input_pos' in node.config:
+                split_input_node = getattr(node, 'split_input_node', None)
+                if split_input_node:
+                    current_configs[client_name]['split_input_pos'] = split_input_node.scenePos()
+                elif getattr(node, 'config', None) and node.config and 'split_input_pos' in node.config:
                     current_configs[client_name]['split_input_pos'] = node.config['split_input_pos']
                     
-                if hasattr(node, 'split_output_node') and node.split_output_node:
-                    current_configs[client_name]['split_output_pos'] = node.split_output_node.scenePos()
-                elif hasattr(node, 'config') and node.config and 'split_output_pos' in node.config:
+                split_output_node = getattr(node, 'split_output_node', None)
+                if split_output_node:
+                    current_configs[client_name]['split_output_pos'] = split_output_node.scenePos()
+                elif getattr(node, 'config', None) and node.config and 'split_output_pos' in node.config:
                     current_configs[client_name]['split_output_pos'] = node.config['split_output_pos']
                 
                 # Store part fold states if available (for nodes that were split before)
-                if hasattr(node, 'input_part_folded'):
+                if getattr(node, 'input_part_folded', False):
                     current_configs[client_name]['input_part_folded'] = node.input_part_folded
-                if hasattr(node, 'output_part_folded'):
+                if getattr(node, 'output_part_folded', False):
                     current_configs[client_name]['output_part_folded'] = node.output_part_folded
                 
                 # Store manual split flag if available
-                if hasattr(node, 'config') and node.config and 'manual_split' in node.config:
-                    current_configs[client_name]['manual_split'] = node.config['manual_split']
+                node_config = getattr(node, 'config', None)
+                if node_config and 'manual_split' in node_config:
+                    current_configs[client_name]['manual_split'] = node_config['manual_split']
         
         return copy.deepcopy(current_configs)
     
@@ -1169,7 +1178,7 @@ class JackGraphScene(QGraphicsScene):
 
         for client_name, unify_data in unified_clients.items():
             node = self.get_node_item_by_name(client_name)
-            if node and hasattr(node, 'unify_from_preset'):
+            if node:
                 node.unify_from_preset(unify_data)
 
     def restore_node_states(self, node_states: Dict[str, dict]) -> None:
@@ -1202,10 +1211,9 @@ class JackGraphScene(QGraphicsScene):
                 
                 # Set manual_split flag if available
                 if 'manual_split' in config:
-                    if hasattr(node, 'config'):
-                        if not node.config:
-                            node.config = {}
-                        node.config['manual_split'] = config['manual_split']
+                    if not getattr(node, 'config', None):
+                        node.config = {}
+                    node.config['manual_split'] = config['manual_split']
                 
                 # Set positions for input and output parts
                 if 'split_input_pos' in config and node.split_input_node:
@@ -1217,15 +1225,13 @@ class JackGraphScene(QGraphicsScene):
                 # Set fold states for split parts
                 if 'input_part_folded' in config and node.split_input_node:
                     # Set fold state for input part
-                    if hasattr(node.split_input_node, 'input_part_folded'):
-                        if node.split_input_node.input_part_folded != config['input_part_folded']:
-                            node.split_input_node.fold_handler.toggle_input_part_fold(fold_state=config['input_part_folded'])
+                    if getattr(node.split_input_node, 'input_part_folded', False) != config['input_part_folded']:
+                        node.split_input_node.fold_handler.toggle_input_part_fold(fold_state=config['input_part_folded'])
                 
                 if 'output_part_folded' in config and node.split_output_node:
                     # Set fold state for output part
-                    if hasattr(node.split_output_node, 'output_part_folded'):
-                        if node.split_output_node.output_part_folded != config['output_part_folded']:
-                            node.split_output_node.fold_handler.toggle_output_part_fold(fold_state=config['output_part_folded'])
+                    if getattr(node.split_output_node, 'output_part_folded', False) != config['output_part_folded']:
+                        node.split_output_node.fold_handler.toggle_output_part_fold(fold_state=config['output_part_folded'])
             else:
                 # If the node is split but shouldn't be, unsplit it
                 if node.is_split_origin:
@@ -1236,15 +1242,14 @@ class JackGraphScene(QGraphicsScene):
                     targets[node] = config['pos']
                 
                 # Preserve split position history for potential future splits
-                if hasattr(node, 'config'):
-                    if not node.config:
-                        node.config = {}
-                    if 'split_input_pos' in config:
-                        node.config['split_input_pos'] = config['split_input_pos']
-                    if 'split_output_pos' in config:
-                        node.config['split_output_pos'] = config['split_output_pos']
-                    if 'manual_split' in config:
-                        node.config['manual_split'] = config['manual_split']
+                if not getattr(node, 'config', None):
+                    node.config = {}
+                if 'split_input_pos' in config:
+                    node.config['split_input_pos'] = config['split_input_pos']
+                if 'split_output_pos' in config:
+                    node.config['split_output_pos'] = config['split_output_pos']
+                if 'manual_split' in config:
+                    node.config['manual_split'] = config['manual_split']
                 
                 # Preserve part fold states for potential future splits
                 if 'input_part_folded' in config:
@@ -1253,11 +1258,9 @@ class JackGraphScene(QGraphicsScene):
                     node.output_part_folded = config['output_part_folded']
                 
                 # Set fold state if available - using the correct methods
-                if 'is_folded' in config and hasattr(node, 'is_folded'):
-                    # Check if current state is different from desired state
-                    if node.is_folded != config['is_folded']:
-                        # Toggle the state directly or use toggle_main_fold_state
-                        node.fold_handler.toggle_main_fold_state()
+                if 'is_folded' in config and getattr(node, 'is_folded', False) != config['is_folded']:
+                    # Toggle the state directly or use toggle_main_fold_state
+                    node.fold_handler.toggle_main_fold_state()
         
         self._animate_nodes_to_targets(targets)
 

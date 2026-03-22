@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='cable',
-    version='0.10.2',  # Update to match your PKGBUILD version
+    version='0.10.3',  # Update to match your PKGBUILD version
     py_modules=['Cable'],
     packages=['cable_core', 'cables', 'cables.config', 'cables.ui', 'cables.utils', 'cables.features', 'graph','cable_core.layout_strategies'],
     package_data={

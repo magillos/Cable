@@ -2,9 +2,9 @@
 QGraphicsView providing zoom, pan, context menus, and wallpaper for the graph scene.
 """
 import os
-from PyQt6.QtWidgets import QGraphicsView, QMenu, QDialog, QVBoxLayout, QDialogButtonBox, QLabel, QCheckBox, QFileDialog, QHBoxLayout, QPushButton, QButtonGroup, QRadioButton, QWidget
+from PyQt6.QtWidgets import QGraphicsView, QGraphicsScene, QMenu, QDialog, QVBoxLayout, QDialogButtonBox, QLabel, QCheckBox, QFileDialog, QHBoxLayout, QPushButton, QWidget
 from PyQt6.QtGui import QPainter, QCursor, QMouseEvent, QPixmap, QBrush, QFont, QWheelEvent, QKeyEvent, QContextMenuEvent # Import QMouseEvent
-from PyQt6.QtCore import Qt, pyqtSignal, QPointF
+from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRectF
 from typing import Optional, Tuple
 
 import logging
@@ -47,14 +47,12 @@ class JackGraphView(QGraphicsView):
         self._rubber_band_used = False
         self.rubberBandChanged.connect(self._on_rubber_band_changed)
 
-        # Wallpaper reload throttling
-        self._last_scene_size = None
-        self._wallpaper_loaded = False
+        # Wallpaper variables
+        self._wallpaper_pixmap = None
 
         # Connect scene changes to scrollbar update
         if self.scene():
             self.scene().changed.connect(self._update_scrollbar_visibility)
-            self.scene().changed.connect(self._reload_wallpaper_if_needed)
 
         # Set the initial cursor to the standard arrow
         self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
@@ -371,31 +369,6 @@ class JackGraphView(QGraphicsView):
 
         layout = QVBoxLayout(dialog)
 
-        # Get current settings using cable_core ConfigManager
-        current_scaling = "scaled"
-        try:
-            current_scaling = _get_cable_core_config().get_str_setting(keys.GRAPH_WALLPAPER_SCALING, "scaled")
-        except Exception as e:
-            logger.warning(f"Warning: Could not read wallpaper config: {e}")
-
-        # Scaling options
-        scaling_group = QButtonGroup(dialog)
-        scaling_layout = QVBoxLayout()
-        scaling_label = QLabel("Scaling mode:")
-        scaling_layout.addWidget(scaling_label)
-
-        scale_radio = QRadioButton("Scaled - Fill canvas (may distort)")
-        scale_radio.setChecked(current_scaling == "scaled")
-        scaling_group.addButton(scale_radio, 0)
-        scaling_layout.addWidget(scale_radio)
-
-        center_radio = QRadioButton("Centered - Original size, centered")
-        center_radio.setChecked(current_scaling == "centered")
-        scaling_group.addButton(center_radio, 1)
-        scaling_layout.addWidget(center_radio)
-
-        layout.addLayout(scaling_layout)
-
         # Instructions
         instructions = QLabel("Choose a JPG or PNG image file to use as graph background wallpaper.")
         instructions.setWordWrap(True)
@@ -407,7 +380,7 @@ class JackGraphView(QGraphicsView):
         button_layout = QHBoxLayout()
 
         select_button = QPushButton("Select Image...")
-        select_button.clicked.connect(lambda: self._select_wallpaper_file(dialog, scaling_group))
+        select_button.clicked.connect(lambda: self._select_wallpaper_file(dialog))
         button_layout.addWidget(select_button)
 
         clear_button = QPushButton("Clear Wallpaper")
@@ -415,9 +388,8 @@ class JackGraphView(QGraphicsView):
         button_layout.addWidget(clear_button)
 
         button_box = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+            QDialogButtonBox.StandardButton.Close
         )
-        button_box.accepted.connect(lambda: self._save_wallpaper_settings(dialog, scaling_group))
         button_box.rejected.connect(dialog.reject)
         button_layout.addWidget(button_box)
 
@@ -425,7 +397,7 @@ class JackGraphView(QGraphicsView):
 
         dialog.exec()
 
-    def _select_wallpaper_file(self, parent_dialog: QDialog, scaling_group: QButtonGroup) -> None:
+    def _select_wallpaper_file(self, parent_dialog: QDialog) -> None:
         """Open file dialog to select wallpaper image."""
         file_dialog = QFileDialog(self)
         file_dialog.setWindowTitle("Select Wallpaper Image")
@@ -452,24 +424,16 @@ class JackGraphView(QGraphicsView):
                 except Exception as e:
                     logger.warning(f"Warning: Could not save last wallpaper directory: {e}")
 
-                # Get scaling mode
-                scaling_mode = "scaled"
-                checked_button = scaling_group.checkedButton()
-                if checked_button and "Centered" in checked_button.text():
-                    scaling_mode = "centered"
-                # else default to "scaled"
-
-                self._set_wallpaper(image_path, scaling_mode)
+                self._set_wallpaper(image_path)
                 parent_dialog.accept()
 
-    def _set_wallpaper(self, image_path: str, scaling_mode: str = "scaled") -> None:
+    def _set_wallpaper(self, image_path: str) -> None:
         """Set the wallpaper image as background."""
         try:
             config = _get_cable_core_config()
             config.set_str_setting(keys.GRAPH_WALLPAPER_PATH, image_path)
-            config.set_str_setting(keys.GRAPH_WALLPAPER_SCALING, scaling_mode)
             self._load_wallpaper()
-            logger.info(f"Set wallpaper to: {image_path}, mode: {scaling_mode}")
+            logger.info(f"Set wallpaper to: {image_path}, mode: centered")
         except Exception as e:
             logger.error(f"Error setting wallpaper: {e}")
 
@@ -478,35 +442,12 @@ class JackGraphView(QGraphicsView):
         try:
             config = _get_cable_core_config()
             config.set_str_setting(keys.GRAPH_WALLPAPER_PATH, '')
-            config.set_str_setting(keys.GRAPH_WALLPAPER_SCALING, 'scaled')
             self._load_wallpaper()
             logger.info("Cleared wallpaper")
             if parent_dialog:
                 parent_dialog.accept()
         except Exception as e:
             logger.error(f"Error clearing wallpaper: {e}")
-
-    def _save_wallpaper_settings(self, parent_dialog: QDialog, scaling_group: QButtonGroup) -> None:
-        """Save the wallpaper settings when dialog is accepted."""
-        try:
-            config = _get_cable_core_config()
-            current_wallpaper = config.get_str_setting(keys.GRAPH_WALLPAPER_PATH, '')
-            current_scaling = config.get_str_setting(keys.GRAPH_WALLPAPER_SCALING, 'scaled')
-
-            # Update scaling if changed
-            scaling_mode = "scaled"
-            checked_button = scaling_group.checkedButton()
-            if checked_button and "Centered" in checked_button.text():
-                scaling_mode = "centered"
-
-            if scaling_mode != current_scaling:
-                config.set_str_setting(keys.GRAPH_WALLPAPER_SCALING, scaling_mode)
-                if current_wallpaper:
-                    self._load_wallpaper()  # Reload with new scaling
-
-            parent_dialog.accept()
-        except Exception as e:
-            logger.error(f"Error saving wallpaper settings: {e}")
 
     def _load_wallpaper(self) -> None:
         """Load and set the wallpaper image as background."""
@@ -525,66 +466,49 @@ class JackGraphView(QGraphicsView):
                     config.set_str_setting('graph_wallpaper', '')
                     logger.info(f"Migrated old wallpaper setting: {wallpaper_path}")
 
-            scaling_mode = config.get_str_setting(keys.GRAPH_WALLPAPER_SCALING, 'scaled')
-
             if wallpaper_path and os.path.exists(wallpaper_path):
                 # Load the image
                 original_pixmap = QPixmap(wallpaper_path)
                 if not original_pixmap.isNull():
-                    pixmap = self._scale_pixmap_for_mode(original_pixmap, scaling_mode)
-                    # Set the pixmap as background brush for the scene
-                    brush = QBrush(pixmap)
-                    self.scene().setBackgroundBrush(brush)
-                    logger.info(f"Loaded wallpaper: {wallpaper_path}, mode: {scaling_mode}")
+                    self._wallpaper_pixmap = original_pixmap
+                    self.scene().setBackgroundBrush(QBrush()) # Ensure no brush tiles
+                    self.scene().invalidate(self.scene().sceneRect(), QGraphicsScene.SceneLayer.BackgroundLayer)
+                    logger.info(f"Loaded wallpaper: {wallpaper_path}, mode: centered")
                 else:
                     logger.debug(f"Invalid image file: {wallpaper_path}")
+                    self._wallpaper_pixmap = None
                     self.scene().setBackgroundBrush(QBrush())
             else:
                 # Clear background
+                self._wallpaper_pixmap = None
                 self.scene().setBackgroundBrush(QBrush())
 
         except Exception as e:
             logger.error(f"Error loading wallpaper: {e}")
+            self._wallpaper_pixmap = None
             self.scene().setBackgroundBrush(QBrush())
 
-    def _reload_wallpaper_if_needed(self) -> None:
-        """Reload wallpaper when scene size changes significantly (throttled to prevent spam)."""
-        try:
+    def drawBackground(self, painter: QPainter, rect: QRectF) -> None:
+        """Override to draw wallpaper without tiling."""
+        super().drawBackground(painter, rect)
+
+        # Check if we have a wallpaper pixmap stored
+        if hasattr(self, '_wallpaper_pixmap') and self._wallpaper_pixmap and not self._wallpaper_pixmap.isNull():
             scene_rect = self.scene().sceneRect()
-            current_size = (int(scene_rect.width()), int(scene_rect.height()))
 
-            # Only reload if scene size changed significantly and wallpaper wasn't recently loaded
-            if self._last_scene_size != current_size and current_size[0] > 100 and current_size[1] > 100:
-                wallpaper_path = _get_cable_core_config().get_str_setting(keys.GRAPH_WALLPAPER_PATH, '')
+            painter.save()
+            # Use high quality scaling if needed
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
 
-                if wallpaper_path and os.path.exists(wallpaper_path) and not self._wallpaper_loaded:
-                    self._last_scene_size = current_size
-                    self._wallpaper_loaded = True
-                    self._load_wallpaper()
+            pix_w = self._wallpaper_pixmap.width()
+            pix_h = self._wallpaper_pixmap.height()
+            cx = scene_rect.center().x()
+            cy = scene_rect.center().y()
+            target_rect = QRectF(cx - pix_w / 2.0, cy - pix_h / 2.0, pix_w, pix_h)
 
-        except Exception as e:
-            logger.error(f"Error checking wallpaper reload: {e}")
+            painter.drawPixmap(target_rect, self._wallpaper_pixmap, QRectF(self._wallpaper_pixmap.rect()))
 
-    def _scale_pixmap_for_mode(self, original_pixmap: QPixmap, scaling_mode: str) -> QPixmap:
-        """Scale the pixmap according to the selected scaling mode."""
-        # Get scene rect for scaling calculations
-        scene_rect = self.scene().sceneRect()
-
-        if scaling_mode == "centered":
-            # Return original pixmap, it will be centered automatically
-            return original_pixmap
-
-        else:  # "scaled" - default
-            # Scale to fill canvas, may distort
-            canvas_width = int(scene_rect.width())
-            canvas_height = int(scene_rect.height())
-
-            if canvas_width > 0 and canvas_height > 0:
-                return original_pixmap.scaled(canvas_width, canvas_height,
-                                             Qt.AspectRatioMode.IgnoreAspectRatio,
-                                             Qt.TransformationMode.SmoothTransformation)
-            else:
-                return original_pixmap
+            painter.restore()
 
     def _show_unload_all_sinks_confirmation_dialog(self) -> Tuple[bool, bool]:
         """
@@ -630,6 +554,18 @@ class JackGraphView(QGraphicsView):
         """Execute the pactl command to create the combined virtual sink/source."""
         import subprocess
         import json
+
+        # Ensure unique sink name to avoid WirePlumber default node confusion
+        try:
+            pactl_out = subprocess.run(["pactl", "list", "short", "sinks"], capture_output=True, text=True, check=True).stdout
+            existing_sinks = [line.split('\t')[1] for line in pactl_out.splitlines() if len(line.split('\t')) > 1]
+            base_sink_name = sink_name
+            counter = 2
+            while sink_name in existing_sinks:
+                sink_name = f"{base_sink_name}-{counter}"
+                counter += 1
+        except Exception as e:
+            logger.warning(f"Warning: Could not check existing sinks for uniqueness: {e}")
 
         command = ["pactl", "load-module", "module-null-sink"]
         channel_map_param = "stereo"

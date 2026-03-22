@@ -32,11 +32,11 @@ _CAP_STRING_GENERIC_VOLUME = "Volume"
 _CAP_STRING_CAPTURE_VOLUME = "Capture Volume"
 
 try: _MIXER_CAP_PVOLUME_INT = alsaaudio.MIXER_CAP_PVOLUME
-except AttributeError: logger.warning(f"Warning: alsaaudio.MIXER_CAP_PVOLUME not found. Using default int value {_MIXER_CAP_PVOLUME_INT}.")
+except AttributeError: logger.debug(f"Warning: alsaaudio.MIXER_CAP_PVOLUME not found. Using default int value {_MIXER_CAP_PVOLUME_INT}.")
 try: _MIXER_SWCAP_PLAYBACK_INT = alsaaudio.MIXER_SWCAP_PLAYBACK
-except AttributeError: logger.warning(f"Warning: alsaaudio.MIXER_SWCAP_PLAYBACK not found. Using default int value {_MIXER_SWCAP_PLAYBACK_INT}.")
+except AttributeError: logger.debug(f"Warning: alsaaudio.MIXER_SWCAP_PLAYBACK not found. Using default int value {_MIXER_SWCAP_PLAYBACK_INT}.")
 try: _MIXER_CAP_CVOLUME_INT = alsaaudio.MIXER_CAP_CVOLUME
-except AttributeError: logger.warning(f"Warning: alsaaudio.MIXER_CAP_CVOLUME not found. Using default int value {_MIXER_CAP_CVOLUME_INT}.")
+except AttributeError: logger.debug(f"Warning: alsaaudio.MIXER_CAP_CVOLUME not found. Using default int value {_MIXER_CAP_CVOLUME_INT}.")
 # --- End Constants ---
 
 class AlsMixerApp(QWidget):

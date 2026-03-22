@@ -934,19 +934,32 @@ def main() -> None:
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Cable - PipeWire Settings Manager')
     parser.add_argument('--minimized', action='store_true',
-                      help='Start application minimized to tray')
-    args = parser.parse_args(sys.argv[1:])  # Skip the first argument (script name)
-    
+                        help='Start application minimized to tray')
+    parser.add_argument('-v', '--verbose', action='store_true',
+                        help='Enable verbose output for this session (overrides config setting)')
+    args = parser.parse_args(sys.argv[1:]) # Skip the first argument (script name)
+
+    # Reconfigure logging if verbose flag is set
+    if args.verbose:
+        from cable_core.logging_config import setup_logging
+        setup_logging(verbose_override=True)
+
     # Check if integrated mode is enabled - if so, launch connection-manager.py instead
     if _check_integrated_mode():
         logger.info("Integrated mode enabled, launching Cables (connection-manager.py) instead...")
         # Find the connection-manager.py script
         connection_manager_path = _find_connection_manager()
-        
+
         if connection_manager_path:
             logger.info(f"Found connection-manager.py at: {connection_manager_path}")
+            # Build arguments for connection-manager, preserving verbose flag
+            cm_args = [sys.executable, connection_manager_path]
+            if args.minimized:
+                cm_args.append('--minimized')
+            if args.verbose:
+                cm_args.append('--verbose')
             # Replace current process with connection-manager.py
-            os.execv(sys.executable, [sys.executable, connection_manager_path] + sys.argv[1:])
+            os.execv(sys.executable, cm_args)
         else:
             logger.warning("connection-manager.py not found in any known location")
             logger.warning(f"Searched in: {os.path.dirname(os.path.abspath(__file__))}, /usr/share/cable, /app/bin, etc.")

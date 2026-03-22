@@ -115,15 +115,30 @@ def _load_verbose_setting() -> bool:
     return False  # Default to verbose off
 
 
-def setup_logging() -> None:
+def setup_logging(verbose_override: bool = False) -> None:
     """Configure root logger and install stderr filters.
 
     Call once at application startup.
 
-    When verbose_output is False in config, sets level to WARNING
+    Args:
+        verbose_override: If True, force verbose output for this session,
+                         regardless of the config setting. This is typically
+                         set via -v/--verbose command line flag.
+
+    When verbose_output is False in config (and no override), sets level to WARNING
     so that info/debug messages are suppressed (matching old verbose.py behavior).
     """
-    verbose = _load_verbose_setting()
+    # Command-line override takes precedence over config setting
+    if verbose_override:
+        verbose = True
+    else:
+        verbose = _load_verbose_setting()
+
+    # Suppress verbose output when not in a terminal to avoid flooding journalctl
+    # (unless explicitly overridden via command line)
+    if verbose and not sys.stdout.isatty() and not verbose_override:
+        verbose = False
+
     level = logging.DEBUG if verbose else logging.WARNING
 
     logging.basicConfig(

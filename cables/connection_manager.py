@@ -263,17 +263,22 @@ class JackConnectionManager(QMainWindow):
         self._jack_service.port_unregistered.connect(self._on_port_unregistered)
         
         # Connect UI state manager signals
-        if hasattr(self.ui_manager, 'collapse_all_button') and self.ui_manager.collapse_all_button:
-            self.ui_manager.collapse_all_button.toggled.connect(self.ui_state_manager.toggle_collapse_all)
-        if hasattr(self.ui_manager, 'untangle_button') and self.ui_manager.untangle_button:
-            self.ui_manager.untangle_button.clicked.connect(self.ui_state_manager.toggle_untangle_sort)
-        if hasattr(self.ui_manager, 'zoom_in_button') and self.ui_manager.zoom_in_button:
-            self.ui_manager.zoom_in_button.clicked.connect(self.ui_state_manager.increase_font_size)
-        if hasattr(self.ui_manager, 'zoom_out_button') and self.ui_manager.zoom_out_button:
-            self.ui_manager.zoom_out_button.clicked.connect(self.ui_state_manager.decrease_font_size)
+        collapse_btn = getattr(self.ui_manager, 'collapse_all_button', None)
+        if collapse_btn:
+            collapse_btn.toggled.connect(self.ui_state_manager.toggle_collapse_all)
+        untangle_btn = getattr(self.ui_manager, 'untangle_button', None)
+        if untangle_btn:
+            untangle_btn.clicked.connect(self.ui_state_manager.toggle_untangle_sort)
+        zoom_in_btn = getattr(self.ui_manager, 'zoom_in_button', None)
+        if zoom_in_btn:
+            zoom_in_btn.clicked.connect(self.ui_state_manager.increase_font_size)
+        zoom_out_btn = getattr(self.ui_manager, 'zoom_out_button', None)
+        if zoom_out_btn:
+            zoom_out_btn.clicked.connect(self.ui_state_manager.decrease_font_size)
 
-        if hasattr(self.ui_manager, 'tab_widget'):
-             self.tab_manager.switch_tab(self.ui_manager.tab_widget.currentIndex())
+        tab_widget = getattr(self.ui_manager, 'tab_widget', None)
+        if tab_widget:
+             self.tab_manager.switch_tab(tab_widget.currentIndex())
 
         # Connect TabManager tab_changed signal to ActionManager FIRST
         # This must happen before handling any pending tab switch
@@ -281,8 +286,9 @@ class JackConnectionManager(QMainWindow):
             self.tab_manager.tab_changed.connect(self.action_manager.update_tab_state)
         
         # Handle any pending tab switch from initial setup
-        if hasattr(self.tab_manager, '_pending_tab_switch') and self.tab_manager._pending_tab_switch is not None:
-            pending_index = self.tab_manager._pending_tab_switch
+        pending_switch = getattr(self.tab_manager, '_pending_tab_switch', None)
+        if pending_switch is not None:
+            pending_index = pending_switch
             self.tab_manager._pending_tab_switch = None
             self.tab_manager.switch_tab(pending_index)
 
@@ -310,8 +316,10 @@ class JackConnectionManager(QMainWindow):
                 add_action_callback=self.addAction
             )
 
-        if self.ui_manager.bottom_presets_button and hasattr(self.action_manager, 'presets_action') and self.action_manager.presets_action:
-            self.ui_manager.bottom_presets_button.setDefaultAction(self.action_manager.presets_action)
+        if self.ui_manager.bottom_presets_button:
+            presets_action = getattr(self.action_manager, 'presets_action', None)
+            if presets_action:
+                self.ui_manager.bottom_presets_button.setDefaultAction(presets_action)
             self.ui_manager.bottom_presets_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         if self.ui_manager.bottom_visibility_button:
             self.ui_manager.bottom_visibility_button.clicked.connect(lambda: self.show_node_visibility_dialog(self._get_current_visibility_port_type()))
@@ -337,8 +345,9 @@ class JackConnectionManager(QMainWindow):
         if orphaned_count > 0:
             logger.info(f"Cleaned up {orphaned_count} orphaned unified sinks on startup.")
 
-        if hasattr(self.action_manager, 'save_preset_action') and self.action_manager.save_preset_action:
-            self.action_manager.save_preset_action.setEnabled(bool(self.preset_handler.current_preset_name))
+        save_preset_action = getattr(self.action_manager, 'save_preset_action', None)
+        if save_preset_action:
+            save_preset_action.setEnabled(bool(self.preset_handler.current_preset_name))
 
     def _recreate_virtual_sinks_if_autostart(self) -> None:
         """Recreate stored virtual sinks when running in autostart mode (--headless/--minimized)."""
@@ -486,8 +495,10 @@ class JackConnectionManager(QMainWindow):
             The graph_main_window.scene instance if available and valid, None otherwise.
         """
         graph_window = self._get_graph_main_window()
-        if graph_window and hasattr(graph_window, 'scene') and graph_window.scene:
-            return graph_window.scene
+        if graph_window:
+            scene = getattr(graph_window, 'scene', None)
+            if scene:
+                return scene
         return None
 
     def _get_graph_view(self) -> Optional[Any]:
@@ -497,8 +508,10 @@ class JackConnectionManager(QMainWindow):
             The graph_main_window.view instance if available and valid, None otherwise.
         """
         graph_window = self._get_graph_main_window()
-        if graph_window and hasattr(graph_window, 'view') and graph_window.view:
-            return graph_window.view
+        if graph_window:
+            view = getattr(graph_window, 'view', None)
+            if view:
+                return view
         return None
 
     def _has_graph_scene(self) -> bool:
@@ -600,8 +613,10 @@ class JackConnectionManager(QMainWindow):
         if self.config_manager is not None:
             self.config_manager.flush()
         # Flush graph node positions
-        if self.graph_scene is not None and hasattr(self.graph_scene, 'node_config_manager'):
-            self.graph_scene.node_config_manager.flush()
+        if self.graph_scene is not None:
+            node_config_mgr = getattr(self.graph_scene, 'node_config_manager', None)
+            if node_config_mgr:
+                node_config_mgr.flush()
     
     def _connect_action_manager_signals(self) -> None:
         """Connect ActionManager signals to their handlers."""
@@ -687,16 +702,20 @@ class JackConnectionManager(QMainWindow):
 
     def _update_global_zoom_action_state(self, current_tab_index: int) -> None:
         """Enable/disable global zoom actions based on the active tab."""
-        if not hasattr(self.ui_manager, 'tab_widget') or self.action_manager is None:
+        tab_widget = getattr(self.ui_manager, 'tab_widget', None)
+        if not tab_widget or self.action_manager is None:
             return
 
-        current_widget = self.ui_manager.tab_widget.widget(current_tab_index)
-        is_alsa_mixer_tab_active = (current_widget == self.ui_manager.alsa_mixer_tab_widget)
+        current_widget = tab_widget.widget(current_tab_index)
+        alsa_mixer_tab = getattr(self.ui_manager, 'alsa_mixer_tab_widget', None)
+        is_alsa_mixer_tab_active = (current_widget == alsa_mixer_tab)
 
-        if hasattr(self.action_manager, 'zoom_in_action') and self.action_manager.zoom_in_action:
-            self.action_manager.zoom_in_action.setEnabled(not is_alsa_mixer_tab_active)
-        if hasattr(self.action_manager, 'zoom_out_action') and self.action_manager.zoom_out_action:
-            self.action_manager.zoom_out_action.setEnabled(not is_alsa_mixer_tab_active)
+        zoom_in_action = getattr(self.action_manager, 'zoom_in_action', None)
+        if zoom_in_action:
+            zoom_in_action.setEnabled(not is_alsa_mixer_tab_active)
+        zoom_out_action = getattr(self.action_manager, 'zoom_out_action', None)
+        if zoom_out_action:
+            zoom_out_action.setEnabled(not is_alsa_mixer_tab_active)
 
     @property
     def text_color(self) -> QColor:
@@ -735,8 +754,10 @@ class JackConnectionManager(QMainWindow):
             logger.warning(f"Warning: Invalid port_type '{port_type_to_refresh}' passed to _refresh_single_port_type")
             return
         
-        current_input_filter = self.ui_manager.input_filter_edit.text() if hasattr(self.ui_manager, 'input_filter_edit') else ""
-        current_output_filter = self.ui_manager.output_filter_edit.text() if hasattr(self.ui_manager, 'output_filter_edit') else ""
+        input_filter_edit = getattr(self.ui_manager, 'input_filter_edit', None)
+        current_input_filter = input_filter_edit.text() if input_filter_edit else ""
+        output_filter_edit = getattr(self.ui_manager, 'output_filter_edit', None)
+        current_output_filter = output_filter_edit.text() if output_filter_edit else ""
         
         selected_input_info = self._get_selected_item_info(input_tree)
         selected_output_info = self._get_selected_item_info(output_tree)
@@ -787,7 +808,7 @@ class JackConnectionManager(QMainWindow):
             self.node_visibility_manager.apply_visibility_settings()
     
     def _get_selected_item_info(self, tree_widget: QTreeWidget) -> Tuple[Optional[str], Optional[bool]]:
-        if not hasattr(tree_widget, 'currentItem'):
+        if not getattr(tree_widget, 'currentItem', None):
             return None, None
         item = tree_widget.currentItem()
         if not item:
@@ -801,7 +822,7 @@ class JackConnectionManager(QMainWindow):
             return port_name, False
     
     def _restore_selection(self, tree_widget: QTreeWidget, selection_info: Tuple[Optional[str], Optional[bool]]) -> None:
-        if not selection_info or not hasattr(tree_widget, 'port_items'):
+        if not selection_info or not getattr(tree_widget, 'port_items', None):
             return
         
         name_or_text, is_group = selection_info
@@ -866,10 +887,12 @@ class JackConnectionManager(QMainWindow):
                     self.cable_widget.update_latency_display()
 
             # Manage ALSA mixer updates based on focus and active tab
-            if hasattr(self.ui_manager, 'tab_widget') and hasattr(self.ui_manager, 'alsa_mixer_tab_widget') and self.alsa_mixer_app is not None:
-                current_tab_index = self.ui_manager.tab_widget.currentIndex()
-                current_widget = self.ui_manager.tab_widget.widget(current_tab_index)
-                is_alsa_mixer_tab_active = (current_widget == self.ui_manager.alsa_mixer_tab_widget)
+            tab_widget = getattr(self.ui_manager, 'tab_widget', None)
+            alsa_mixer_tab = getattr(self.ui_manager, 'alsa_mixer_tab_widget', None)
+            if tab_widget and alsa_mixer_tab and self.alsa_mixer_app is not None:
+                current_tab_index = tab_widget.currentIndex()
+                current_widget = tab_widget.widget(current_tab_index)
+                is_alsa_mixer_tab_active = (current_widget == alsa_mixer_tab)
 
                 if is_alsa_mixer_tab_active:
                     if is_focused:
@@ -1062,10 +1085,12 @@ class JackConnectionManager(QMainWindow):
 
     def update_undo_redo_buttons(self) -> None:
         """Update undo/redo action enabled state (buttons are per-tab, driven by actions)."""
-        if hasattr(self.action_manager, 'global_undo_action') and self.action_manager.global_undo_action:
-            self.action_manager.global_undo_action.setEnabled(self.connection_history.can_undo())
-        if hasattr(self.action_manager, 'global_redo_action') and self.action_manager.global_redo_action:
-            self.action_manager.global_redo_action.setEnabled(self.connection_history.can_redo())
+        global_undo_action = getattr(self.action_manager, 'global_undo_action', None)
+        if global_undo_action:
+            global_undo_action.setEnabled(self.connection_history.can_undo())
+        global_redo_action = getattr(self.action_manager, 'global_redo_action', None)
+        if global_redo_action:
+            global_redo_action.setEnabled(self.connection_history.can_redo())
 
     def _get_current_visibility_port_type(self) -> str:
         """Get the port type for the current tab's visibility dialog."""
@@ -1114,12 +1139,16 @@ class JackConnectionManager(QMainWindow):
         self.update_undo_redo_buttons()
 
         graph_window = self._get_graph_main_window()
-        if graph_window and hasattr(graph_window, '_update_graph_undo_redo_buttons_state'):
-            graph_window._update_graph_undo_redo_buttons_state()
+        if graph_window:
+            update_func = getattr(graph_window, '_update_graph_undo_redo_buttons_state', None)
+            if update_func:
+                update_func()
 
     @pyqtSlot()
     def toggle_graph_fullscreen(self) -> None:
-        if not hasattr(self.ui_manager, 'tab_widget') or not hasattr(self.ui_manager, 'graph_tab_widget'):
+        tab_widget = getattr(self.ui_manager, 'tab_widget', None)
+        graph_tab_widget = getattr(self.ui_manager, 'graph_tab_widget', None)
+        if not tab_widget or not graph_tab_widget:
             logger.error("Error: Tab widget or graph_tab_widget not found.")
             return
 
@@ -1146,8 +1175,11 @@ class JackConnectionManager(QMainWindow):
             if toolbar.parent() == self:
                 components_to_manage.append(toolbar)
 
-        if hasattr(self.ui_manager.tab_widget, 'tabBar'):
-            components_to_manage.append(self.ui_manager.tab_widget.tabBar())
+        tab_bar_method = getattr(self.ui_manager.tab_widget, 'tabBar', None)
+        if tab_bar_method:
+            tab_bar = tab_bar_method()
+            if tab_bar:
+                components_to_manage.append(tab_bar)
 
         if self._graph_is_fullscreen:
             self._widgets_original_visibility.clear()
@@ -1167,8 +1199,10 @@ class JackConnectionManager(QMainWindow):
                     self.ui_manager.tab_widget.setTabEnabled(i, False)
             
             graph_window = self._get_graph_main_window()
-            if graph_window and hasattr(graph_window, 'toggle_internal_controls'):
-                graph_window.toggle_internal_controls(False)
+            if graph_window:
+                toggle_func = getattr(graph_window, 'toggle_internal_controls', None)
+                if toggle_func:
+                    toggle_func(False)
 
             self.showFullScreen()
 
@@ -1176,8 +1210,10 @@ class JackConnectionManager(QMainWindow):
             self.showNormal()
 
             graph_window = self._get_graph_main_window()
-            if graph_window and hasattr(graph_window, 'toggle_internal_controls'):
-                graph_window.toggle_internal_controls(True)
+            if graph_window:
+                toggle_func = getattr(graph_window, 'toggle_internal_controls', None)
+                if toggle_func:
+                    toggle_func(True)
 
             chrome_widgets_managed_on_exit = []
             if self.menuBar(): chrome_widgets_managed_on_exit.append(self.menuBar())
@@ -1185,8 +1221,11 @@ class JackConnectionManager(QMainWindow):
             for toolbar in self.findChildren(QToolBar):
                 if toolbar.parent() == self:
                     chrome_widgets_managed_on_exit.append(toolbar)
-            if hasattr(self.ui_manager.tab_widget, 'tabBar') and self.ui_manager.tab_widget.tabBar():
-                chrome_widgets_managed_on_exit.append(self.ui_manager.tab_widget.tabBar())
+            tab_bar_method = getattr(self.ui_manager.tab_widget, 'tabBar', None)
+            if tab_bar_method:
+                tab_bar = tab_bar_method()
+                if tab_bar:
+                    chrome_widgets_managed_on_exit.append(tab_bar)
 
             for item_widget, original_state in self._widgets_original_visibility.items():
                 if item_widget in chrome_widgets_managed_on_exit:

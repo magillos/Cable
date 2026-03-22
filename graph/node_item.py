@@ -4,6 +4,7 @@ QGraphicsItem representing a JACK client node with ports, folding, splitting, an
 """
 import logging
 import traceback # For error reporting in _split_node
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +128,7 @@ class NodeItem(QGraphicsItem):
         self.config = {}
 
         # Initialize unified state from config manager if needed
-        if config_manager and hasattr(config_manager, 'node_positions_file'):
+        if config_manager and getattr(config_manager, 'node_positions_file', None):
             try:
                 import json
                 if config_manager.node_positions_file.exists():
@@ -423,7 +424,8 @@ class NodeItem(QGraphicsItem):
         Raises:
             RuntimeError: If no layouter is available
         """
-        if not self.scene() or not hasattr(self.scene(), 'layouter') or not self.scene().layouter:
+        scene = self.scene()
+        if not scene or not getattr(scene, 'layouter', None):
             raise RuntimeError("Cannot calculate title geometry: No GraphLayouter available")
             
         return self.scene().layouter._calculate_and_set_title_geometry(self, node_width)
@@ -435,7 +437,8 @@ class NodeItem(QGraphicsItem):
         Raises:
             RuntimeError: If no layouter is available
         """
-        if not self.scene() or not hasattr(self.scene(), 'layouter') or not self.scene().layouter:
+        scene = self.scene()
+        if not scene or not getattr(scene, 'layouter', None):
             raise RuntimeError("Cannot hide ports and bulk areas: No GraphLayouter available")
             
         self.scene().layouter._hide_all_ports_and_bulk_areas(self)
@@ -447,7 +450,8 @@ class NodeItem(QGraphicsItem):
         Raises:
             RuntimeError: If no layouter is available
         """
-        if not self.scene() or not hasattr(self.scene(), 'layouter') or not self.scene().layouter:
+        scene = self.scene()
+        if not scene or not getattr(scene, 'layouter', None):
             raise RuntimeError("Cannot show ports and bulk areas: No GraphLayouter available")
             
         self.scene().layouter._show_all_ports_and_bulk_areas(self)
@@ -466,7 +470,8 @@ class NodeItem(QGraphicsItem):
         Raises:
             RuntimeError: If no layouter is available
         """
-        if not self.scene() or not hasattr(self.scene(), 'layouter') or not self.scene().layouter:
+        scene = self.scene()
+        if not scene or not getattr(scene, 'layouter', None):
             raise RuntimeError("Cannot layout bulk areas: No GraphLayouter available")
             
         self.scene().layouter._layout_bulk_areas(
@@ -488,7 +493,8 @@ class NodeItem(QGraphicsItem):
         Raises:
             RuntimeError: If no layouter is available
         """
-        if not self.scene() or not hasattr(self.scene(), 'layouter') or not self.scene().layouter:
+        scene = self.scene()
+        if not scene or not getattr(scene, 'layouter', None):
             raise RuntimeError("Cannot layout individual ports: No GraphLayouter available")
             
         return self.scene().layouter._layout_individual_ports(
@@ -502,7 +508,7 @@ class NodeItem(QGraphicsItem):
         """
         if not self.scene():
             raise RuntimeError("Cannot layout ports: Node is not in a scene")
-        if not hasattr(self.scene(), 'layouter') or not self.scene().layouter:
+        if not getattr(self.scene(), 'layouter', None):
             raise RuntimeError("Cannot layout ports: Scene has no GraphLayouter")
             
         self.scene().layouter.layout_node_ports(self)
@@ -521,9 +527,10 @@ class NodeItem(QGraphicsItem):
         """Disconnects all ports of the client this NodeItem (or its origin) represents."""
         client_to_disconnect = self.original_client_name
         current_scene = self.scene()
-        if current_scene and hasattr(current_scene, 'jack_connection_handler'):
+        jack_handler = getattr(current_scene, 'jack_connection_handler', None) if current_scene else None
+        if jack_handler:
             try:
-                current_scene.jack_connection_handler.disconnect_all_ports_of_client(client_to_disconnect)
+                jack_handler.disconnect_all_ports_of_client(client_to_disconnect)
             except Exception as e:
                 # Basic error logging, consider a more robust logging mechanism
                 logger.error(f"Error in _disconnect_all_connections for {client_to_disconnect}: {e}")
@@ -534,7 +541,8 @@ class NodeItem(QGraphicsItem):
     def _hide_node(self) -> None:
         """Hides this node or part based on the NodeVisibilityManager settings."""
         current_scene = self.scene()
-        if not current_scene or not hasattr(current_scene, 'node_visibility_manager') or not current_scene.node_visibility_manager:
+        node_vis_mgr = getattr(current_scene, 'node_visibility_manager', None) if current_scene else None
+        if not node_vis_mgr:
             logger.warning("Cannot hide node: NodeVisibilityManager not available")
             return
 
@@ -577,8 +585,10 @@ class NodeItem(QGraphicsItem):
         app_config = None
         
         # Try to get the global config from the connection_manager
-        if hasattr(current_scene, 'connection_manager') and current_scene.connection_manager:
-            if hasattr(current_scene.connection_manager, 'config_manager') and current_scene.connection_manager.config_manager:
+        connection_manager = getattr(current_scene, 'connection_manager', None)
+        if connection_manager:
+            config_manager = getattr(connection_manager, 'config_manager', None)
+            if config_manager:
                 # Use the application-level config_manager which has get_bool method
                 app_config = current_scene.connection_manager.config_manager
                 show_dialog = app_config.get_bool(keys.SHOW_HIDE_NODE_CONFIRMATION, default=True)
@@ -649,15 +659,17 @@ class NodeItem(QGraphicsItem):
         if self.is_split_part:
             # For split parts, hide connections before applying visibility settings
             # which will eventually hide the node
-            if hasattr(current_scene, 'connection_mgr'):
-                current_scene.connection_mgr.update_node_connections_visibility(self, False)
+            connection_mgr = getattr(current_scene, 'connection_mgr', None)
+            if connection_mgr:
+                connection_mgr.update_node_connections_visibility(self, False)
                 
         # Apply the changes which will hide the node(s)
         current_scene.node_visibility_manager.apply_visibility_settings()
         
         # Do a full refresh of all connection visibility to ensure consistency
-        if hasattr(current_scene, 'connection_mgr'):
-            current_scene.connection_mgr.refresh_all_connection_visibility()
+        connection_mgr = getattr(current_scene, 'connection_mgr', None)
+        if connection_mgr:
+            connection_mgr.refresh_all_connection_visibility()
     
 
 
@@ -688,11 +700,13 @@ class NodeItem(QGraphicsItem):
         elif is_output_part:
             fold_text = "Unfold Output Part" if self.output_part_folded else "Fold Output Part"
             menu.addAction(fold_text).triggered.connect(lambda: self.fold_handler.toggle_output_part_fold())
-            
-        # Add the Hide option
-        hide_action = menu.addAction("Hide")
-        hide_action.setShortcut(Qt.Key.Key_H)
-        hide_action.triggered.connect(self._hide_node)
+
+        # Add the Hide option (skip for unified sinks)
+        is_unified = getattr(self, 'is_unified_sink', False)
+        if not is_unified:
+            hide_action = menu.addAction("Hide")
+            hide_action.setShortcut(Qt.Key.Key_H)
+            hide_action.triggered.connect(self._hide_node)
 
     def _build_context_menu_for_split_origin(self, menu: QMenu, disconnect_is_enabled: bool) -> None:
         disconnect_action = menu.addAction("Disconnect all")
@@ -705,11 +719,13 @@ class NodeItem(QGraphicsItem):
         unsplit_action = menu.addAction("Unsplit Node")
         unsplit_action.setShortcut(Qt.Key.Key_U)
         unsplit_action.triggered.connect(lambda: self.split_handler.unsplit_node(save_state=True))
-        
-        # Add the Hide option
-        hide_action = menu.addAction("Hide")
-        hide_action.setShortcut(Qt.Key.Key_H)
-        hide_action.triggered.connect(self._hide_node)
+
+        # Add the Hide option (skip for unified sinks)
+        is_unified = getattr(self, 'is_unified_sink', False)
+        if not is_unified:
+            hide_action = menu.addAction("Hide")
+            hide_action.setShortcut(Qt.Key.Key_H)
+            hide_action.triggered.connect(self._hide_node)
 
     def ensure_unified_sink_exists(self) -> None:
         self.unify_handler.ensure_sink_exists()
@@ -718,24 +734,37 @@ class NodeItem(QGraphicsItem):
         self.unify_handler.apply_preset(unify_data)
 
     def _build_context_menu_for_normal_node(self, menu: QMenu, disconnect_is_enabled: bool) -> None:
-        disconnect_action = menu.addAction("Disconnect all")
-        disconnect_action.setEnabled(disconnect_is_enabled)
-        disconnect_action.triggered.connect(self._disconnect_all_connections)
+        # Skip "Disconnect all" for unified sinks
+        is_unified_sink = getattr(self, 'is_unified_sink', False)
+        if not is_unified_sink:
+            disconnect_action = menu.addAction("Disconnect all")
+            disconnect_action.setEnabled(disconnect_is_enabled)
+            disconnect_action.triggered.connect(self._disconnect_all_connections)
 
-        # Add separator after Disconnect
-        menu.addSeparator()
+        # Add virtual sink options (but NOT unified sinks)
+        if getattr(self, 'is_virtual_sink', False) and not getattr(self, 'is_unified_sink', False):
+            menu.addSeparator()
 
-        # Add "Unload sink" and "Recreate at auto-start" for virtual sinks (but NOT unified sinks)
-        if (hasattr(self, 'is_virtual_sink') and self.is_virtual_sink
-                and not getattr(self, 'is_unified_sink', False)):
+            # Unload sink/source
             unload_action = menu.addAction("Unload sink/source")
             unload_action.triggered.connect(self.unify_handler.unload_sink)
 
+            # Set as default node
+            default_action = QAction("Set as default node", menu)
+            default_action.setCheckable(True)
+            default_action.setChecked(self._is_default_sink())
+            default_action.triggered.connect(lambda checked: self._toggle_default_sink(checked))
+            menu.addAction(default_action)
+
+            # Recreate at auto-start
             recreate_action = QAction("Recreate at auto-start", menu)
             recreate_action.setCheckable(True)
             recreate_action.setChecked(self._is_recreate_at_autostart())
             recreate_action.triggered.connect(lambda checked: self._toggle_recreate_at_autostart(checked))
             menu.addAction(recreate_action)
+
+            # Add separator after virtual sink options
+            menu.addSeparator()
 
         split_action = menu.addAction("Split")
         split_action.setShortcut(Qt.Key.Key_S)
@@ -745,10 +774,12 @@ class NodeItem(QGraphicsItem):
         fold_text = "Unfold" if self.is_folded else "Fold"
         menu.addAction(fold_text).triggered.connect(self.fold_handler.toggle_main_fold_state)
 
-        # Add the Hide option
-        hide_action = menu.addAction("Hide")
-        hide_action.setShortcut(Qt.Key.Key_H)
-        hide_action.triggered.connect(self._hide_node)
+        # Add the Hide option (skip for unified sinks)
+        is_unified = getattr(self, 'is_unified_sink', False)
+        if not is_unified:
+            hide_action = menu.addAction("Hide")
+            hide_action.setShortcut(Qt.Key.Key_H)
+            hide_action.triggered.connect(self._hide_node)
 
         # Add unify menu items
         self.unify_handler.build_context_menu(menu)
@@ -847,7 +878,7 @@ class NodeItem(QGraphicsItem):
         self._internal_state_change_in_progress = False
 
     def itemChange(self, change: QGraphicsItem.GraphicsItemChange, value: Any) -> Any:
-        if not self.scene() or not hasattr(self, 'config_manager') or not self.config_manager:
+        if not self.scene() or not getattr(self, 'config_manager', None):
             return super().itemChange(change, value)
 
         if change == QGraphicsItem.GraphicsItemChange.ItemSelectedHasChanged:
@@ -919,7 +950,8 @@ class NodeItem(QGraphicsItem):
     def _disconnect_this_part_input_ports(self) -> None:
         """Disconnects all input ports of this specific node item (assumed to be an input split part)."""
         current_scene = self.scene()
-        if not current_scene or not hasattr(current_scene, 'jack_connection_handler'):
+        jack_handler = getattr(current_scene, 'jack_connection_handler', None) if current_scene else None
+        if not jack_handler:
             return
         jack_handler = current_scene.jack_connection_handler
         for port_item in list(self.input_ports.values()): # Iterate copy
@@ -934,7 +966,8 @@ class NodeItem(QGraphicsItem):
     def _disconnect_this_part_output_ports(self) -> None:
         """Disconnects all output ports of this specific node item (assumed to be an output split part)."""
         current_scene = self.scene()
-        if not current_scene or not hasattr(current_scene, 'jack_connection_handler'):
+        jack_handler = getattr(current_scene, 'jack_connection_handler', None) if current_scene else None
+        if not jack_handler:
             return
         jack_handler = current_scene.jack_connection_handler
         for port_item in list(self.output_ports.values()): # Iterate copy
@@ -1013,3 +1046,115 @@ class NodeItem(QGraphicsItem):
         except Exception as e:
             logger.warning(f"Could not detect channel map for {sink_name}: {e}")
         return 'front-left,front-right'
+
+    def _get_pw_node_id(self) -> Optional[int]:
+        """Resolve the PipeWire node ID for this virtual sink via pw-dump."""
+        import subprocess as _sp
+        import re
+
+        # Extract PipeWire node ID from JACK client name suffix
+        m = re.search(r'-(\d+)$', self.client_name)
+        target_node_id = int(m.group(1)) if m else None
+
+        sink_base_name = self._get_sink_base_name()
+
+        # Check for Flatpak environment
+        flatpak_env = os.path.exists('/.flatpak-info')
+        cmd = ['pw-dump']
+        if flatpak_env:
+            cmd = ['flatpak-spawn', '--host'] + cmd
+
+        try:
+            result = _sp.run(
+                cmd, capture_output=True, text=True, check=True
+            )
+            import json as _json
+            data = _json.loads(result.stdout)
+            
+            matching_nodes = []
+            
+            for node in data:
+                if node.get('type') != 'PipeWire:Interface:Node':
+                    continue
+                
+                node_id = int(node['id'])
+                props = node.get('info', {}).get('props', {})
+                
+                # If we have a target node ID from suffix, use it to exactly match the node
+                if target_node_id is not None and node_id == target_node_id:
+                    return node_id
+                    
+                # Original fallback exact match
+                if props.get('node.description') == self.client_name:
+                    return node_id
+                    
+                # Match by base sink name
+                if props.get('node.name') == sink_base_name:
+                    serial = int(props.get('object.serial', 0))
+                    matching_nodes.append((serial, node_id))
+            
+            if target_node_id is None and matching_nodes:
+                # No suffix -> we want the primary node. PipeWire assigns the lowest serial
+                # to the first-created node. Pick the node with the lowest serial.
+                matching_nodes.sort(key=lambda x: x[0])
+                return matching_nodes[0][1]
+                
+        except Exception as e:
+            logger.error(f"Error resolving PipeWire node ID for '{self.client_name}': {e}")
+        return None
+
+    def _is_default_sink(self) -> bool:
+        """Check if this virtual sink is currently the default audio sink."""
+        import subprocess as _sp
+        node_id = self._get_pw_node_id()
+        if node_id is None:
+            return False
+
+        # Check for Flatpak environment
+        flatpak_env = os.path.exists('/.flatpak-info')
+        cmd = ['wpctl', 'inspect', '@DEFAULT_AUDIO_SINK@']
+        if flatpak_env:
+            cmd = ['flatpak-spawn', '--host'] + cmd
+
+        try:
+            result = _sp.run(
+                cmd,
+                capture_output=True, text=True, check=True
+            )
+            for line in result.stdout.splitlines():
+                stripped = line.strip()
+                if stripped.startswith('id '):
+                    current_id = stripped.split(',')[0].split()[-1].strip()
+                    return str(node_id) == current_id
+        except Exception as e:
+            logger.error(f"Error checking default sink status: {e}")
+        return False
+
+    def _toggle_default_sink(self, checked: bool) -> None:
+        """Set or clear this virtual sink as the default audio sink."""
+        import subprocess as _sp
+        node_id = self._get_pw_node_id()
+        if node_id is None:
+            logger.error(f"Cannot toggle default: failed to resolve PipeWire ID for '{self.client_name}'")
+            return
+
+        # Check for Flatpak environment
+        flatpak_env = os.path.exists('/.flatpak-info')
+
+        try:
+            if checked:
+                cmd = ['wpctl', 'set-default', str(node_id)]
+                if flatpak_env:
+                    cmd = ['flatpak-spawn', '--host'] + cmd
+                _sp.run(cmd,
+                        check=True, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+                logger.info(f"Set default sink to '{self.client_name}' (ID {node_id})")
+            else:
+                cmd = ['wpctl', 'clear-default', '0']
+                if flatpak_env:
+                    cmd = ['flatpak-spawn', '--host'] + cmd
+                _sp.run(cmd,
+                        check=True, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+                logger.info(f"Cleared default audio sink (was '{self.client_name}')")
+        except Exception as e:
+            logger.error(f"Error toggling default sink for '{self.client_name}': {e}")

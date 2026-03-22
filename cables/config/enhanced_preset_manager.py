@@ -195,19 +195,19 @@ class EnhancedPresetManager(PresetManager):
         # Delete the connection preset using the base class
         connection_deleted = super().delete_preset(clean_name)
         
-        # Delete the layout data if it exists
+        # Delete the layout data if it exists (best-effort: failure doesn't block deletion)
         layout_file = os.path.join(self.layout_presets_dir, f"{clean_name}.json")
-        layout_deleted = True
         
         if os.path.exists(layout_file):
             try:
                 os.remove(layout_file)
                 logger.info(f"Layout data for preset '{clean_name}' deleted from {layout_file}")
             except OSError as e:
-                logger.error(f"Error deleting layout file {layout_file}: {e}")
-                layout_deleted = False
+                # Log the warning but don't fail the whole operation — the .snap is already gone
+                logger.warning(f"Could not delete layout file {layout_file}: {e}")
         
-        return connection_deleted and layout_deleted
+        # Success is gated only on the primary .snap deletion; layout JSON is auxiliary
+        return connection_deleted
     
     def _json_serializer(self, obj: Any) -> Any:
         """

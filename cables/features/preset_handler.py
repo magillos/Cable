@@ -7,17 +7,29 @@ the main application, enabling better testability and reduced coupling.
 """
 
 import os
-from PyQt6.QtWidgets import (QMenu, QMessageBox, QWidgetAction, QLineEdit, QCheckBox, 
-                            QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton)
+from PyQt6.QtWidgets import (
+    QMenu,
+    QMessageBox,
+    QWidgetAction,
+    QLineEdit,
+    QCheckBox,
+    QDialog,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+)
 from PyQt6.QtCore import QPoint, QTimer, QProcess
 from PyQt6.QtGui import QKeySequence, QAction, QActionGroup
 
 import logging
+
 logger = logging.getLogger(__name__)
 
 from cables.utils.helpers import show_timed_messagebox
 from cable_core import config_keys as keys
 from typing import TYPE_CHECKING, Optional, List, Dict, Any, Union
+
 if TYPE_CHECKING:
     from PyQt6.QtWidgets import QWidget
     from cables.interfaces import PresetHandlerInterface
@@ -25,10 +37,11 @@ if TYPE_CHECKING:
 
 from cable_core.dialogs import DefaultResetConfirmDialog
 
+
 class PresetHandler:
     """
     Handles preset management functionality including loading, saving, and UI interactions.
-    
+
     This class uses the PresetHandlerInterface protocol to access capabilities
     from the main application. The manager parameter must implement:
     - ConfigProvider: for config_manager access
@@ -39,7 +52,8 @@ class PresetHandler:
     - ColorProvider: for text_color, background_color, highlight_color
     - JACKClientProvider: for client access
     """
-    def __init__(self, manager: 'PresetHandlerInterface') -> None:
+
+    def __init__(self, manager: "PresetHandlerInterface") -> None:
         """
         Initialize the PresetHandler.
 
@@ -49,7 +63,9 @@ class PresetHandler:
         """
         self.manager = manager  # Reference to PresetHandlerInterface implementation
         # Initialize preset state from config manager
-        self.startup_preset_name: Optional[str] = self.manager.config_manager.get_str(keys.STARTUP_PRESET)
+        self.startup_preset_name: Optional[str] = self.manager.config_manager.get_str(
+            keys.STARTUP_PRESET
+        )
         # Don't restore active_preset from config on fresh start - preset must actually be loaded
         # The active preset will be set when startup_preset is loaded or user loads a preset
         self.current_preset_name: Optional[str] = None
@@ -72,12 +88,10 @@ class PresetHandler:
         self.original_preset_layout_data: Optional[Dict[str, Any]] = None
         self.save_button_initially_enabled: bool = False
         self.unified_clients: Dict[str, Any] = {}
-        
-
 
     def show_preset_menu(self) -> None:
         """Populates the preset management menu. Assumes menu is sender()."""
-        menu = self.manager.sender() # Get the menu that emitted aboutToShow
+        menu = self.manager.sender()  # Get the menu that emitted aboutToShow
         if not menu or not isinstance(menu, QMenu):
             logger.error("Error: show_preset_menu called without a valid QMenu sender.")
             return
@@ -85,7 +99,7 @@ class PresetHandler:
         # Update preset button styles based on daemon state
         self._update_preset_button_styles()
 
-        menu.clear() # Clear previous items before repopulating
+        menu.clear()  # Clear previous items before repopulating
 
         preset_names = self.manager.preset_manager.get_preset_names()
 
@@ -93,9 +107,11 @@ class PresetHandler:
         # Use a temporary attribute to hold the line edit for the save action
         self._preset_menu_name_edit = QLineEdit()
         self._preset_menu_name_edit.setPlaceholderText("Enter New Preset Name...")
-        self._preset_menu_name_edit.returnPressed.connect(self._save_current_preset_from_menu)  # Connect Enter key
+        self._preset_menu_name_edit.returnPressed.connect(
+            self._save_current_preset_from_menu
+        )  # Connect Enter key
         self._preset_menu_name_edit.setMinimumWidth(200)  # Give it some space
-        
+
         # Apply similar styling as filter edits
         filter_style = f"""
             QLineEdit {{
@@ -131,30 +147,38 @@ class PresetHandler:
 
         # --- MODIFICATION START ---
         # Add the global "Default" action from ActionManager
-        if self.manager.action_manager is not None and \
-           self.manager.action_manager.default_preset_action is not None:
+        if (
+            self.manager.action_manager is not None
+            and self.manager.action_manager.default_preset_action is not None
+        ):
             load_menu.addAction(self.manager.action_manager.default_preset_action)
         else:
             # Fallback or error logging if the action isn't found
             error_action = QAction("Default (Action Init Error)", load_menu)
             error_action.setEnabled(False)
             load_menu.addAction(error_action)
-            logger.error("Error: Could not find global default_preset_action in PresetHandler.")
+            logger.error(
+                "Error: Could not find global default_preset_action in PresetHandler."
+            )
 
         load_menu.addSeparator()  # Add separator after "Default"
         # --- MODIFICATION END ---
 
+        load_group = QActionGroup(
+            load_menu
+        )  # Use QActionGroup for radio button behavior
+        load_group.setExclusive(True)
+
         if preset_names:
             for name in preset_names:
                 load_action = QAction(name, load_menu)
-                # Highlight if this is the currently active preset
-                if name == self.current_preset_name:
-                    font = load_action.font()
-                    font.setBold(True)
-                    load_action.setFont(font)
-                # Use lambda to capture the correct name and call the new handler
-                load_action.triggered.connect(lambda checked=False, n=name: self._handle_gui_preset_load(n))
+                load_action.setCheckable(True)
+                load_action.setChecked(name == self.current_preset_name)
+                load_action.triggered.connect(
+                    lambda checked=False, n=name: self._handle_gui_preset_load(n)
+                )
                 load_menu.addAction(load_action)
+                load_group.addAction(load_action)
         else:
             no_load_action = QAction("No Saved Presets", menu)
             no_load_action.setEnabled(False)
@@ -167,7 +191,9 @@ class PresetHandler:
             for name in preset_names:
                 delete_action = QAction(name, delete_menu)
                 # Use lambda to capture the correct name for the slot
-                delete_action.triggered.connect(lambda checked=False, n=name: self._delete_selected_preset(n))
+                delete_action.triggered.connect(
+                    lambda checked=False, n=name: self._delete_selected_preset(n)
+                )
                 delete_menu.addAction(delete_action)
 
         # --- Startup Preset Section ---
@@ -179,8 +205,12 @@ class PresetHandler:
         # Add "None" option
         none_action = QAction("None", startup_menu)
         none_action.setCheckable(True)
-        none_action.setChecked(not self.startup_preset_name or self.startup_preset_name == 'None')
-        none_action.triggered.connect(lambda checked=False: self._set_startup_preset(None))
+        none_action.setChecked(
+            not self.startup_preset_name or self.startup_preset_name == "None"
+        )
+        none_action.triggered.connect(
+            lambda checked=False: self._set_startup_preset(None)
+        )
         startup_menu.addAction(none_action)
         startup_group.addAction(none_action)  # Add to group
         startup_menu.addSeparator()  # Add spacer after 'None'
@@ -191,7 +221,9 @@ class PresetHandler:
             startup_action.setCheckable(True)
             startup_action.setChecked(name == self.startup_preset_name)
             # Use lambda to capture the correct name
-            startup_action.triggered.connect(lambda checked=False, n=name: self._set_startup_preset(n))
+            startup_action.triggered.connect(
+                lambda checked=False, n=name: self._set_startup_preset(n)
+            )
             startup_menu.addAction(startup_action)
             startup_group.addAction(startup_action)  # Add to group
 
@@ -199,28 +231,40 @@ class PresetHandler:
         menu.addSeparator()
         restore_layout_action = QWidgetAction(menu)
         restore_layout_checkbox = QCheckBox("Restore layout")
-        restore_layout_checkbox.setToolTip("In Graph, loading a preset will also restore clients' positions, visibility, split and fold states, and the zoom level.")
-        
+        restore_layout_checkbox.setToolTip(
+            "In Graph, loading a preset will also restore clients' positions, visibility, split and fold states, and the zoom level."
+        )
+
         # Initialize checkbox state from config
-        initial_restore_layout = self.manager.config_manager.get_bool(keys.LOAD_PRESET_RESTORE_LAYOUT, True)
-        
+        initial_restore_layout = self.manager.config_manager.get_bool(
+            keys.LOAD_PRESET_RESTORE_LAYOUT, True
+        )
+
         # Check if I/O layout is active (untangle setting == 0)
         graph_window = self.manager._get_graph_main_window()
-        untangle_setting = getattr(graph_window, 'current_untangle_setting', None) if graph_window else None
-        is_io_active = (graph_window is not None and untangle_setting == 0)
-        
+        untangle_setting = (
+            getattr(graph_window, "current_untangle_setting", None)
+            if graph_window
+            else None
+        )
+        is_io_active = graph_window is not None and untangle_setting == 0
+
         effective_state = initial_restore_layout if not is_io_active else False
         restore_layout_checkbox.setChecked(effective_state)
         restore_layout_checkbox.setEnabled(not is_io_active)
-        
+
         if is_io_active:
-            restore_layout_checkbox.setToolTip("Restore layout (Disabled during I/O layout - dynamic sorting)")
+            restore_layout_checkbox.setToolTip(
+                "Restore layout (Disabled during I/O layout - dynamic sorting)"
+            )
         else:
-            restore_layout_checkbox.setToolTip("In Graph, loading a preset will also restore clients' positions, visibility, split and fold states, and the zoom level.")
-        
+            restore_layout_checkbox.setToolTip(
+                "In Graph, loading a preset will also restore clients' positions, visibility, split and fold states, and the zoom level."
+            )
+
         # Connect to a handler to save the state
         restore_layout_checkbox.toggled.connect(self._set_restore_layout_mode)
-        
+
         restore_layout_action.setDefaultWidget(restore_layout_checkbox)
         menu.addAction(restore_layout_action)
         # --- End Restore Layout Checkbox ---
@@ -228,15 +272,19 @@ class PresetHandler:
         # --- Strict Mode Checkbox ---
         strict_action = QWidgetAction(menu)
         strict_checkbox = QCheckBox("Strict")
-        strict_checkbox.setToolTip("When on, connections not stored in the loaded preset will be deactivated.")
-        
+        strict_checkbox.setToolTip(
+            "When on, connections not stored in the loaded preset will be deactivated."
+        )
+
         # Initialize checkbox state from config
-        initial_strict_mode = self.manager.config_manager.get_bool(keys.LOAD_PRESET_STRICT_MODE, False)
+        initial_strict_mode = self.manager.config_manager.get_bool(
+            keys.LOAD_PRESET_STRICT_MODE, False
+        )
         strict_checkbox.setChecked(initial_strict_mode)
-        
+
         # Connect to a handler to save the state
         strict_checkbox.toggled.connect(self._set_strict_mode)
-        
+
         strict_action.setDefaultWidget(strict_checkbox)
         menu.addAction(strict_action)
         # --- End Strict Mode Checkbox ---
@@ -244,15 +292,19 @@ class PresetHandler:
         # --- Daemon Mode Checkbox ---
         daemon_action = QWidgetAction(menu)
         daemon_checkbox = QCheckBox("Daemon mode")
-        daemon_checkbox.setToolTip("Background mode: restores connections automatically if present in loaded preset.")
-        
+        daemon_checkbox.setToolTip(
+            "Background mode: restores connections automatically if present in loaded preset."
+        )
+
         # Initialize checkbox state from config
-        initial_daemon_mode = self.manager.config_manager.get_bool(keys.LOAD_PRESET_DAEMON_MODE, False)
+        initial_daemon_mode = self.manager.config_manager.get_bool(
+            keys.LOAD_PRESET_DAEMON_MODE, False
+        )
         daemon_checkbox.setChecked(initial_daemon_mode)
-        
+
         # Connect to a handler to save the state
         daemon_checkbox.toggled.connect(self._set_daemon_mode)
-        
+
         daemon_action.setDefaultWidget(daemon_checkbox)
         menu.addAction(daemon_action)
         # --- End Daemon Mode Checkbox ---
@@ -264,17 +316,22 @@ class PresetHandler:
             return
         preset_name = self._preset_menu_name_edit.text().strip()
         if not preset_name:
-            QMessageBox.warning(self.manager, "Save Preset", "Enter a name for the preset.")
+            QMessageBox.warning(
+                self.manager, "Save Preset", "Enter a name for the preset."
+            )
             return
 
         # Guard against double-trigger: pressing Enter in a QMenu-embedded QLineEdit
         # can fire both returnPressed AND the highlighted action's triggered signal.
         if self._save_in_progress:
-            logger.debug(f"Save already in progress, ignoring duplicate trigger for '{preset_name}'")
+            logger.debug(
+                f"Save already in progress, ignoring duplicate trigger for '{preset_name}'"
+            )
             return
 
         # Use QTimer to defer the save operation to avoid menu/dialog interaction issues
         from PyQt6.QtCore import QTimer
+
         QTimer.singleShot(100, lambda: self._perform_preset_save(preset_name))
 
     def _perform_preset_save(self, preset_name: str) -> None:
@@ -295,16 +352,20 @@ class PresetHandler:
     def _perform_preset_save_impl(self, preset_name: str) -> None:
         """Internal implementation of preset save (called by _perform_preset_save)."""
         # Check if preset already exists and ask for confirmation first
-        preset_file = os.path.join(self.manager.preset_manager.presets_dir, f"{preset_name}.snap")
+        preset_file = os.path.join(
+            self.manager.preset_manager.presets_dir, f"{preset_name}.snap"
+        )
         if os.path.exists(preset_file):
-            logger.debug(f"Preset '{preset_name}' already exists, asking for confirmation")
+            logger.debug(
+                f"Preset '{preset_name}' already exists, asking for confirmation"
+            )
             try:
                 reply = QMessageBox.question(
-                    self.manager, 
-                    'Confirm Overwrite',
+                    self.manager,
+                    "Confirm Overwrite",
                     f"A preset named '{preset_name}' already exists.\nDo you want to overwrite it?",
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                    QMessageBox.StandardButton.No
+                    QMessageBox.StandardButton.No,
                 )
                 if reply == QMessageBox.StandardButton.No:
                     logger.debug(f"User cancelled overwrite for preset '{preset_name}'")
@@ -312,18 +373,24 @@ class PresetHandler:
             except Exception as e:
                 logger.error(f"Error showing confirmation dialog: {e}")
                 return
-        
+
         # Try a direct approach - save connections first, then layout separately
         try:
             logger.debug("Saving connections with aj-snapshot...")
             import subprocess
-            
+
             # Save connections directly with aj-snapshot
-            command = ["aj-snapshot", "-f", preset_file]  # Force overwrite since we confirmed
+            command = [
+                "aj-snapshot",
+                "-f",
+                preset_file,
+            ]  # Force overwrite since we confirmed
             logger.debug(f"Executing: {' '.join(command)}")
-            result = subprocess.run(command, capture_output=True, text=True, check=True, timeout=30)
+            result = subprocess.run(
+                command, capture_output=True, text=True, check=True, timeout=30
+            )
             logger.debug(f"aj-snapshot completed successfully")
-            
+
             # Now save layout data if available
             graph_window = self.manager._get_graph_main_window()
             if graph_window:
@@ -332,74 +399,111 @@ class PresetHandler:
                     node_states = None
                     graph_zoom_level = None
                     node_visibility_data = None
-                    
+
                     # Get current node states from the graph scene
                     scene = self.manager._get_graph_scene()
                     if scene:
                         node_states = scene.get_node_states()
-                    
+
                     # Get current zoom level from the graph view
                     view = self.manager._get_graph_view()
                     if view:
                         graph_zoom_level = view.get_zoom_level()
-                    
+
                     # Get current node visibility settings
                     if self.manager.node_visibility_manager is not None:
                         node_visibility_data = {
-                            'audio_input': dict(self.manager.node_visibility_manager.audio_input_visibility),
-                            'audio_output': dict(self.manager.node_visibility_manager.audio_output_visibility),
-                            'midi_input': dict(self.manager.node_visibility_manager.midi_input_visibility),
-                            'midi_output': dict(self.manager.node_visibility_manager.midi_output_visibility)
+                            "audio_input": dict(
+                                self.manager.node_visibility_manager.audio_input_visibility
+                            ),
+                            "audio_output": dict(
+                                self.manager.node_visibility_manager.audio_output_visibility
+                            ),
+                            "midi_input": dict(
+                                self.manager.node_visibility_manager.midi_input_visibility
+                            ),
+                            "midi_output": dict(
+                                self.manager.node_visibility_manager.midi_output_visibility
+                            ),
                         }
-                        logger.debug(f"Collected node visibility data: {len(node_visibility_data.get('audio_input', {}))} audio input, {len(node_visibility_data.get('audio_output', {}))} audio output, {len(node_visibility_data.get('midi_input', {}))} MIDI input, {len(node_visibility_data.get('midi_output', {}))} MIDI output settings")
-                    
+                        logger.debug(
+                            f"Collected node visibility data: {len(node_visibility_data.get('audio_input', {}))} audio input, {len(node_visibility_data.get('audio_output', {}))} audio output, {len(node_visibility_data.get('midi_input', {}))} MIDI input, {len(node_visibility_data.get('midi_output', {}))} MIDI output settings"
+                        )
+
                     if node_states is not None or node_visibility_data is not None:
                         # Save layout data directly
-                        layout_presets_dir = os.path.join(self.manager.preset_manager.config_dir, 'layout_presets')
+                        layout_presets_dir = os.path.join(
+                            self.manager.preset_manager.config_dir, "layout_presets"
+                        )
                         os.makedirs(layout_presets_dir, exist_ok=True)
-                        layout_file = os.path.join(layout_presets_dir, f"{preset_name}.json")
-                        
+                        layout_file = os.path.join(
+                            layout_presets_dir, f"{preset_name}.json"
+                        )
+
                         layout_data = {
-                            'node_states': node_states,
-                            'graph_zoom_level': graph_zoom_level,
-                            'node_visibility': node_visibility_data,
-                            'split_audio_midi': self.manager.config_manager.get_bool(keys.GRAPH_SPLIT_AUDIO_MIDI_CLIENTS, False)
+                            "node_states": node_states,
+                            "graph_zoom_level": graph_zoom_level,
+                            "node_visibility": node_visibility_data,
+                            "split_audio_midi": self.manager.config_manager.get_bool(
+                                keys.GRAPH_SPLIT_AUDIO_MIDI_CLIENTS, False
+                            ),
                         }
-                        
+
                         import json
-                        with open(layout_file, 'w') as f:
-                            json.dump(layout_data, f, indent=4, default=self._json_serializer_simple)
-                        
+
+                        with open(layout_file, "w") as f:
+                            json.dump(
+                                layout_data,
+                                f,
+                                indent=4,
+                                default=self._json_serializer_simple,
+                            )
+
                         logger.info(f"Layout data saved to {layout_file}")
-                    
+
                 except Exception as e:
                     logger.warning(f"Warning: Could not save layout data: {e}")
                     # Don't fail the entire operation for layout issues
-            
-            logger.info(f"Preset '{preset_name}' saved successfully. Loading as active preset.")
-            # Automatically load the newly saved preset to make it active
-            self.load_selected_preset(preset_name, is_startup=True)
-            show_timed_messagebox(self.manager, QMessageBox.Icon.Information,
-                                 "Preset Saved", f"Preset '{preset_name}' saved successfully.")
-                                 
+
+            logger.info(f"Preset '{preset_name}' saved successfully.")
+            self.current_preset_name = preset_name
+            self.manager.config_manager.set_str(keys.ACTIVE_PRESET, preset_name)
+            show_timed_messagebox(
+                self.manager,
+                QMessageBox.Icon.Information,
+                "Preset Saved",
+                f"Preset '{preset_name}' saved successfully.",
+            )
+
         except subprocess.TimeoutExpired:
             logger.debug("aj-snapshot command timed out")
-            QMessageBox.critical(self.manager, "Save Error", "Preset save timed out. The aj-snapshot command took too long.")
+            QMessageBox.critical(
+                self.manager,
+                "Save Error",
+                "Preset save timed out. The aj-snapshot command took too long.",
+            )
         except subprocess.CalledProcessError as e:
             logger.debug(f"aj-snapshot command failed: {e}")
-            QMessageBox.critical(self.manager, "Save Error", f"Failed to save preset: {e}")
+            QMessageBox.critical(
+                self.manager, "Save Error", f"Failed to save preset: {e}"
+            )
         except Exception as e:
             logger.debug(f"Exception during preset save: {e}")
             import traceback
+
             traceback.print_exc()
-            QMessageBox.critical(self.manager, "Save Error", f"An error occurred while saving the preset: {e}")
-    
+            QMessageBox.critical(
+                self.manager,
+                "Save Error",
+                f"An error occurred while saving the preset: {e}",
+            )
+
     def _json_serializer_simple(self, obj: Any) -> Any:
         """Simple JSON serializer for Qt objects."""
         # Handle QPointF objects
-        if callable(getattr(obj, 'x', None)) and callable(getattr(obj, 'y', None)):
+        if callable(getattr(obj, "x", None)) and callable(getattr(obj, "y", None)):
             return {"x": obj.x(), "y": obj.y()}
-        
+
         # Handle other objects by converting to string
         return str(obj)
 
@@ -417,9 +521,15 @@ class PresetHandler:
         """
         logger.debug(f"Loading preset: {name}")
 
-        strict_mode = self.manager.config_manager.get_bool(keys.LOAD_PRESET_STRICT_MODE, False)
-        daemon_mode = self.manager.config_manager.get_bool(keys.LOAD_PRESET_DAEMON_MODE, False)
-        restore_layout = self.manager.config_manager.get_bool(keys.LOAD_PRESET_RESTORE_LAYOUT, True)
+        strict_mode = self.manager.config_manager.get_bool(
+            keys.LOAD_PRESET_STRICT_MODE, False
+        )
+        daemon_mode = self.manager.config_manager.get_bool(
+            keys.LOAD_PRESET_DAEMON_MODE, False
+        )
+        restore_layout = self.manager.config_manager.get_bool(
+            keys.LOAD_PRESET_RESTORE_LAYOUT, True
+        )
 
         # First, stop any existing daemon to avoid multiple instances
         if daemon_mode:
@@ -429,10 +539,17 @@ class PresetHandler:
         self._capture_current_state()
 
         # Use enhanced preset manager if available, otherwise fall back to basic
-        if getattr(self.manager.preset_manager, 'load_and_apply_preset_with_layout', None):
+        if getattr(
+            self.manager.preset_manager, "load_and_apply_preset_with_layout", None
+        ):
             self.manager.disconnect_all_unified()
-            success, layout_data = self.manager.preset_manager.load_and_apply_preset_with_layout(
-                name, strict_mode=strict_mode, daemon_mode=daemon_mode, apply_layout=restore_layout
+            success, layout_data = (
+                self.manager.preset_manager.load_and_apply_preset_with_layout(
+                    name,
+                    strict_mode=strict_mode,
+                    daemon_mode=daemon_mode,
+                    apply_layout=restore_layout,
+                )
             )
             self.manager.reconnect_all_unified()
 
@@ -445,7 +562,9 @@ class PresetHandler:
                 self._apply_layout_data(layout_data)
 
         else:
-            success = self.manager.preset_manager.load_and_apply_preset(name, strict_mode=strict_mode, daemon_mode=daemon_mode)
+            success = self.manager.preset_manager.load_and_apply_preset(
+                name, strict_mode=strict_mode, daemon_mode=daemon_mode
+            )
             # For basic preset manager, only store connection state
             self.original_preset_connections = self.manager._get_current_connections()
             self.original_preset_layout_data = None
@@ -456,31 +575,41 @@ class PresetHandler:
             self.manager.config_manager.set_str(keys.ACTIVE_PRESET, name)
             # Initially set save button to disabled since we just loaded the preset (no changes yet)
             self.save_button_initially_enabled = False
-            save_action = getattr(self.manager, 'save_preset_action', None)
+            save_action = getattr(self.manager, "save_preset_action", None)
             if save_action:
                 save_action.setEnabled(False)
             logger.debug(f"Load Success: Set active_preset in config to '{name}'")
             self.manager.refresh_ports()
-            
+
             # Update preset button styles to reflect daemon state
             self._update_preset_button_styles()
 
             if not is_startup:
-                show_timed_messagebox(self.manager, QMessageBox.Icon.Information,
-                                     "Preset Loaded", f"Preset '{name}' loaded successfully.")
+                show_timed_messagebox(
+                    self.manager,
+                    QMessageBox.Icon.Information,
+                    "Preset Loaded",
+                    f"Preset '{name}' loaded successfully.",
+                )
 
             return True
         else:
             if not is_startup:
-                show_timed_messagebox(self.manager, QMessageBox.Icon.Information,
-                                     "Preset Loaded", f"Preset '{name}' loaded but some connections could not be restored. Missing client?")
+                show_timed_messagebox(
+                    self.manager,
+                    QMessageBox.Icon.Information,
+                    "Preset Loaded",
+                    f"Preset '{name}' loaded but some connections could not be restored. Missing client?",
+                )
             else:
-                logger.info(f"Preset '{name}' loaded but some connections could not be restored (missing client?).")
+                logger.info(
+                    f"Preset '{name}' loaded but some connections could not be restored (missing client?)."
+                )
             self.current_preset_name = name
             self.manager.config_manager.set_str(keys.ACTIVE_PRESET, name)
             # Initially set save button to disabled since we just loaded the preset (no changes yet)
             self.save_button_initially_enabled = False
-            save_action = getattr(self.manager, 'save_preset_action', None)
+            save_action = getattr(self.manager, "save_preset_action", None)
             if save_action:
                 save_action.setEnabled(False)
             logger.debug("Load Success (partial): Set active_preset in config.")
@@ -491,43 +620,58 @@ class PresetHandler:
 
     def _delete_selected_preset(self, name: str) -> None:
         """Deletes the selected preset after confirmation."""
-        reply = QMessageBox.question(self.manager, 'Delete Preset',
-                                     f"Are you sure you want to delete the preset '{name}'?",
-                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                                     QMessageBox.StandardButton.No)
+        reply = QMessageBox.question(
+            self.manager,
+            "Delete Preset",
+            f"Are you sure you want to delete the preset '{name}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
 
         if reply == QMessageBox.StandardButton.Yes:
             # Stop daemon before deletion to avoid it recreating the .snap file
             # after os.remove() removes it (daemon watches the file and may rewrite it)
-            stop_daemon = getattr(self.manager.preset_manager, 'stop_daemon_mode', None)
+            stop_daemon = getattr(self.manager.preset_manager, "stop_daemon_mode", None)
             if stop_daemon:
                 stop_daemon()
 
             # Use enhanced preset manager if available, otherwise fall back to basic
-            delete_with_layout = getattr(self.manager.preset_manager, 'delete_preset_with_layout', None)
+            delete_with_layout = getattr(
+                self.manager.preset_manager, "delete_preset_with_layout", None
+            )
             if delete_with_layout:
                 success = delete_with_layout(name)
             else:
                 success = self.manager.preset_manager.delete_preset(name)
-                
+
             if success:
                 logger.debug(f"Preset '{name}' deleted.")
-                show_timed_messagebox(self.manager, QMessageBox.Icon.Information,
-                                      "Preset Deleted", f"Preset '{name}' deleted.")
+                show_timed_messagebox(
+                    self.manager,
+                    QMessageBox.Icon.Information,
+                    "Preset Deleted",
+                    f"Preset '{name}' deleted.",
+                )
                 if name == self.current_preset_name:
                     self.current_preset_name = None
                     self.manager.config_manager.set_str(keys.ACTIVE_PRESET, None)
-                    save_action = getattr(self.manager, 'save_preset_action', None)
+                    save_action = getattr(self.manager, "save_preset_action", None)
                     if save_action:
                         save_action.setEnabled(False)
-                    logger.debug("Cleared active_preset in config as current preset was deleted.")
+                    logger.debug(
+                        "Cleared active_preset in config as current preset was deleted."
+                    )
                 if name == self.startup_preset_name:
                     self.startup_preset_name = None
                     self.manager.config_manager.set_str(keys.STARTUP_PRESET, None)
                     logger.debug("Cleared startup_preset in config as it was deleted.")
                 self.manager.refresh_ports()
             else:
-                QMessageBox.warning(self.manager, "Delete Preset", f"Could not find or delete preset '{name}'.")
+                QMessageBox.warning(
+                    self.manager,
+                    "Delete Preset",
+                    f"Could not find or delete preset '{name}'.",
+                )
 
     def _handle_gui_preset_load(self, name: str) -> None:
         """Handles loading a preset via the GUI menu click."""
@@ -536,20 +680,26 @@ class PresetHandler:
     def handle_default_preset_action(self) -> None:
         """Handles the 'Default' preset action: disconnects all connections, unhides and unfolds all nodes, then restarts the session manager."""
         # Check if user has disabled the confirmation dialog
-        skip_confirmation = self.manager.config_manager.get_bool(keys.DEFAULT_PRESET_SKIP_CONFIRMATION, False)
-        
+        skip_confirmation = self.manager.config_manager.get_bool(
+            keys.DEFAULT_PRESET_SKIP_CONFIRMATION, False
+        )
+
         if not skip_confirmation:
             dialog = DefaultResetConfirmDialog(self.manager)
             reply = dialog.exec()
-            
+
             if reply != QDialog.DialogCode.Accepted:
                 return  # User cancelled
-            
+
             # Save the "don't show again" preference if checked
             if dialog.dont_show_again:
-                self.manager.config_manager.set_bool(keys.DEFAULT_PRESET_SKIP_CONFIRMATION, True)
-                logger.debug("User chose to skip Default preset confirmation in the future.")
-        
+                self.manager.config_manager.set_bool(
+                    keys.DEFAULT_PRESET_SKIP_CONFIRMATION, True
+                )
+                logger.debug(
+                    "User chose to skip Default preset confirmation in the future."
+                )
+
         # Proceed with the reset
         logger.debug("User confirmed default connection reset.")
 
@@ -567,11 +717,15 @@ class PresetHandler:
                         self.manager.client.disconnect(output_name, input_name)
                         disconnected_count += 1
                     except Exception as e:
-                        logger.debug(f"    Unexpected error disconnecting {output_name} -> {input_name}: {e}")
+                        logger.debug(
+                            f"    Unexpected error disconnecting {output_name} -> {input_name}: {e}"
+                        )
                         disconnect_errors.append(f"{output_name} -> {input_name}: {e}")
             logger.debug(f"Step 1: Disconnected {disconnected_count} connections.")
             if disconnect_errors:
-                logger.debug(f"Step 1: Encountered unexpected errors during disconnection: {disconnect_errors}")
+                logger.debug(
+                    f"Step 1: Encountered unexpected errors during disconnection: {disconnect_errors}"
+                )
         else:
             logger.debug("Step 1: No active JACK connections found to disconnect.")
 
@@ -585,10 +739,21 @@ class PresetHandler:
         service_name = "wireplumber.service"
         command = []
         if self.manager.flatpak_env:
-            logger.debug(f"  Running in Flatpak environment. Using flatpak-spawn to restart {service_name}.")
-            command = ["flatpak-spawn", "--host", "systemctl", "restart", "--user", service_name]
+            logger.debug(
+                f"  Running in Flatpak environment. Using flatpak-spawn to restart {service_name}."
+            )
+            command = [
+                "flatpak-spawn",
+                "--host",
+                "systemctl",
+                "restart",
+                "--user",
+                service_name,
+            ]
         else:
-            logger.debug(f"  Running outside Flatpak environment. Using systemctl to restart {service_name}.")
+            logger.debug(
+                f"  Running outside Flatpak environment. Using systemctl to restart {service_name}."
+            )
             command = ["systemctl", "restart", "--user", service_name]
 
         logger.debug(f"  Executing command: {' '.join(command)}")
@@ -596,20 +761,29 @@ class PresetHandler:
 
         self.manager.config_manager.set_str(keys.ACTIVE_PRESET, None)
         self.current_preset_name = None
-        save_action = getattr(self.manager, 'save_preset_action', None)
+        save_action = getattr(self.manager, "save_preset_action", None)
         if save_action:
             save_action.setEnabled(False)
         logger.debug("Cleared active_preset in config after selecting 'Default'.")
 
         if success:
-            logger.debug("Step 4: Session manager restart command initiated successfully.")
-            show_timed_messagebox(self.manager, QMessageBox.Icon.Information, "Resetting Connections",
-                f"Disconnected {disconnected_count} connections.\nUnhid and unfolded all nodes.\nSession manager ({service_name}) restart initiated.", 3000)
+            logger.debug(
+                "Step 4: Session manager restart command initiated successfully."
+            )
+            show_timed_messagebox(
+                self.manager,
+                QMessageBox.Icon.Information,
+                "Resetting Connections",
+                f"Disconnected {disconnected_count} connections.\nUnhid and unfolded all nodes.\nSession manager ({service_name}) restart initiated.",
+                3000,
+            )
             QTimer.singleShot(2000, self._clear_defaults_and_refresh)
         else:
-            error_message = f"Failed to execute session manager restart command: {' '.join(command)}\n\n" \
-                f"Connections were disconnected, but defaults may not be restored.\n" \
+            error_message = (
+                f"Failed to execute session manager restart command: {' '.join(command)}\n\n"
+                f"Connections were disconnected, but defaults may not be restored.\n"
                 f"If you are not using WirePlumber, you might need to manually restart your session manager."
+            )
             logger.debug(error_message)
             QMessageBox.critical(self.manager, "Reset Error", error_message)
             self.manager.refresh_ports()
@@ -617,7 +791,12 @@ class PresetHandler:
     def _clear_defaults_and_refresh(self) -> None:
         """Clear all default sinks/sources after WirePlumber has restarted, then refresh ports."""
         import subprocess as _sp
-        clear_cmd = ["flatpak-spawn", "--host", "wpctl", "clear-default"] if self.manager.flatpak_env else ["wpctl", "clear-default"]
+
+        clear_cmd = (
+            ["flatpak-spawn", "--host", "wpctl", "clear-default"]
+            if self.manager.flatpak_env
+            else ["wpctl", "clear-default"]
+        )
         try:
             _sp.run(clear_cmd, check=True, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
             logger.debug("Cleared all default sinks/sources via wpctl after restart.")
@@ -628,17 +807,21 @@ class PresetHandler:
     def save_current_loaded_preset(self) -> None:
         """Saves the current connections and layout to the currently loaded preset file without confirmation."""
         if not self.current_preset_name:
-            QMessageBox.warning(self.manager, "Save Preset Error", "No preset is currently loaded.")
+            QMessageBox.warning(
+                self.manager, "Save Preset Error", "No preset is currently loaded."
+            )
             return
- 
+
         preset_name = self.current_preset_name
-        logger.info(f"Saving current connections and layout to loaded preset: '{preset_name}'")
-        
+        logger.info(
+            f"Saving current connections and layout to loaded preset: '{preset_name}'"
+        )
+
         # Get layout data from the graph tab if available
         node_states = None
         graph_zoom_level = None
         node_visibility_data = None
-        
+
         graph_window = self.manager._get_graph_main_window()
         if graph_window:
             try:
@@ -646,66 +829,89 @@ class PresetHandler:
                 scene = self.manager._get_graph_scene()
                 if scene:
                     node_states = scene.get_node_states()
-                
+
                 # Get current zoom level from the graph view
                 view = self.manager._get_graph_view()
                 if view:
                     graph_zoom_level = view.get_zoom_level()
-                    
+
             except Exception as e:
-                logger.warning(f"Warning: Could not get layout data for preset save: {e}")
+                logger.warning(
+                    f"Warning: Could not get layout data for preset save: {e}"
+                )
 
         # Get current node visibility settings
-        node_vis_mgr = getattr(self.manager, 'node_visibility_manager', None)
+        node_vis_mgr = getattr(self.manager, "node_visibility_manager", None)
         if node_vis_mgr:
             try:
                 node_visibility_data = {
-                    'audio_input': dict(self.manager.node_visibility_manager.audio_input_visibility),
-                    'audio_output': dict(self.manager.node_visibility_manager.audio_output_visibility),
-                    'midi_input': dict(self.manager.node_visibility_manager.midi_input_visibility),
-                    'midi_output': dict(self.manager.node_visibility_manager.midi_output_visibility)
+                    "audio_input": dict(
+                        self.manager.node_visibility_manager.audio_input_visibility
+                    ),
+                    "audio_output": dict(
+                        self.manager.node_visibility_manager.audio_output_visibility
+                    ),
+                    "midi_input": dict(
+                        self.manager.node_visibility_manager.midi_input_visibility
+                    ),
+                    "midi_output": dict(
+                        self.manager.node_visibility_manager.midi_output_visibility
+                    ),
                 }
-                logger.debug(f"Collected node visibility data for save: {len(node_visibility_data.get('audio_input', {}))} audio input, {len(node_visibility_data.get('audio_output', {}))} audio output, {len(node_visibility_data.get('midi_input', {}))} MIDI input, {len(node_visibility_data.get('midi_output', {}))} MIDI output settings")
+                logger.debug(
+                    f"Collected node visibility data for save: {len(node_visibility_data.get('audio_input', {}))} audio input, {len(node_visibility_data.get('audio_output', {}))} audio output, {len(node_visibility_data.get('midi_input', {}))} MIDI input, {len(node_visibility_data.get('midi_output', {}))} MIDI output settings"
+                )
             except Exception as e:
-                logger.warning(f"Warning: Could not get node visibility data for preset save: {e}")
+                logger.warning(
+                    f"Warning: Could not get node visibility data for preset save: {e}"
+                )
 
         # Use enhanced preset manager if available, otherwise fall back to basic
-        save_with_layout = getattr(self.manager.preset_manager, 'save_preset_with_layout', None)
+        save_with_layout = getattr(
+            self.manager.preset_manager, "save_preset_with_layout", None
+        )
         if save_with_layout:
             success = save_with_layout(
-                preset_name, 
-                node_states=node_states, 
+                preset_name,
+                node_states=node_states,
                 graph_zoom_level=graph_zoom_level,
                 node_visibility_data=node_visibility_data,
-                parent_widget=self.manager, 
-                confirm_overwrite=False
+                parent_widget=self.manager,
+                confirm_overwrite=False,
             )
         else:
-            success = self.manager.preset_manager.save_preset(preset_name, 
-                                                              parent_widget=self.manager, confirm_overwrite=False)
-        
+            success = self.manager.preset_manager.save_preset(
+                preset_name, parent_widget=self.manager, confirm_overwrite=False
+            )
+
         if success:
             logger.debug(f"Preset '{preset_name}' saved.")
             # Update the original state to reflect the current (saved) state
             self.original_preset_connections = self.manager._get_current_connections()
             self.original_preset_layout_data = {
-                'node_states': node_states,
-                'graph_zoom_level': graph_zoom_level,
-                'node_visibility': node_visibility_data
+                "node_states": node_states,
+                "graph_zoom_level": graph_zoom_level,
+                "node_visibility": node_visibility_data,
             }
             # Update save button state since changes have been saved
             self.update_save_button_enabled_state()
-            show_timed_messagebox(self.manager, QMessageBox.Icon.Information,
-                                 "Preset Saved", f"Preset '{preset_name}' saved successfully.")
+            show_timed_messagebox(
+                self.manager,
+                QMessageBox.Icon.Information,
+                "Preset Saved",
+                f"Preset '{preset_name}' saved successfully.",
+            )
 
     def _set_strict_mode(self, checked: bool) -> None:
         """Sets the strict mode for preset loading in the config and reloads preset if active."""
         logger.debug(f"Setting strict mode for preset loading to: {checked}")
         self.manager.config_manager.set_bool(keys.LOAD_PRESET_STRICT_MODE, checked)
-        
+
         # Reload current preset to apply the new strict mode setting
         if self.current_preset_name:
-            logger.debug(f"Reloading preset '{self.current_preset_name}' with strict={checked}")
+            logger.debug(
+                f"Reloading preset '{self.current_preset_name}' with strict={checked}"
+            )
             self.load_selected_preset(self.current_preset_name)
 
     def _set_daemon_mode(self, checked: bool) -> None:
@@ -717,11 +923,13 @@ class PresetHandler:
             # Always stop existing daemon first
             self.manager.preset_manager.stop_daemon_mode()
             # Reload preset with new daemon mode setting
-            logger.debug(f"Reloading preset '{self.current_preset_name}' with daemon={checked}")
+            logger.debug(
+                f"Reloading preset '{self.current_preset_name}' with daemon={checked}"
+            )
             self.load_selected_preset(self.current_preset_name)
         elif checked:
             logger.debug("No active preset to start daemon mode with.")
-        
+
         # Update button styles to reflect the new daemon state
         # Use QTimer to ensure daemon state is updated after any preset loading
         QTimer.singleShot(100, self._update_preset_button_styles)
@@ -733,50 +941,50 @@ class PresetHandler:
         """
         # Check if daemon is running
         daemon_active = self.manager.preset_manager.is_daemon_running()
-        
+
         # Get references to preset buttons
         bottom_button = None
         graph_button = None
-        
+
         # Get bottom toolbar button from ui_manager
-        ui_manager = getattr(self.manager, 'ui_manager', None)
+        ui_manager = getattr(self.manager, "ui_manager", None)
         if ui_manager:
-            bottom_button = getattr(ui_manager, 'bottom_presets_button', None)
-        
+            bottom_button = getattr(ui_manager, "bottom_presets_button", None)
+
         # Get graph tab button from graph_main_window
         graph_window = self.manager._get_graph_main_window()
         if graph_window:
-            graph_button = getattr(graph_window, 'preset_button', None)
-        
+            graph_button = getattr(graph_window, "preset_button", None)
+
         # Update button styles
         buttons_to_update = [b for b in [bottom_button, graph_button] if b is not None]
-        
+
         for button in buttons_to_update:
             if daemon_active:
                 button.setText("Presets ●")
             else:
                 button.setText("Presets")
-        
+
         if buttons_to_update:
             logger.debug(f"Preset button styles updated: daemon_active={daemon_active}")
 
     def _unhide_all_nodes(self) -> None:
         """Unhide all nodes by resetting node visibility settings."""
         try:
-            node_vis_mgr = getattr(self.manager, 'node_visibility_manager', None)
+            node_vis_mgr = getattr(self.manager, "node_visibility_manager", None)
             if node_vis_mgr:
                 # Clear all visibility settings (empty dictionaries mean all nodes are visible)
                 self.manager.node_visibility_manager.audio_input_visibility = {}
                 self.manager.node_visibility_manager.audio_output_visibility = {}
                 self.manager.node_visibility_manager.midi_input_visibility = {}
                 self.manager.node_visibility_manager.midi_output_visibility = {}
-                
+
                 # Save the cleared settings
                 self.manager.node_visibility_manager.save_visibility_settings()
-                
+
                 # Apply the visibility settings to refresh the UI
                 self.manager.node_visibility_manager.apply_visibility_settings()
-                
+
                 logger.debug("  All nodes unhidden successfully.")
             else:
                 logger.debug("  Node visibility manager not available.")
@@ -789,31 +997,39 @@ class PresetHandler:
             scene = self.manager._get_graph_scene()
             if scene:
                 unfolded_count = 0
-                
+
                 # Iterate through all nodes in the scene
                 for client_name, node in scene.nodes.items():
                     try:
                         if node.is_split_origin:
                             # Handle split nodes - unfold their parts
-                            if node.split_input_node and getattr(node.split_input_node, 'input_part_folded', False):
+                            if node.split_input_node and getattr(
+                                node.split_input_node, "input_part_folded", False
+                            ):
                                 if node.split_input_node.input_part_folded:
-                                    node.split_input_node.fold_handler.toggle_input_part_fold(fold_state=False)
+                                    node.split_input_node.fold_handler.toggle_input_part_fold(
+                                        fold_state=False
+                                    )
                                     unfolded_count += 1
-                            
-                            if node.split_output_node and getattr(node.split_output_node, 'output_part_folded', False):
+
+                            if node.split_output_node and getattr(
+                                node.split_output_node, "output_part_folded", False
+                            ):
                                 if node.split_output_node.output_part_folded:
-                                    node.split_output_node.fold_handler.toggle_output_part_fold(fold_state=False)
+                                    node.split_output_node.fold_handler.toggle_output_part_fold(
+                                        fold_state=False
+                                    )
                                     unfolded_count += 1
-                        
+
                         elif not node.is_split_part:
                             # Handle regular (non-split) nodes
-                            if getattr(node, 'is_folded', False):
+                            if getattr(node, "is_folded", False):
                                 node.fold_handler.toggle_main_fold_state()
                                 unfolded_count += 1
-                    
+
                     except Exception as e:
                         logger.debug(f"  Error unfolding node {client_name}: {e}")
-                
+
                 logger.debug(f"  Unfolded {unfolded_count} nodes successfully.")
             else:
                 logger.debug("  Graph scene not available.")
@@ -822,7 +1038,9 @@ class PresetHandler:
 
     def reset_default_preset_confirmation(self) -> None:
         """Reset the 'don't show again' setting for Default preset confirmation."""
-        self.manager.config_manager.set_bool(keys.DEFAULT_PRESET_SKIP_CONFIRMATION, False)
+        self.manager.config_manager.set_bool(
+            keys.DEFAULT_PRESET_SKIP_CONFIRMATION, False
+        )
         logger.info("Default preset confirmation dialog has been re-enabled.")
 
     def _set_restore_layout_mode(self, checked: bool) -> None:
@@ -842,52 +1060,66 @@ class PresetHandler:
 
         try:
             # Apply node states if available
-            if 'node_states' in layout_data:
+            if "node_states" in layout_data:
                 scene = self.manager._get_graph_scene()
-                restore_func = getattr(scene, 'restore_node_states', None) if scene else None
+                restore_func = (
+                    getattr(scene, "restore_node_states", None) if scene else None
+                )
                 if restore_func:
-                    restore_func(layout_data['node_states'])
+                    restore_func(layout_data["node_states"])
                     logger.info("Applied node states from preset")
-            
+
             # Uncheck "persistent layout" when layout is restored from preset
             # This prevents the preset's layout from being overwritten by auto-untangle
             graph_window = self.manager._get_graph_main_window()
-            if graph_window and getattr(graph_window, 'keep_untangled', False):
+            if graph_window and getattr(graph_window, "keep_untangled", False):
                 graph_window.keep_untangled = False
                 # Also update the button visual state
-                persistent_btn = getattr(graph_window, 'persistent_layout_button', None)
+                persistent_btn = getattr(graph_window, "persistent_layout_button", None)
                 if persistent_btn:
                     persistent_btn.setChecked(False)
                 # Save the setting to config
                 scene = self.manager._get_graph_scene()
-                node_config_mgr = getattr(scene, 'node_config_manager', None) if scene else None
+                node_config_mgr = (
+                    getattr(scene, "node_config_manager", None) if scene else None
+                )
                 if node_config_mgr:
                     node_config_mgr.save_keep_untangled(False)
                 logger.info("Unchecked 'persistent layout' to preserve preset layout")
 
             # Apply zoom level if available
-            if 'graph_zoom_level' in layout_data:
+            if "graph_zoom_level" in layout_data:
                 view = self.manager._get_graph_view()
-                set_zoom = getattr(view, 'set_zoom_level', None) if view else None
+                set_zoom = getattr(view, "set_zoom_level", None) if view else None
                 if set_zoom:
-                    set_zoom(layout_data['graph_zoom_level'])
-                    logger.info(f"Applied zoom level {layout_data['graph_zoom_level']} from preset")
+                    set_zoom(layout_data["graph_zoom_level"])
+                    logger.info(
+                        f"Applied zoom level {layout_data['graph_zoom_level']} from preset"
+                    )
 
             # Apply node visibility settings if available
-            if 'node_visibility' in layout_data and layout_data['node_visibility']:
-                node_vis_mgr = getattr(self.manager, 'node_visibility_manager', None)
+            if "node_visibility" in layout_data and layout_data["node_visibility"]:
+                node_vis_mgr = getattr(self.manager, "node_visibility_manager", None)
                 if node_vis_mgr:
-                    visibility_data = layout_data['node_visibility']
+                    visibility_data = layout_data["node_visibility"]
 
                     # Replace the node visibility manager's settings (not update)
-                    if 'audio_input' in visibility_data:
-                        self.manager.node_visibility_manager.audio_input_visibility = dict(visibility_data['audio_input'])
-                    if 'audio_output' in visibility_data:
-                        self.manager.node_visibility_manager.audio_output_visibility = dict(visibility_data['audio_output'])
-                    if 'midi_input' in visibility_data:
-                        self.manager.node_visibility_manager.midi_input_visibility = dict(visibility_data['midi_input'])
-                    if 'midi_output' in visibility_data:
-                        self.manager.node_visibility_manager.midi_output_visibility = dict(visibility_data['midi_output'])
+                    if "audio_input" in visibility_data:
+                        self.manager.node_visibility_manager.audio_input_visibility = (
+                            dict(visibility_data["audio_input"])
+                        )
+                    if "audio_output" in visibility_data:
+                        self.manager.node_visibility_manager.audio_output_visibility = (
+                            dict(visibility_data["audio_output"])
+                        )
+                    if "midi_input" in visibility_data:
+                        self.manager.node_visibility_manager.midi_input_visibility = (
+                            dict(visibility_data["midi_input"])
+                        )
+                    if "midi_output" in visibility_data:
+                        self.manager.node_visibility_manager.midi_output_visibility = (
+                            dict(visibility_data["midi_output"])
+                        )
 
                     # Save the updated settings to the config file
                     self.manager.node_visibility_manager.save_visibility_settings()
@@ -898,20 +1130,26 @@ class PresetHandler:
                     logger.info("Applied node visibility settings from preset")
 
             # Apply unified clients if available
-            if 'unified_clients' in layout_data:
+            if "unified_clients" in layout_data:
                 scene = self.manager._get_graph_scene()
-                apply_unified = getattr(scene, 'apply_unified_states', None) if scene else None
+                apply_unified = (
+                    getattr(scene, "apply_unified_states", None) if scene else None
+                )
                 if apply_unified:
-                    self.unified_clients = layout_data.get('unified_clients', {})
+                    self.unified_clients = layout_data.get("unified_clients", {})
                     apply_unified(self.unified_clients)
                     scene.apply_unified_states(self.unified_clients)
                     logger.info("Applied unified clients from preset")
-            
+
             # Apply split audio/midi setting if available
-            if 'split_audio_midi' in layout_data:
-                split_audio_midi = layout_data['split_audio_midi']
-                self.manager.config_manager.set_bool(keys.GRAPH_SPLIT_AUDIO_MIDI_CLIENTS, split_audio_midi)
-                logger.info(f"Applied split audio/midi setting from preset: {split_audio_midi}")
+            if "split_audio_midi" in layout_data:
+                split_audio_midi = layout_data["split_audio_midi"]
+                self.manager.config_manager.set_bool(
+                    keys.GRAPH_SPLIT_AUDIO_MIDI_CLIENTS, split_audio_midi
+                )
+                logger.info(
+                    f"Applied split audio/midi setting from preset: {split_audio_midi}"
+                )
                 # We need to trigger a full refresh of the graph for this to take effect
                 scene = self.manager._get_graph_scene()
                 if scene:
@@ -981,7 +1219,9 @@ class PresetHandler:
             scene = self.manager._get_graph_scene()
             if scene:
                 current_node_states = scene.get_node_states()
-                original_node_states = self.original_preset_layout_data.get('node_states')
+                original_node_states = self.original_preset_layout_data.get(
+                    "node_states"
+                )
 
                 if current_node_states != original_node_states:
                     layout_changed = True
@@ -990,21 +1230,31 @@ class PresetHandler:
             view = self.manager._get_graph_view()
             if view:
                 current_zoom = view.get_zoom_level()
-                original_zoom = self.original_preset_layout_data.get('graph_zoom_level')
+                original_zoom = self.original_preset_layout_data.get("graph_zoom_level")
 
                 if current_zoom != original_zoom:
                     layout_changed = True
 
             # Check node visibility
-            node_vis_mgr = getattr(self.manager, 'node_visibility_manager', None)
+            node_vis_mgr = getattr(self.manager, "node_visibility_manager", None)
             if node_vis_mgr:
                 current_visibility = {
-                    'audio_input': dict(self.manager.node_visibility_manager.audio_input_visibility),
-                    'audio_output': dict(self.manager.node_visibility_manager.audio_output_visibility),
-                    'midi_input': dict(self.manager.node_visibility_manager.midi_input_visibility),
-                    'midi_output': dict(self.manager.node_visibility_manager.midi_output_visibility)
+                    "audio_input": dict(
+                        self.manager.node_visibility_manager.audio_input_visibility
+                    ),
+                    "audio_output": dict(
+                        self.manager.node_visibility_manager.audio_output_visibility
+                    ),
+                    "midi_input": dict(
+                        self.manager.node_visibility_manager.midi_input_visibility
+                    ),
+                    "midi_output": dict(
+                        self.manager.node_visibility_manager.midi_output_visibility
+                    ),
                 }
-                original_visibility = self.original_preset_layout_data.get('node_visibility')
+                original_visibility = self.original_preset_layout_data.get(
+                    "node_visibility"
+                )
 
                 if current_visibility != original_visibility:
                     layout_changed = True
@@ -1029,7 +1279,9 @@ class PresetHandler:
         has_changes = connections_changed or layout_changed
 
         if has_changes:
-            logger.debug(f"Preset '{self.current_preset_name}' has changes: connections={connections_changed}, layout={layout_changed}")
+            logger.debug(
+                f"Preset '{self.current_preset_name}' has changes: connections={connections_changed}, layout={layout_changed}"
+            )
 
         return has_changes
 
@@ -1043,9 +1295,11 @@ class PresetHandler:
             enabled = self._preset_has_changes()
 
         # Update the button state if it's different from current state
-        save_action = getattr(self.manager, 'save_preset_action', None)
+        save_action = getattr(self.manager, "save_preset_action", None)
         if save_action:
             current_enabled = save_action.isEnabled()
             if current_enabled != enabled:
                 save_action.setEnabled(enabled)
-                logger.info(f"Save button {'enabled' if enabled else 'disabled'} for preset '{self.current_preset_name}'")
+                logger.info(
+                    f"Save button {'enabled' if enabled else 'disabled'} for preset '{self.current_preset_name}'"
+                )

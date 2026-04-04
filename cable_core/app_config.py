@@ -10,7 +10,7 @@ from typing import Optional
 from PyQt6.QtGui import QIcon
 
 # --- Application Version ---
-APP_VERSION = "0.10.3"
+APP_VERSION = "0.10.4"
 
 # --- Shared Constants ---
 EDIT_LIST_TEXT = "Edit List..."
@@ -58,3 +58,6 @@ CONNECTION_LINE_THICKNESS = 2
 
 # Graph View Settings (graph/main_window.py)
 DEFAULT_UNTANGLE_VALUES = [2, 3, 4]
+
+# Quantum/Sample Rate Confirmation Dialog Duration (milliseconds)
+QUANTUM_SAMPLE_RATE_CONFIRMATION_DURATION_MS = 1500

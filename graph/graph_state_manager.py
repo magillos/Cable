@@ -226,7 +226,7 @@ class GraphStateManager(QObject):
             if is_unified_sink:
                 continue
 
-            if self._node_visibility_manager.is_node_visible(client_name, is_midi=is_midi):
+            if self._node_visibility_manager.is_node_visible(client_name, is_midi=is_midi, tab_type="graph"):
                 visible_clients[client_name] = client_info
                 owner_base = (client_info.get('original_client_name') or client_name).replace(' ', '_')
                 visible_owner_bases.add(owner_base)

@@ -122,11 +122,11 @@ def setup_logging(verbose_override: bool = False) -> None:
 
     Args:
         verbose_override: If True, force verbose output for this session,
-                         regardless of the config setting. This is typically
-                         set via -v/--verbose command line flag.
+        regardless of the config setting. This is typically
+        set via -v/--verbose command line flag.
 
-    When verbose_output is False in config (and no override), sets level to WARNING
-    so that info/debug messages are suppressed (matching old verbose.py behavior).
+    When verbose_output is False in config (and no override), sets level to ERROR
+    so that info/debug/warning messages are suppressed.
     """
     # Command-line override takes precedence over config setting
     if verbose_override:
@@ -139,7 +139,8 @@ def setup_logging(verbose_override: bool = False) -> None:
     if verbose and not sys.stdout.isatty() and not verbose_override:
         verbose = False
 
-    level = logging.DEBUG if verbose else logging.WARNING
+    # When verbose is off, use ERROR level to suppress WARNING messages too
+    level = logging.DEBUG if verbose else logging.ERROR
 
     logging.basicConfig(
         level=level,

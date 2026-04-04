@@ -1,30 +1,43 @@
 from __future__ import annotations
 
 import logging
+
 logger = logging.getLogger(__name__)
 
-from PyQt6.QtWidgets import QWidget, QSizePolicy
-from PyQt6.QtCore import Qt, QRect, QRectF, QPoint, QPointF
-from PyQt6.QtGui import (QPolygonF, QFont, QColor, QPainter, QPen, QBrush, 
-                         QPalette, QPainterPath, QLinearGradient)
+from PyQt6.QtWidgets import QWidget, QSizePolicy, QToolTip
+from PyQt6.QtCore import Qt, QRect, QRectF, QPoint, QPointF, QTimer
+from PyQt6.QtGui import (
+    QPolygonF,
+    QFont,
+    QColor,
+    QPainter,
+    QPen,
+    QBrush,
+    QPalette,
+    QPainterPath,
+    QLinearGradient,
+)
 
 from typing import TYPE_CHECKING, Optional, Any, Union, List, Tuple, Dict
 
+from graph.constants import HOVER_TOOLTIP_DELAY
+
 if TYPE_CHECKING:
     from PyQt6.QtGui import QEvent
-    from cables.ui.midi_matrix_widget import MIDIMatrixWidget
+    from cables.ui.matrix_widget import MatrixWidget
 
 """
 Internal widget that handles the actual matrix rendering and interaction.
 """
 
+
 class _MatrixGridWidget(QWidget):
-    def __init__(self, parent_matrix: MIDIMatrixWidget) -> None:
+    def __init__(self, parent_matrix: "MatrixWidget") -> None:
         """
         Initialize the matrix grid widget.
 
         Args:
-            parent_matrix: The parent MIDIMatrixWidget instance
+            parent_matrix: The parent MIDIMatrixWidget or AudioMatrixWidget instance
         """
         super().__init__()
         self.parent_matrix = parent_matrix
@@ -42,24 +55,34 @@ class _MatrixGridWidget(QWidget):
         self.base_cell_width: int = 24  # Base width per port
         self.font_size: int = int(self.parent_matrix.zoom_level)
         self.client_name_font_size: int = int(self.parent_matrix.zoom_level) + 2
-        self.grid_cell_scaling: float = self.parent_matrix._calculate_grid_scaling(self.parent_matrix.zoom_level)
+        self.grid_cell_scaling: float = self.parent_matrix._calculate_grid_scaling(
+            self.parent_matrix.zoom_level
+        )
 
         # Margins for labels - reduced since all labels are now in separate panels
-        self.top_margin: int = 10    # Minimal space at top
-        self.left_margin: int = 10   # Minimal space on left (grid starts immediately)
-        self.bottom_margin: int = 120 # Minimal space at bottom (input labels are separate)
+        self.top_margin: int = 10  # Minimal space at top
+        self.left_margin: int = 10  # Minimal space on left (grid starts immediately)
+        self.bottom_margin: int = (
+            120  # Minimal space at bottom (input labels are separate)
+        )
         self.right_margin: int = 20
 
         # Drag selection state
         self.is_dragging: bool = False
-        self.drag_start_pos: Optional['QPoint'] = None
-        self.drag_end_pos: Optional['QPoint'] = None
+        self.drag_start_pos: Optional["QPoint"] = None
+        self.drag_end_pos: Optional["QPoint"] = None
         self.selected_rect: QRect = QRect()  # Rectangle for visual feedback
 
         # Hover selection state
         self.hover_row = -1
         self.hover_col = -1
         self.setMouseTracking(True)
+
+        # Tooltip timer for showing port names on hover
+        self._tooltip_timer = QTimer(self)
+        self._tooltip_timer.setSingleShot(True)
+        self._tooltip_timer.timeout.connect(self._show_hover_tooltip)
+        self._tooltip_pending_pos: Optional[QPoint] = None
 
         # Set size policy to allow expansion to fill available space
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -76,8 +99,12 @@ class _MatrixGridWidget(QWidget):
         self._calculate_sizes_from_text()
 
         # Calculate total dimensions
-        total_height = sum(self.row_heights) if hasattr(self, 'row_heights') else (output_count * self.cell_height)
-        total_width = getattr(self, 'total_width', 0)
+        total_height = (
+            sum(self.row_heights)
+            if hasattr(self, "row_heights")
+            else (output_count * self.cell_height)
+        )
+        total_width = getattr(self, "total_width", 0)
 
         # Set minimum size based on content
         min_height = self.top_margin + total_height + self.bottom_margin
@@ -92,7 +119,7 @@ class _MatrixGridWidget(QWidget):
 
         self.setMinimumSize(min_width, min_height)
         self.updateGeometry()
-        
+
         # Set size policy to allow expansion
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.update()
@@ -115,7 +142,9 @@ class _MatrixGridWidget(QWidget):
 
         # Group ports by client and count ports to support grouped labels
         input_client_groups = defaultdict(list)
-        for i, (client_name, port_name, display_name) in enumerate(self.parent_matrix.model.input_ports):
+        for i, (client_name, port_name, display_name) in enumerate(
+            self.parent_matrix.model.input_ports
+        ):
             input_client_groups[client_name].append((i, port_name, display_name))
 
         # Also precompute how many ports each input client has
@@ -125,7 +154,9 @@ class _MatrixGridWidget(QWidget):
         self.input_client_port_counts = input_client_port_counts
 
         output_client_groups = defaultdict(list)
-        for i, (client_name, port_name, display_name) in enumerate(self.parent_matrix.model.output_ports):
+        for i, (client_name, port_name, display_name) in enumerate(
+            self.parent_matrix.model.output_ports
+        ):
             output_client_groups[client_name].append((i, port_name, display_name))
 
         # Also precompute how many ports each output client has
@@ -143,20 +174,40 @@ class _MatrixGridWidget(QWidget):
         client_heights = {}
         painter.setFont(client_font)
         for client_name in output_client_groups.keys():
-            client_rect = painter.boundingRect(0, 0, 1000, 100, Qt.AlignmentFlag.AlignLeft, _truncate_text(client_name, 20))
+            client_rect = painter.boundingRect(
+                0,
+                0,
+                1000,
+                100,
+                Qt.AlignmentFlag.AlignLeft,
+                _truncate_text(client_name, 20),
+            )
             client_heights[client_name] = client_rect.height() + 4  # Padding
 
         # Calculate port heights and combined heights
         painter.setFont(port_font)
-        for i, (client_name, port_name, display_name) in enumerate(self.parent_matrix.model.output_ports):
-            port_rect = painter.boundingRect(0, 0, 1000, 100, Qt.AlignmentFlag.AlignLeft, _truncate_text(display_name, 20))
+        for i, (client_name, port_name, display_name) in enumerate(
+            self.parent_matrix.model.output_ports
+        ):
+            port_rect = painter.boundingRect(
+                0,
+                0,
+                1000,
+                100,
+                Qt.AlignmentFlag.AlignLeft,
+                _truncate_text(display_name, 20),
+            )
             port_height = port_rect.height() + 4  # Padding
 
             client_height = client_heights[client_name]
 
             # Row height to accommodate both client and port
-            min_row_height = int(35 * self.grid_cell_scaling)  # Scale minimum row height with zoom
-            row_height = max(client_height + port_height + 8, min_row_height)  # Minimum scaled for clickability
+            min_row_height = int(
+                35 * self.grid_cell_scaling
+            )  # Scale minimum row height with zoom
+            row_height = max(
+                client_height + port_height + 8, min_row_height
+            )  # Minimum scaled for clickability
 
             self.row_heights.append(row_height)
             self.row_positions.append(current_y)
@@ -171,12 +222,28 @@ class _MatrixGridWidget(QWidget):
         client_rects = {}
         painter.setFont(client_font)
         for client_name in input_client_groups.keys():
-            client_rects[client_name] = painter.boundingRect(0, 0, 1000, 100, Qt.AlignmentFlag.AlignLeft, _truncate_text(client_name, 25))
+            client_rects[client_name] = painter.boundingRect(
+                0,
+                0,
+                1000,
+                100,
+                Qt.AlignmentFlag.AlignLeft,
+                _truncate_text(client_name, 25),
+            )
 
         # Calculate port widths and combined widths
         painter.setFont(port_font)
-        for i, (client_name, port_name, display_name) in enumerate(self.parent_matrix.model.input_ports):
-            port_rect = painter.boundingRect(0, 0, 1000, 100, Qt.AlignmentFlag.AlignLeft, _truncate_text(display_name, 25))
+        for i, (client_name, port_name, display_name) in enumerate(
+            self.parent_matrix.model.input_ports
+        ):
+            port_rect = painter.boundingRect(
+                0,
+                0,
+                1000,
+                100,
+                Qt.AlignmentFlag.AlignLeft,
+                _truncate_text(display_name, 25),
+            )
             client_rect = client_rects[client_name]
 
             # Labels are vertical, so width is max, and height is sum
@@ -186,8 +253,12 @@ class _MatrixGridWidget(QWidget):
             # Approximate width for 45-degree rotation
             rotated_width = (unrotated_width + unrotated_height) * 0.707 + 15  # Padding
 
-            min_column_width = int(35 * self.grid_cell_scaling)  # Scale minimum column width with zoom
-            column_width = max(rotated_width, min_column_width)  # Minimum scaled for clickability
+            min_column_width = int(
+                35 * self.grid_cell_scaling
+            )  # Scale minimum column width with zoom
+            column_width = max(
+                rotated_width, min_column_width
+            )  # Minimum scaled for clickability
 
             self.column_widths.append(column_width)
             self.column_positions.append(current_x)
@@ -204,11 +275,21 @@ class _MatrixGridWidget(QWidget):
         # Fallback if calculations failed - use scaled minimum sizes
         min_scaled_size = int(35 * self.grid_cell_scaling)
         if not self.column_widths:
-            self.column_widths = [min_scaled_size] * len(self.parent_matrix.model.input_ports)
-            self.column_positions = [self.left_margin + i * min_scaled_size for i in range(len(self.parent_matrix.model.input_ports))]
+            self.column_widths = [min_scaled_size] * len(
+                self.parent_matrix.model.input_ports
+            )
+            self.column_positions = [
+                self.left_margin + i * min_scaled_size
+                for i in range(len(self.parent_matrix.model.input_ports))
+            ]
         if not self.row_heights:
-            self.row_heights = [min_scaled_size] * len(self.parent_matrix.model.output_ports)
-            self.row_positions = [self.top_margin + i * min_scaled_size for i in range(len(self.parent_matrix.model.output_ports))]
+            self.row_heights = [min_scaled_size] * len(
+                self.parent_matrix.model.output_ports
+            )
+            self.row_positions = [
+                self.top_margin + i * min_scaled_size
+                for i in range(len(self.parent_matrix.model.output_ports))
+            ]
 
     @property
     def cell_height(self) -> int:
@@ -220,7 +301,7 @@ class _MatrixGridWidget(QWidget):
         """Backward compatibility - return base cell width."""
         return self.base_cell_width
 
-    def paintEvent(self, event: Optional['QEvent']) -> None:
+    def paintEvent(self, event: Optional["QEvent"]) -> None:
         """Paint the matrix grid."""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -234,7 +315,7 @@ class _MatrixGridWidget(QWidget):
 
         # Define regions - ensure grid fills available space
         available_width = width - self.left_margin - self.right_margin
-        grid_width = getattr(self, 'grid_width', 0)
+        grid_width = getattr(self, "grid_width", 0)
 
         # Use full available width for drawing even if content is smaller
         grid_rect = QRect(
@@ -245,7 +326,9 @@ class _MatrixGridWidget(QWidget):
         )
 
         # Draw background
-        painter.fillRect(self.rect(), self.parent_matrix.connection_manager.background_color)
+        painter.fillRect(
+            self.rect(), self.parent_matrix.connection_manager.background_color
+        )
 
         # Draw input labels first (underneath squares)
         self._draw_input_labels(painter)
@@ -267,14 +350,18 @@ class _MatrixGridWidget(QWidget):
         # Restore painter state
         painter.restore()
 
-
-
     def _draw_grid(self, painter: QPainter, grid_rect: QRect) -> None:
         """Draw the grid lines using pre-calculated positions."""
-        painter.setPen(QPen(QColor(200, 200, 200), self.parent_matrix.style_config.grid_line_width))
+        painter.setPen(
+            QPen(QColor(200, 200, 200), self.parent_matrix.style_config.grid_line_width)
+        )
 
         # Calculate the bottom y-coordinate for the grid content
-        grid_bottom_y = self.row_positions[-1] + self.row_heights[-1] if self.row_positions and self.row_heights else grid_rect.bottom()
+        grid_bottom_y = (
+            self.row_positions[-1] + self.row_heights[-1]
+            if self.row_positions and self.row_heights
+            else grid_rect.bottom()
+        )
 
         # Calculate the right x-coordinate for the grid content
         grid_right_x = self.left_margin
@@ -305,6 +392,8 @@ class _MatrixGridWidget(QWidget):
         pairs = [
             ("in", "out"),
             ("capture", "playback"),
+            ("monitor", "playback"),
+            ("capture", "input"),
         ]
 
         for p1, p2 in pairs:
@@ -312,7 +401,7 @@ class _MatrixGridWidget(QWidget):
                 return True
             if n1.replace(p2, p1) == n2:
                 return True
-        
+
         return False
 
     def _draw_connection_squares(self, painter: QPainter, grid_rect: QRect) -> None:
@@ -328,44 +417,79 @@ class _MatrixGridWidget(QWidget):
         if is_dark_mode:
             # Darker background for dark mode to provide contrast
             disconnected_color = QColor(*style_config.disconnected_square_color_dark)
-            self_connection_color = QColor(*style_config.self_connection_square_color_dark)
-            hover_highlight_color = QColor(*style_config.hover_highlight_square_color_dark)
+            self_connection_color = QColor(
+                *style_config.self_connection_square_color_dark
+            )
+            hover_highlight_color = QColor(
+                *style_config.hover_highlight_square_color_dark
+            )
         else:
             # Lighter background for light mode
             disconnected_color = QColor(*style_config.disconnected_square_color_light)
-            self_connection_color = QColor(*style_config.self_connection_square_color_light)
-            hover_highlight_color = QColor(*style_config.hover_highlight_square_color_light)
+            self_connection_color = QColor(
+                *style_config.self_connection_square_color_light
+            )
+            hover_highlight_color = QColor(
+                *style_config.hover_highlight_square_color_light
+            )
 
-        for col, (input_client, input_port, input_display_name) in enumerate(input_ports):
+        for col, (input_client, input_port, input_display_name) in enumerate(
+            input_ports
+        ):
             col_x = self.column_positions[col]
             column_width = self.column_widths[col]
 
-            for row, (output_client, output_port, output_display_name) in enumerate(output_ports):
+            for row, (output_client, output_port, output_display_name) in enumerate(
+                output_ports
+            ):
                 row_y = self.row_positions[row]
                 row_height = self.row_heights[row]
 
                 # Ensure square fits within available grid width
-                square_width = min(column_width - 2, grid_rect.width() - col_x + grid_rect.left() - 2)
+                square_width = min(
+                    column_width - 2, grid_rect.width() - col_x + grid_rect.left() - 2
+                )
                 rect = QRect(col_x + 1, row_y + 1, square_width, row_height - 2)
 
-                is_connected = self.parent_matrix.model.is_connected(output_port, input_port)
+                is_connected = self.parent_matrix.model.is_connected(
+                    output_port, input_port
+                )
 
-                is_self_connection_square = (output_client == input_client and self._are_corresponding(output_display_name, input_display_name))
+                is_self_connection_square = (
+                    output_client == input_client
+                    and self._are_corresponding(output_display_name, input_display_name)
+                )
 
                 # Check if this square should be highlighted due to hover (squares leading to hovered square)
                 # Only highlight when not dragging (arrow not drawn)
-                is_hover_highlighted = (not self.is_dragging and
-                                       self.hover_row >= 0 and self.hover_col >= 0 and
-                                       ((row == self.hover_row and col <= self.hover_col) or  # same row, left of or at hovered
-                                        (col == self.hover_col and row >= self.hover_row)))   # same column, below or at hovered
+                is_hover_highlighted = (
+                    not self.is_dragging
+                    and self.hover_row >= 0
+                    and self.hover_col >= 0
+                    and (
+                        (
+                            row == self.hover_row and col <= self.hover_col
+                        )  # same row, left of or at hovered
+                        or (col == self.hover_col and row >= self.hover_row)
+                    )
+                )  # same column, below or at hovered
 
                 # Check if this square should be highlighted due to arrow path during dragging
                 is_arrow_highlighted = False
                 if self.is_dragging and self.drag_start_pos and self.drag_end_pos:
-                    start_row, start_col = self._get_square_at_position(self.drag_start_pos)
+                    start_row, start_col = self._get_square_at_position(
+                        self.drag_start_pos
+                    )
                     end_row, end_col = self._get_square_at_position(self.drag_end_pos)
-                    if start_row >= 0 and start_col >= 0 and end_row >= 0 and end_col >= 0:
-                        arrow_path = self._get_diagonal_path(start_row, start_col, end_row, end_col)
+                    if (
+                        start_row >= 0
+                        and start_col >= 0
+                        and end_row >= 0
+                        and end_col >= 0
+                    ):
+                        arrow_path = self._get_diagonal_path(
+                            start_row, start_col, end_row, end_col
+                        )
                         is_arrow_highlighted = (row, col) in arrow_path
 
                 if is_connected:
@@ -384,7 +508,12 @@ class _MatrixGridWidget(QWidget):
                     painter.fillRect(rect, QBrush(disconnected_color))
 
                 # Border
-                painter.setPen(QPen(QColor(200, 200, 200), self.parent_matrix.style_config.square_border_width))
+                painter.setPen(
+                    QPen(
+                        QColor(200, 200, 200),
+                        self.parent_matrix.style_config.square_border_width,
+                    )
+                )
                 painter.drawRect(rect)
 
     def _draw_connection_guides(self, painter: QPainter, grid_rect: QRect) -> None:
@@ -450,14 +579,15 @@ class _MatrixGridWidget(QWidget):
                 cell_cy = cell_rect.center().y()
 
                 # Determine if this is the hovered connected cell
-                is_hover_cell = (
-                    hover_row == row
-                    and hover_col == col
-                )
+                is_hover_cell = hover_row == row and hover_col == col
 
                 # Get port colors
-                output_color = self.parent_matrix.model.client_colors.get(output_client, QColor(Qt.GlobalColor.black))
-                input_color = self.parent_matrix.model.client_colors.get(input_client, QColor(Qt.GlobalColor.black))
+                output_color = self.parent_matrix.model.client_colors.get(
+                    output_client, QColor(Qt.GlobalColor.black)
+                )
+                input_color = self.parent_matrix.model.client_colors.get(
+                    input_client, QColor(Qt.GlobalColor.black)
+                )
 
                 # 1 & 2) Draw a rounded path from the output port to the input port
                 # passing through the connection cell.
@@ -466,9 +596,8 @@ class _MatrixGridWidget(QWidget):
 
                 # Define start, end, and corner points for the path
                 output_row_center_y = row_y + row_height / 2.0
-                grid_bottom_y = (
-                    getattr(self, "top_margin", 10)
-                    + getattr(self, "grid_height", self.height() - 20)
+                grid_bottom_y = getattr(self, "top_margin", 10) + getattr(
+                    self, "grid_height", self.height() - 20
                 )
                 input_label_anchor_y = grid_bottom_y + 5
 
@@ -512,8 +641,18 @@ class _MatrixGridWidget(QWidget):
                 else:
                     # Create gradient from output to input color
                     gradient = QLinearGradient(start_x, start_y, corner_x, end_y)
-                    gradient.setColorAt(0, final_color if is_hover_cell else make_less_vibrant(output_color))
-                    gradient.setColorAt(1, final_color if is_hover_cell else make_less_vibrant(input_color))
+                    gradient.setColorAt(
+                        0,
+                        final_color
+                        if is_hover_cell
+                        else make_less_vibrant(output_color),
+                    )
+                    gradient.setColorAt(
+                        1,
+                        final_color
+                        if is_hover_cell
+                        else make_less_vibrant(input_color),
+                    )
                     pen = QPen(QBrush(gradient), line_width, Qt.PenStyle.SolidLine)
                     painter.setPen(pen)
                     painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -525,7 +664,11 @@ class _MatrixGridWidget(QWidget):
                 if output_color == input_color:
                     dot_color = final_color
                 else:
-                    dot_color = output_color if is_hover_cell else make_less_vibrant(output_color)
+                    dot_color = (
+                        output_color
+                        if is_hover_cell
+                        else make_less_vibrant(output_color)
+                    )
                 self._draw_connection_dot(painter, start_x, start_y, dot_color)
 
                 painter.drawPath(path)
@@ -535,10 +678,21 @@ class _MatrixGridWidget(QWidget):
                 if output_color == input_color:
                     arrow_color = final_color
                 else:
-                    arrow_color = input_color if is_hover_cell else make_less_vibrant(input_color)
+                    arrow_color = (
+                        input_color if is_hover_cell else make_less_vibrant(input_color)
+                    )
                 self._draw_connection_arrowhead(painter, corner_x, end_y, arrow_color)
 
-    def _draw_rotated_text(self, painter: QPainter, text: str, x: float, y: float, font: QFont, color: QColor, is_hovered: bool = False) -> None:
+    def _draw_rotated_text(
+        self,
+        painter: QPainter,
+        text: str,
+        x: float,
+        y: float,
+        font: QFont,
+        color: QColor,
+        is_hovered: bool = False,
+    ) -> None:
         painter.save()
         current_font = QFont(font)
         if is_hovered:
@@ -549,13 +703,19 @@ class _MatrixGridWidget(QWidget):
         painter.translate(x, y)
         painter.rotate(self.parent_matrix.style_config.input_label_rotation)
 
-        text_rect = painter.boundingRect(QRect(0, -50, 500, 100), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, text)
-        painter.drawText(text_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, text)
+        text_rect = painter.boundingRect(
+            QRect(0, -50, 500, 100),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            text,
+        )
+        painter.drawText(
+            text_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, text
+        )
 
         if is_hovered:
             y = text_rect.bottom() + 1
             painter.drawLine(text_rect.left(), y, text_rect.right(), y)
-        
+
         painter.restore()
 
     def _draw_input_labels(self, painter: QPainter) -> None:
@@ -571,7 +731,9 @@ class _MatrixGridWidget(QWidget):
         port_font.setPointSize(self.font_size)
 
         # Access grouped input clients info to draw client name once per group
-        input_client_port_counts = getattr(self.parent_matrix.matrix_widget, "input_client_port_counts", {})
+        input_client_port_counts = getattr(
+            self.parent_matrix.matrix_widget, "input_client_port_counts", {}
+        )
         ports = self.parent_matrix.model.input_ports
 
         idx = 0
@@ -590,10 +752,12 @@ class _MatrixGridWidget(QWidget):
                 _, port_name, display_name = ports[col_index]
                 col_x = self.column_positions[col_index]
                 column_width = self.column_widths[col_index]
-                is_hovered = (col_index == self.hover_col)
+                is_hovered = col_index == self.hover_col
 
                 # Common setup for both client and port labels
-                grid_bottom_y = getattr(self, 'top_margin', 10) + getattr(self, 'grid_height', self.height() - 20)
+                grid_bottom_y = getattr(self, "top_margin", 10) + getattr(
+                    self, "grid_height", self.height() - 20
+                )
                 label_start_y = grid_bottom_y + 5  # Adjust margin to be smaller
 
                 painter.save()
@@ -601,7 +765,11 @@ class _MatrixGridWidget(QWidget):
                 # --- Draw Client Name (only on the rightmost column of this client block) ---
                 if col_index == first_col_index:
                     # Position for labels showing clients and ports combo
-                    x_pos = col_x + column_width / self.parent_matrix.style_config.input_label_x_pos_factor_client_port
+                    x_pos = (
+                        col_x
+                        + column_width
+                        / self.parent_matrix.style_config.input_label_x_pos_factor_client_port
+                    )
                     painter.translate(x_pos, label_start_y)
                     painter.rotate(self.parent_matrix.style_config.input_label_rotation)
 
@@ -609,7 +777,13 @@ class _MatrixGridWidget(QWidget):
                     if is_hovered:
                         current_client_font.setPointSize(self.client_name_font_size + 1)
                     painter.setFont(current_client_font)
-                    painter.setPen(QPen(self.parent_matrix.model.client_colors.get(client_name, QColor(Qt.GlobalColor.black))))
+                    painter.setPen(
+                        QPen(
+                            self.parent_matrix.model.client_colors.get(
+                                client_name, QColor(Qt.GlobalColor.black)
+                            )
+                        )
+                    )
 
                     client_text = client_name.upper()
                     client_text_rect = painter.boundingRect(
@@ -628,10 +802,19 @@ class _MatrixGridWidget(QWidget):
                     if is_hovered:
                         current_port_font.setBold(True)
                     painter.setFont(current_port_font)
-                    painter.setPen(QPen(self.parent_matrix.model.client_colors.get(client_name, QColor(Qt.GlobalColor.black))))
+                    painter.setPen(
+                        QPen(
+                            self.parent_matrix.model.client_colors.get(
+                                client_name, QColor(Qt.GlobalColor.black)
+                            )
+                        )
+                    )
 
                     # Offset the port name to be below the reserved client label area
-                    port_y_start = client_text_rect.height() + self.parent_matrix.style_config.input_label_port_y_offset
+                    port_y_start = (
+                        client_text_rect.height()
+                        + self.parent_matrix.style_config.input_label_port_y_offset
+                    )
                     port_text_rect = QRect(0, port_y_start, 500, 100)
                     painter.drawText(
                         port_text_rect,
@@ -640,7 +823,11 @@ class _MatrixGridWidget(QWidget):
                     )
                 else:
                     # Position for labels showing ports only
-                    x_pos = col_x + column_width / self.parent_matrix.style_config.input_label_x_pos_factor_ports_only
+                    x_pos = (
+                        col_x
+                        + column_width
+                        / self.parent_matrix.style_config.input_label_x_pos_factor_ports_only
+                    )
                     painter.translate(x_pos, label_start_y)
                     painter.rotate(self.parent_matrix.style_config.input_label_rotation)
 
@@ -649,7 +836,13 @@ class _MatrixGridWidget(QWidget):
                     if is_hovered:
                         current_port_font.setBold(True)
                     painter.setFont(current_port_font)
-                    painter.setPen(QPen(self.parent_matrix.model.client_colors.get(client_name, QColor(Qt.GlobalColor.black))))
+                    painter.setPen(
+                        QPen(
+                            self.parent_matrix.model.client_colors.get(
+                                client_name, QColor(Qt.GlobalColor.black)
+                            )
+                        )
+                    )
 
                     # No vertical offset, and a slight horizontal shift to the right
                     port_text_rect = QRect(5, 0, 500, 100)  # 5px right
@@ -674,7 +867,11 @@ class _MatrixGridWidget(QWidget):
 
         # Set pen for selection line - bright blue with thickness
         selection_color = QColor(175, 97, 136)  # Royal blue
-        selection_pen = QPen(selection_color, self.parent_matrix.style_config.selection_arrow_line_width, Qt.PenStyle.SolidLine)
+        selection_pen = QPen(
+            selection_color,
+            self.parent_matrix.style_config.selection_arrow_line_width,
+            Qt.PenStyle.SolidLine,
+        )
         painter.setPen(selection_pen)
 
         # Draw the line from start to end
@@ -687,7 +884,13 @@ class _MatrixGridWidget(QWidget):
 
         painter.restore()
 
-    def _draw_arrowhead(self, painter: QPainter, start: Union['QPoint', QPointF], end: Union['QPoint', QPointF], color: QColor) -> None:
+    def _draw_arrowhead(
+        self,
+        painter: QPainter,
+        start: Union["QPoint", QPointF],
+        end: Union["QPoint", QPointF],
+        color: QColor,
+    ) -> None:
         """Draw an arrowhead at the end of the selection line."""
         import math
 
@@ -704,7 +907,7 @@ class _MatrixGridWidget(QWidget):
         dy = end_f.y() - start_f.y()
 
         # Length of vector
-        length = math.sqrt(dx*dx + dy*dy)
+        length = math.sqrt(dx * dx + dy * dy)
         if length == 0:
             return
 
@@ -722,16 +925,16 @@ class _MatrixGridWidget(QWidget):
         arrowhead_width = style_config.selection_arrowhead_width
 
         # Arrowhead points (angled backward from the end point)
-        arrow_base = QPointF(end_f.x() - arrowhead_length * ux, end_f.y() - arrowhead_length * uy)
+        arrow_base = QPointF(
+            end_f.x() - arrowhead_length * ux, end_f.y() - arrowhead_length * uy
+        )
 
         left_wing = QPointF(
-            arrow_base.x() + arrowhead_width * px,
-            arrow_base.y() + arrowhead_width * py
+            arrow_base.x() + arrowhead_width * px, arrow_base.y() + arrowhead_width * py
         )
 
         right_wing = QPointF(
-            arrow_base.x() - arrowhead_width * px,
-            arrow_base.y() - arrowhead_width * py
+            arrow_base.x() - arrowhead_width * px, arrow_base.y() - arrowhead_width * py
         )
 
         # Draw arrowhead as filled triangle
@@ -740,7 +943,9 @@ class _MatrixGridWidget(QWidget):
 
         painter.restore()
 
-    def _draw_connection_dot(self, painter: QPainter, x: float, y: float, color: QColor) -> None:
+    def _draw_connection_dot(
+        self, painter: QPainter, x: float, y: float, color: QColor
+    ) -> None:
         """Draw a small dot for connection guide lines at the output end."""
         painter.save()
         painter.setBrush(QBrush(color))
@@ -754,7 +959,9 @@ class _MatrixGridWidget(QWidget):
 
         painter.restore()
 
-    def _draw_connection_arrowhead(self, painter: QPainter, x: float, y: float, color: QColor) -> None:
+    def _draw_connection_arrowhead(
+        self, painter: QPainter, x: float, y: float, color: QColor
+    ) -> None:
         """Draw a small arrowhead for connection guide lines pointing downward."""
         painter.save()
         painter.setBrush(QBrush(color))
@@ -785,6 +992,16 @@ class _MatrixGridWidget(QWidget):
         reshuffle_action.triggered.connect(self.parent_matrix.reshuffle_colors)
         context_menu.addAction(reshuffle_action)
 
+        unhide_action = QAction("Unhide all", self)
+
+        def unhide_all():
+            if self.parent_matrix.node_visibility_manager:
+                tab_type = f"{self.parent_matrix.port_type}_matrix"
+                self.parent_matrix.node_visibility_manager.unhide_all_nodes(tab_type)
+
+        unhide_action.triggered.connect(unhide_all)
+        context_menu.addAction(unhide_action)
+
         context_menu.exec(event.globalPos())
 
     def mousePressEvent(self, event: Any) -> None:
@@ -793,9 +1010,12 @@ class _MatrixGridWidget(QWidget):
             return
 
         # Calculate grid position
-        grid_rect = QRect(self.left_margin, self.top_margin,
-                         self.width() - self.left_margin - self.right_margin,
-                         self.height() - self.top_margin - self.bottom_margin)
+        grid_rect = QRect(
+            self.left_margin,
+            self.top_margin,
+            self.width() - self.left_margin - self.right_margin,
+            self.height() - self.top_margin - self.bottom_margin,
+        )
 
         if not grid_rect.contains(event.pos()):
             return
@@ -814,7 +1034,9 @@ class _MatrixGridWidget(QWidget):
         row, col = self._get_square_at_position(event.pos())
 
         # Check if the mouse is within the grid area
-        grid_rect = QRect(self.left_margin, self.top_margin, self.grid_width, self.grid_height)
+        grid_rect = QRect(
+            self.left_margin, self.top_margin, self.grid_width, self.grid_height
+        )
         if not grid_rect.contains(event.pos()):
             row, col = -1, -1
 
@@ -823,6 +1045,15 @@ class _MatrixGridWidget(QWidget):
             self.hover_col = col
             self.update()
             self.parent_matrix.output_labels_widget.update()
+
+            # Reset tooltip timer on hover change
+            self._tooltip_timer.stop()
+            QToolTip.hideText()
+            if row >= 0 and col >= 0:
+                self._tooltip_pending_pos = event.pos()
+                self._tooltip_timer.start(HOVER_TOOLTIP_DELAY)
+            else:
+                self._tooltip_pending_pos = None
 
         if not self.drag_start_pos:
             return
@@ -872,21 +1103,86 @@ class _MatrixGridWidget(QWidget):
         # Trigger repaint to clear selection
         self.update()
 
-    def leaveEvent(self, event: Optional['QEvent']) -> None:
+    def leaveEvent(self, event: Optional["QEvent"]) -> None:
         """Handle mouse leaving the widget to clear hover state."""
         if self.hover_row != -1 or self.hover_col != -1:
             self.hover_row = -1
             self.hover_col = -1
             self.update()
             self.parent_matrix.output_labels_widget.update()
+        # Cancel tooltip timer
+        self._tooltip_timer.stop()
+        QToolTip.hideText()
+        self._tooltip_pending_pos = None
         super().leaveEvent(event)
 
-    def _handle_click(self, pos: Union['QPoint', QPointF]) -> None:
+    def _show_hover_tooltip(self) -> None:
+        """Show tooltip with input and output port names for the hovered cell."""
+        if self.hover_row < 0 or self.hover_col < 0:
+            return
+        if self._tooltip_pending_pos is None:
+            return
+
+        input_ports = self.parent_matrix.model.input_ports
+        output_ports = self.parent_matrix.model.output_ports
+
+        if self.hover_col >= len(input_ports) or self.hover_row >= len(output_ports):
+            return
+
+        # Get port information
+        output_client, output_port, output_display = output_ports[self.hover_row]
+        input_client, input_port, input_display = input_ports[self.hover_col]
+
+        # Get client colors
+        output_color = self.parent_matrix.model.client_colors.get(
+            output_client, QColor(Qt.GlobalColor.black)
+        )
+        input_color = self.parent_matrix.model.client_colors.get(
+            input_client, QColor(Qt.GlobalColor.black)
+        )
+
+        # Detect dark mode and set appropriate tooltip styling
+        is_dark = self.parent_matrix._is_dark_mode()
+        bg_color = "#2b2b2b" if is_dark else "#f0f0f0"
+        text_color = "#ffffff" if is_dark else "#000000"
+        border_color = "#555555" if is_dark else "#cccccc"
+
+        # Set tooltip stylesheet to override Qt's default thick border
+        tooltip_style = (
+            f"QToolTip {{ "
+            f"background-color: {bg_color}; "
+            f"color: {text_color}; "
+            f"border: 1px solid {border_color}; "
+            f"border-radius: 4px; "
+            f"padding: 4px; "
+            f"}}"
+        )
+        self.setStyleSheet(tooltip_style)
+
+        # Format tooltip text with HTML for color coding
+        output_color_hex = output_color.name(QColor.NameFormat.HexRgb)
+        input_color_hex = input_color.name(QColor.NameFormat.HexRgb)
+        tooltip_text = (
+            f'<span style="color: {output_color_hex};">Output: {output_client}:{output_display}</span><br/>'
+            f'<span style="color: {input_color_hex};">Input: {input_client}:{input_display}</span>'
+        )
+
+        # Show tooltip at cursor position
+        global_pos = self.mapToGlobal(self._tooltip_pending_pos)
+        QToolTip.showText(global_pos, tooltip_text, self)
+        # Show tooltip at cursor position
+        global_pos = self.mapToGlobal(self._tooltip_pending_pos)
+        QToolTip.showText(global_pos, tooltip_text, self)
+
+    def _handle_click(self, pos: Union["QPoint", QPointF]) -> None:
         """Handle single click to toggle connection."""
         # Calculate grid position
-        grid_rect = QRect(self.left_margin, self.top_margin,
-                         self.width() - self.left_margin - self.right_margin,
-                         self.height() - self.top_margin - self.bottom_margin)
+        grid_rect = QRect(
+            self.left_margin,
+            self.top_margin,
+            self.width() - self.left_margin - self.right_margin,
+            self.height() - self.top_margin - self.bottom_margin,
+        )
 
         if not grid_rect.contains(pos):
             return
@@ -922,11 +1218,11 @@ class _MatrixGridWidget(QWidget):
 
         if col >= 0 and col < len(input_ports) and row >= 0 and row < len(output_ports):
             output_port_name = output_ports[row][1]  # port_name
-            input_port_name = input_ports[col][1]    # port_name
+            input_port_name = input_ports[col][1]  # port_name
 
             self.parent_matrix.toggle_connection(output_port_name, input_port_name)
 
-    def _get_square_at_position(self, pos: Union['QPoint', QPointF]) -> Tuple[int, int]:
+    def _get_square_at_position(self, pos: Union["QPoint", QPointF]) -> Tuple[int, int]:
         """Find the matrix square (row, col) that contains the given position."""
         # Find column
         col = -1
@@ -946,7 +1242,9 @@ class _MatrixGridWidget(QWidget):
 
         return row, col
 
-    def _get_diagonal_path(self, start_row: int, start_col: int, end_row: int, end_col: int) -> List[Tuple[int, int]]:
+    def _get_diagonal_path(
+        self, start_row: int, start_col: int, end_row: int, end_col: int
+    ) -> List[Tuple[int, int]]:
         """Get all squares along the diagonal path from start to end square."""
         path = []
         row_diff = end_row - start_row
@@ -1008,7 +1306,9 @@ class _MatrixGridWidget(QWidget):
             return
 
         # Get all squares along the diagonal path from start to end
-        cells_to_toggle = self._get_diagonal_path(start_row, start_col, end_row, end_col)
+        cells_to_toggle = self._get_diagonal_path(
+            start_row, start_col, end_row, end_col
+        )
 
         # Start batch processing
         self.parent_matrix.connection_manager.jack_handler.start_batch()
@@ -1017,13 +1317,17 @@ class _MatrixGridWidget(QWidget):
             for row, col in cells_to_toggle:
                 if row < len(output_ports) and col < len(input_ports):
                     output_port_name = output_ports[row][1]  # port_name
-                    input_port_name = input_ports[col][1]    # port_name
-                    self.parent_matrix.toggle_connection(output_port_name, input_port_name)
+                    input_port_name = input_ports[col][1]  # port_name
+                    self.parent_matrix.toggle_connection(
+                        output_port_name, input_port_name
+                    )
         finally:
             # End batch processing and trigger a single refresh
             self.parent_matrix.connection_manager.jack_handler.end_batch()
 
-    def _line_intersects_rect(self, line_start: QPointF, line_end: QPointF, rect: QRectF) -> bool:
+    def _line_intersects_rect(
+        self, line_start: QPointF, line_end: QPointF, rect: QRectF
+    ) -> bool:
         """Check if a line segment intersects with a rectangle."""
         # Check if either endpoint is inside the rectangle
         if rect.contains(line_start) or rect.contains(line_end):
@@ -1034,17 +1338,22 @@ class _MatrixGridWidget(QWidget):
             (QPointF(rect.left(), rect.top()), QPointF(rect.right(), rect.top())),
             (QPointF(rect.right(), rect.top()), QPointF(rect.right(), rect.bottom())),
             (QPointF(rect.right(), rect.bottom()), QPointF(rect.left(), rect.bottom())),
-            (QPointF(rect.left(), rect.bottom()), QPointF(rect.left(), rect.top()))
+            (QPointF(rect.left(), rect.bottom()), QPointF(rect.left(), rect.top())),
         ]
 
         for rect_line_start, rect_line_end in rect_lines:
-            if self._lines_intersect(line_start, line_end, rect_line_start, rect_line_end):
+            if self._lines_intersect(
+                line_start, line_end, rect_line_start, rect_line_end
+            ):
                 return True
 
         return False
 
-    def _lines_intersect(self, p1: QPointF, q1: QPointF, p2: QPointF, q2: QPointF) -> bool:
+    def _lines_intersect(
+        self, p1: QPointF, q1: QPointF, p2: QPointF, q2: QPointF
+    ) -> bool:
         """Check if two line segments intersect."""
+
         def orientation(p: QPointF, q: QPointF, r: QPointF) -> int:
             val = (q.y() - p.y()) * (r.x() - q.x()) - (q.x() - p.x()) * (r.y() - q.y())
             if val == 0:
@@ -1052,8 +1361,12 @@ class _MatrixGridWidget(QWidget):
             return 1 if val > 0 else 2  # Clockwise or counterclockwise
 
         def on_segment(p: QPointF, q: QPointF, r: QPointF) -> bool:
-            return (q.x() <= max(p.x(), r.x()) and q.x() >= min(p.x(), r.x()) and
-                    q.y() <= max(p.y(), r.y()) and q.y() >= min(p.y(), r.y()))
+            return (
+                q.x() <= max(p.x(), r.x())
+                and q.x() >= min(p.x(), r.x())
+                and q.y() <= max(p.y(), r.y())
+                and q.y() >= min(p.y(), r.y())
+            )
 
         o1 = orientation(p1, q1, p2)
         o2 = orientation(p1, q1, q2)
@@ -1063,12 +1376,25 @@ class _MatrixGridWidget(QWidget):
         if o1 != o2 and o3 != o4:
             return True
 
-        if o1 == 0 and on_segment(p1, p2, q1): return True
-        if o2 == 0 and on_segment(p1, q2, q1): return True
-        if o3 == 0 and on_segment(p2, p1, q2): return True
-        if o4 == 0 and on_segment(p2, q1, q2): return True
+        if o1 == 0 and on_segment(p1, p2, q1):
+            return True
+        if o2 == 0 and on_segment(p1, q2, q1):
+            return True
+        if o3 == 0 and on_segment(p2, p1, q2):
+            return True
+        if o4 == 0 and on_segment(p2, q1, q2):
+            return True
 
         return False
+
+    def mouseDoubleClickEvent(self, event: Any) -> None:
+        """Handle double click to request fullscreen."""
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.parent_matrix.fullscreen_request_signal.emit()
+            event.accept()
+        else:
+            super().mouseDoubleClickEvent(event)
+
 
 class _OutputLabelsWidget(QWidget):
     """
@@ -1076,12 +1402,12 @@ class _OutputLabelsWidget(QWidget):
     This allows users to adjust the space allocated for output port names.
     """
 
-    def __init__(self, parent_matrix: MIDIMatrixWidget) -> None:
+    def __init__(self, parent_matrix: "MatrixWidget") -> None:
         """
         Initialize the output labels widget.
 
         Args:
-            parent_matrix: The parent MIDIMatrixWidget instance
+            parent_matrix: The parent MatrixWidget instance
         """
         super().__init__()
         self.parent_matrix = parent_matrix
@@ -1094,7 +1420,7 @@ class _OutputLabelsWidget(QWidget):
 
         # Dynamic truncation based on available width
         self.max_client_chars: int = 10  # Will be calculated based on width
-        self.max_port_chars: int = 15    # Will be calculated based on width
+        self.max_port_chars: int = 15  # Will be calculated based on width
 
         # Set minimum width to display labels comfortably
         self.setMinimumWidth(100)
@@ -1106,7 +1432,7 @@ class _OutputLabelsWidget(QWidget):
         self._sync_with_main_grid()
         self.update()
 
-    def resizeEvent(self, event: Optional['QEvent']) -> None:
+    def resizeEvent(self, event: Optional["QEvent"]) -> None:
         """Handle resize events to recalculate text truncation."""
         super().resizeEvent(event)
         self._calculate_truncation_lengths()
@@ -1125,7 +1451,7 @@ class _OutputLabelsWidget(QWidget):
         client_font.setPointSize(self.client_name_font_size)
         client_font.setBold(True)
         painter.setFont(client_font)
-        
+
         low = 0
         high = 100
         max_chars = 0
@@ -1134,7 +1460,7 @@ class _OutputLabelsWidget(QWidget):
             if mid == 0:
                 low = 1
                 continue
-            rect = painter.boundingRect(0, 0, 1000, 100, 0, 'A' * mid)
+            rect = painter.boundingRect(0, 0, 1000, 100, 0, "A" * mid)
             if rect.width() <= available_width:
                 max_chars = mid
                 low = mid + 1
@@ -1155,41 +1481,46 @@ class _OutputLabelsWidget(QWidget):
             if mid == 0:
                 low = 1
                 continue
-            rect = painter.boundingRect(0, 0, 1000, 100, 0, 'A' * mid)
+            rect = painter.boundingRect(0, 0, 1000, 100, 0, "A" * mid)
             if rect.width() <= available_width:
                 max_chars = mid
                 low = mid + 1
             else:
                 high = mid - 1
         self.max_port_chars = max_chars
-        
+
         painter.end()
 
     def _sync_with_main_grid(self) -> None:
         """Sync dimensions and positions with the main grid widget."""
-        if hasattr(self.parent_matrix, 'matrix_widget') and self.parent_matrix.matrix_widget:
+        if (
+            hasattr(self.parent_matrix, "matrix_widget")
+            and self.parent_matrix.matrix_widget
+        ):
             grid_widget = self.parent_matrix.matrix_widget
 
             # Copy row dimensions from main grid
-            self.row_heights = getattr(grid_widget, 'row_heights', [])
-            self.row_positions = getattr(grid_widget, 'row_positions', [])
+            self.row_heights = getattr(grid_widget, "row_heights", [])
+            self.row_positions = getattr(grid_widget, "row_positions", [])
 
             # Calculate our required height (same as grid height)
-            total_height = getattr(grid_widget, 'total_height', 200)
+            total_height = getattr(grid_widget, "total_height", 200)
 
             self.setMinimumHeight(total_height)
             # Don't set minimum width since we're in a splitter that handles sizing
 
-    def paintEvent(self, event: Optional['QEvent']) -> None:
+    def paintEvent(self, event: Optional["QEvent"]) -> None:
         """Paint the output labels aligned with the main grid."""
-        if not hasattr(self, 'row_heights') or not self.row_heights:
+        if not hasattr(self, "row_heights") or not self.row_heights:
             self._sync_with_main_grid()
 
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         # Draw background
-        painter.fillRect(self.rect(), self.parent_matrix.connection_manager.background_color)
+        painter.fillRect(
+            self.rect(), self.parent_matrix.connection_manager.background_color
+        )
 
         # Create font objects for text measurements
         client_font = QFont()
@@ -1200,11 +1531,16 @@ class _OutputLabelsWidget(QWidget):
         port_font.setPointSize(self.font_size)
 
         hover_row = -1
-        if hasattr(self.parent_matrix, 'matrix_widget') and self.parent_matrix.matrix_widget:
+        if (
+            hasattr(self.parent_matrix, "matrix_widget")
+            and self.parent_matrix.matrix_widget
+        ):
             hover_row = self.parent_matrix.matrix_widget.hover_row
 
         # Access grouped output clients info to draw client name once per group
-        output_client_port_counts = getattr(self.parent_matrix.matrix_widget, "output_client_port_counts", {})
+        output_client_port_counts = getattr(
+            self.parent_matrix.matrix_widget, "output_client_port_counts", {}
+        )
         ports = self.parent_matrix.model.output_ports
 
         idx = 0
@@ -1220,7 +1556,7 @@ class _OutputLabelsWidget(QWidget):
                 _, port_name, display_name = ports[row_index]
                 row_y = self.row_positions[row_index]
                 row_height = self.row_heights[row_index]
-                is_hovered = (row_index == hover_row)
+                is_hovered = row_index == hover_row
 
                 # Draw client and port names, centered vertically in the row
                 painter.save()
@@ -1230,7 +1566,7 @@ class _OutputLabelsWidget(QWidget):
                 if is_hovered and offset == 0:
                     # Emphasize only on first row for this client
                     current_client_font.setPointSize(self.client_name_font_size + 1)
-                
+
                 current_port_font = QFont(port_font)
                 if is_hovered:
                     current_port_font.setBold(True)
@@ -1242,12 +1578,14 @@ class _OutputLabelsWidget(QWidget):
                 # Get text dimensions
                 painter.setFont(current_client_font)
                 client_text_h = painter.fontMetrics().height()
-                
+
                 painter.setFont(current_port_font)
                 port_text_h = painter.fontMetrics().height()
 
                 # Spacing between client and port labels
-                port_v_offset = self.parent_matrix.style_config.output_label_port_v_offset
+                port_v_offset = (
+                    self.parent_matrix.style_config.output_label_port_v_offset
+                )
 
                 # Draw client name only once (on the first port row of this client)
                 if offset == 0:
@@ -1259,8 +1597,16 @@ class _OutputLabelsWidget(QWidget):
                     port_y = block_start_y + client_text_h + port_v_offset
 
                     painter.setFont(current_client_font)
-                    painter.setPen(QPen(self.parent_matrix.model.client_colors.get(client_name, QColor(Qt.GlobalColor.black))))
-                    client_rect = QRect(0, int(client_y), self.width() - 4, client_text_h)
+                    painter.setPen(
+                        QPen(
+                            self.parent_matrix.model.client_colors.get(
+                                client_name, QColor(Qt.GlobalColor.black)
+                            )
+                        )
+                    )
+                    client_rect = QRect(
+                        0, int(client_y), self.width() - 4, client_text_h
+                    )
                     painter.drawText(
                         client_rect,
                         Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
@@ -1269,7 +1615,13 @@ class _OutputLabelsWidget(QWidget):
 
                     # Draw port name on every row
                     painter.setFont(current_port_font)
-                    painter.setPen(QPen(self.parent_matrix.model.client_colors.get(client_name, QColor(Qt.GlobalColor.black))))
+                    painter.setPen(
+                        QPen(
+                            self.parent_matrix.model.client_colors.get(
+                                client_name, QColor(Qt.GlobalColor.black)
+                            )
+                        )
+                    )
                     port_rect = QRect(0, int(port_y), self.width() - 4, port_text_h)
                     painter.drawText(
                         port_rect,
@@ -1283,7 +1635,13 @@ class _OutputLabelsWidget(QWidget):
 
                     # Draw port name
                     painter.setFont(current_port_font)
-                    painter.setPen(QPen(self.parent_matrix.model.client_colors.get(client_name, QColor(Qt.GlobalColor.black))))
+                    painter.setPen(
+                        QPen(
+                            self.parent_matrix.model.client_colors.get(
+                                client_name, QColor(Qt.GlobalColor.black)
+                            )
+                        )
+                    )
                     port_rect = QRect(0, int(port_y), self.width() - 4, port_text_h)
                     painter.drawText(
                         port_rect,
@@ -1298,7 +1656,7 @@ class _OutputLabelsWidget(QWidget):
     def _draw_client_separators(self, painter: QPainter) -> None:
         """Draw dashed line separators around each output port entry."""
         data = self.parent_matrix.model.output_ports
-        if not data or not hasattr(self, 'row_positions') or not self.row_positions:
+        if not data or not hasattr(self, "row_positions") or not self.row_positions:
             return
 
         painter.save()
@@ -1310,15 +1668,56 @@ class _OutputLabelsWidget(QWidget):
         separator_y = self.row_positions[0] - 2
         painter.drawLine(0, separator_y, self.width(), separator_y)
 
-        # Draw separator after each entry
         for i in range(len(data)):
             separator_y = self.row_positions[i] + self.row_heights[i] + 1
             painter.drawLine(0, separator_y, self.width(), separator_y)
 
         painter.restore()
 
+    def _get_client_at_position(self, y: int) -> Optional[str]:
+        """Get the client name at the given y position."""
+        for i, row_y in enumerate(self.row_positions):
+            row_height = self.row_heights[i]
+            if y >= row_y and y < row_y + row_height:
+                return self.parent_matrix.model.output_ports[i][0]
+        return None
+
+    def contextMenuEvent(self, event: Any) -> None:
+        """Show context menu for output labels."""
+        from PyQt6.QtWidgets import QMenu
+        from PyQt6.QtGui import QAction
+
+        client_name = self._get_client_at_position(event.pos().y())
+        if not client_name:
+            return
+
+        context_menu = QMenu(self)
+        hide_action = QAction(f"Hide {client_name}", self)
+
+        def hide_client():
+            if self.parent_matrix.node_visibility_manager:
+                tab_type = f"{self.parent_matrix.port_type}_matrix"
+                is_midi = self.parent_matrix.port_type == "midi"
+                self.parent_matrix.node_visibility_manager.hide_client(
+                    client_name, is_midi, tab_type
+                )
+
+        hide_action.triggered.connect(hide_client)
+        context_menu.addAction(hide_action)
+
+        context_menu.exec(event.globalPos())
+
+    def mouseDoubleClickEvent(self, event: Any) -> None:
+        """Handle double click to request fullscreen."""
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.parent_matrix.fullscreen_request_signal.emit()
+            event.accept()
+        else:
+            super().mouseDoubleClickEvent(event)
+
+
 def _truncate_text(text: str, max_length: int) -> str:
     """Truncate text with ellipsis if too long."""
     if len(text) <= max_length:
         return text
-    return text[:max_length-3] + "..." if max_length > 3 else text[:max_length]
+    return text[: max_length - 3] + "..." if max_length > 3 else text[:max_length]

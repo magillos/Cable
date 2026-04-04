@@ -86,3 +86,7 @@ GRAPH_TOOLBAR_UNDO_REDO_OFFSET = -65 # Adjust to shift Undo/Redo buttons in Grap
 
 # Padding for the QGraphicsView sceneRect to prevent items from touching edges
 VIEW_PADDING = 50
+
+# Hover tooltip delay for matrix grid cells (milliseconds)
+HOVER_TOOLTIP_DELAY = 500
+

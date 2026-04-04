@@ -317,3 +317,37 @@ def show_hide_node_confirmation_dialog(
 
     return result
 # ------------------------------------
+
+# --- Quantum/Sample Rate Confirmation Dialog ---
+class QuantumSampleRateConfirmationDialog(QDialog):
+    """Auto-closing confirmation dialog for quantum/sample rate changes."""
+    
+    def __init__(self, message: str, duration_ms: int = 2000, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Setting Applied")
+        self.setModal(False)  # Non-modal so it doesn't block interaction
+        
+        layout = QVBoxLayout(self)
+        
+        # Message label
+        message_label = QLabel(message)
+        message_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(message_label)
+        
+        # Set reasonable size
+        self.resize(250, 80)
+        
+        # Auto-close timer
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(duration_ms, self.accept)
+    
+    def showEvent(self, event: QShowEvent) -> None:
+        """Override show event to center the dialog on parent."""
+        super().showEvent(event)
+        if self.parent():
+            parent_rect = self.parent().geometry()
+            dialog_rect = self.geometry()
+            x = parent_rect.x() + (parent_rect.width() - dialog_rect.width()) // 2
+            y = parent_rect.y() + (parent_rect.height() - dialog_rect.height()) // 2
+            self.move(x, y)
+# ------------------------------------

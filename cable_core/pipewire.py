@@ -69,7 +69,12 @@ class PipewireManager:
                          logger.warning(f"Warning: Could not parse name from line: {line}")
                          current_item_name = None
 
-                    if current_item_id and current_item_description and current_item_name and current_item_name.startswith("alsa_"):
+                    # Include ALSA devices/nodes always; include bluez (Bluetooth) only for Devices (not Nodes)
+                    # Bluetooth latency cannot be changed via ProcessLatency, so exclude from Node list
+                    is_valid_device = current_item_name.startswith("alsa_") or (
+                        item_type == 'Device' and current_item_name.startswith("bluez_")
+                    )
+                    if current_item_id and current_item_description and current_item_name and is_valid_device:
                         item_dict = {
                             "description": current_item_description,
                             "id": current_item_id,

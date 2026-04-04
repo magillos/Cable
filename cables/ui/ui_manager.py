@@ -4,7 +4,20 @@ UI Manager for Cables JACK/PipeWire connection manager.
 Handles all UI setup, styling, and widget management.
 """
 
-from PyQt6.QtWidgets import QApplication, QVBoxLayout, QHBoxLayout, QTabWidget, QWidget, QCheckBox, QPushButton, QLineEdit, QSizePolicy, QSpacerItem, QMainWindow, QToolButton
+from PyQt6.QtWidgets import (
+    QApplication,
+    QVBoxLayout,
+    QHBoxLayout,
+    QTabWidget,
+    QWidget,
+    QCheckBox,
+    QPushButton,
+    QLineEdit,
+    QSizePolicy,
+    QSpacerItem,
+    QMainWindow,
+    QToolButton,
+)
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QColor, QFont, QAction
 
@@ -31,7 +44,9 @@ class UIManager:
     - Main window UI initialization
     """
 
-    def __init__(self, main_window: QMainWindow, config_manager: 'ConfigManager') -> None:
+    def __init__(
+        self, main_window: QMainWindow, config_manager: "ConfigManager"
+    ) -> None:
         """
         Initialize the UI Manager.
 
@@ -41,7 +56,7 @@ class UIManager:
         """
         self.main_window = main_window
         self.config_manager = config_manager
-        
+
         # Color state
         self.background_color: QColor = QColor()
         self.text_color: QColor = QColor()
@@ -80,13 +95,13 @@ class UIManager:
         self.zoom_out_button: Optional[QPushButton] = None
 
         # Tree and view references (set by connection manager)
-        self.input_tree: Optional['PortTreeWidget'] = None
-        self.output_tree: Optional['PortTreeWidget'] = None
-        self.midi_input_tree: Optional['PortTreeWidget'] = None
-        self.midi_output_tree: Optional['PortTreeWidget'] = None
-        self.connection_view: Optional['ConnectionView'] = None
-        self.midi_connection_view: Optional['ConnectionView'] = None
-        self.graph_main_window: Optional['GraphMainWindow'] = None
+        self.input_tree: Optional["PortTreeWidget"] = None
+        self.output_tree: Optional["PortTreeWidget"] = None
+        self.midi_input_tree: Optional["PortTreeWidget"] = None
+        self.midi_output_tree: Optional["PortTreeWidget"] = None
+        self.connection_view: Optional["ConnectionView"] = None
+        self.midi_connection_view: Optional["ConnectionView"] = None
+        self.graph_main_window: Optional["GraphMainWindow"] = None
 
     def is_dark_mode(self) -> bool:
         """Determine if the system is in dark mode."""
@@ -177,6 +192,7 @@ class UIManager:
         self.midi_tab_widget = QWidget()
         self.graph_tab_widget = QWidget()
         self.midi_matrix_tab_widget = QWidget()
+        self.audio_matrix_tab_widget = QWidget()
         self.alsa_mixer_tab_widget = QWidget()
         self.pwtop_tab_widget = QWidget()
         self.latency_tab_widget = QWidget()
@@ -190,12 +206,14 @@ class UIManager:
         # Create control widgets - Collapse All as checkable QToolButton (like Persistent layout)
         self.collapse_all_action = QAction("Collapse All", self.main_window)
         self.collapse_all_action.setCheckable(True)
-        self.collapse_all_action.setToolTip("Toggle collapse state for all groups <span style='color:grey'>Alt+C</span>")
-        
+        self.collapse_all_action.setToolTip(
+            "Toggle collapse state for all groups <span style='color:grey'>Alt+C</span>"
+        )
+
         self.collapse_all_button = create_action_button(
             parent_widget=self.main_window,
             action=self.collapse_all_action,
-            tooltip="Toggle collapse state for all groups <span style='color:grey'>Alt+C</span>"
+            tooltip="Toggle collapse state for all groups <span style='color:grey'>Alt+C</span>",
         )
 
         no_hover_style = self.get_no_hover_button_stylesheet()
@@ -210,18 +228,17 @@ class UIManager:
 
         bottom_layout.addStretch(1)
 
-
         self.untangle_button = QPushButton()
         self.untangle_button.setStyleSheet(no_hover_style)
         self.untangle_button.setMinimumWidth(TOOLBAR_BUTTON_MIN_WIDTH)
 
         # Create presets button for bottom bar (QToolButton like Graph tab)
         self.bottom_presets_button = QToolButton(self.main_window)
-        self.bottom_presets_button.setText('Presets')
+        self.bottom_presets_button.setText("Presets")
         self.bottom_presets_button.setMinimumWidth(TOOLBAR_BUTTON_MIN_WIDTH)
 
         # Create visibility button for bottom bar
-        self.bottom_visibility_button = QPushButton('Clients Visibility')
+        self.bottom_visibility_button = QPushButton("Clients Visibility")
         self.bottom_visibility_button.setStyleSheet(no_hover_style)
         self.bottom_visibility_button.setMinimumWidth(TOOLBAR_BUTTON_MIN_WIDTH)
 
@@ -231,14 +248,18 @@ class UIManager:
         bottom_layout.addWidget(self.bottom_visibility_button)
         bottom_layout.addStretch(1)
 
-        self.zoom_in_button = QPushButton('+')
-        self.zoom_in_button.setToolTip("Increase port list font size <span style='color:grey'>Ctrl++</span>")
+        self.zoom_in_button = QPushButton("+")
+        self.zoom_in_button.setToolTip(
+            "Increase port list font size <span style='color:grey'>Ctrl++</span>"
+        )
         self.zoom_in_button.setStyleSheet(no_hover_style)
         zoom_button_size = QSize(25, 25)
         self.zoom_in_button.setFixedSize(zoom_button_size)
 
-        self.zoom_out_button = QPushButton('-')
-        self.zoom_out_button.setToolTip("Decrease port list font size <span style='color:grey'>Ctrl+-</span>")
+        self.zoom_out_button = QPushButton("-")
+        self.zoom_out_button.setToolTip(
+            "Decrease port list font size <span style='color:grey'>Ctrl+-</span>"
+        )
         self.zoom_out_button.setStyleSheet(no_hover_style)
         self.zoom_out_button.setFixedSize(zoom_button_size)
 
@@ -252,14 +273,12 @@ class UIManager:
 
         main_layout.addLayout(bottom_layout)
 
-
-
     def get_color_scheme(self) -> Dict[str, QColor]:
         """Get the current color scheme as a dictionary."""
         return {
-            'background': self.background_color,
-            'text': self.text_color,
-            'highlight': self.highlight_color,
-            'auto_highlight': self.auto_highlight_color,
-            'drag_highlight': self.drag_highlight_color
+            "background": self.background_color,
+            "text": self.text_color,
+            "highlight": self.highlight_color,
+            "auto_highlight": self.auto_highlight_color,
+            "drag_highlight": self.drag_highlight_color,
         }

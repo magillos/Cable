@@ -737,8 +737,9 @@ class JackGraphView(QGraphicsView):
                 
                 # Get the node_visibility_manager
                 if hasattr(connection_manager, 'node_visibility_manager') and connection_manager.node_visibility_manager:
-                    connection_manager.node_visibility_manager.unhide_all_nodes()
-                    logger.info("All nodes have been unhidden")
+                    # Only unhide nodes in the graph tab, not other tabs
+                    connection_manager.node_visibility_manager.unhide_all_nodes(tab_type="graph")
+                    logger.info("All nodes have been unhidden in graph")
                 else:
                     logger.warning("NodeVisibilityManager not available")
             else:

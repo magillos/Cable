@@ -451,7 +451,7 @@ class JackGraphScene(QGraphicsScene):
                         break
             
             # Check if the node should be visible
-            if not self.node_visibility_manager.is_node_visible(client_name, is_midi=is_midi):
+            if not self.node_visibility_manager.is_node_visible(client_name, is_midi=is_midi, tab_type="graph"):
                 return None
         
         # Proceed with existing code
@@ -527,14 +527,16 @@ class JackGraphScene(QGraphicsScene):
                 if node.is_input_unified:
                     logger.debug(f"Unloading input unified sink for node {client_name} before removal")
                     try:
-                        node._unload_unified_sink(is_input=True)
+                        if node.unify_handler:
+                            node.unify_handler._unload_unified_sink(is_input=True)
                     except Exception as e:
                         logger.error(f"Error unloading input unified sink: {e}")
-
+    
                 if node.is_output_unified:
                     logger.debug(f"Unloading output unified sink for node {client_name} before removal")
                     try:
-                        node._unload_unified_sink(is_input=False)
+                        if node.unify_handler:
+                            node.unify_handler._unload_unified_sink(is_input=False)
                     except Exception as e:
                         logger.error(f"Error unloading output unified sink: {e}")
 
@@ -1039,8 +1041,8 @@ class JackGraphScene(QGraphicsScene):
                         break
             
             # Check visibility settings for input and output parts
-            input_visible = self.node_visibility_manager.is_input_visible(client_name, is_midi=is_midi)
-            output_visible = self.node_visibility_manager.is_output_visible(client_name, is_midi=is_midi)
+            input_visible = self.node_visibility_manager.is_input_visible(client_name, is_midi=is_midi, tab_type="graph")
+            output_visible = self.node_visibility_manager.is_output_visible(client_name, is_midi=is_midi, tab_type="graph")
             
             logger.debug(f"Split part visibility for {client_name} (MIDI={is_midi}): input={input_visible}, output={output_visible}")
             

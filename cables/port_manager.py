@@ -136,18 +136,21 @@ class PortManager:
 
             # Filter ports by visibility if node_visibility_manager is available
             if self.node_visibility_manager:
+                # Determine tab type based on is_midi_tab parameter
+                tab_type = "midi" if is_midi_tab else "audio"
+                
                 # For input ports, only check input visibility
                 input_port_names = []
                 for p in input_port_objects:
                     client_name = p.name.split(':', 1)[0] if ':' in p.name else p.name
-                    if self.node_visibility_manager.is_input_visible(client_name, is_midi=is_midi_tab):
+                    if self.node_visibility_manager.is_input_visible(client_name, is_midi=is_midi_tab, tab_type=tab_type):
                         input_port_names.append(p.name)
                 
                 # For output ports, only check output visibility
                 output_port_names = []
                 for p in output_port_objects:
                     client_name = p.name.split(':', 1)[0] if ':' in p.name else p.name
-                    if self.node_visibility_manager.is_output_visible(client_name, is_midi=is_midi_tab):
+                    if self.node_visibility_manager.is_output_visible(client_name, is_midi=is_midi_tab, tab_type=tab_type):
                         output_port_names.append(p.name)
             else:
                 input_port_names = [p.name for p in input_port_objects]

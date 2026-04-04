@@ -30,13 +30,13 @@ class OtherSettingsDialog(QDialog):
     def _init_ui(self) -> None:
         main_layout = QVBoxLayout(self)
 
-        self.builder.build_widgets(main_layout)
-
         button_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.RestoreDefaults |
             QDialogButtonBox.StandardButton.Apply |
             QDialogButtonBox.StandardButton.Cancel
         )
+        apply_button = button_box.button(QDialogButtonBox.StandardButton.Apply)
+        self.builder.build_widgets(main_layout, apply_button=apply_button)
         button_box.clicked.connect(self._handle_button_click)
         main_layout.addWidget(button_box)
 
@@ -65,9 +65,12 @@ class OtherSettingsDialog(QDialog):
     def _handle_button_click(self, button: QAbstractButton) -> None:
         if self.sender().buttonRole(button) == QDialogButtonBox.ButtonRole.ApplyRole:
             self.builder.save_settings()
+            self.builder._reset_modified_flag()
             self.builder.show_restart_warning(self)
         elif self.sender().buttonRole(button) == QDialogButtonBox.ButtonRole.ResetRole:
             if self.builder.reset_to_defaults(self):
                 self.accept()
         elif self.sender().buttonRole(button) == QDialogButtonBox.ButtonRole.RejectRole:
+            self.builder.load_settings()
+            self.builder._reset_modified_flag()
             self.reject()

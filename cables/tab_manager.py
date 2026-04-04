@@ -8,6 +8,7 @@ import os
 from typing import Optional, TYPE_CHECKING, List, Set
 
 import logging
+
 logger = logging.getLogger(__name__)
 
 from PyQt6.QtWidgets import QVBoxLayout, QTreeWidget
@@ -27,7 +28,9 @@ if TYPE_CHECKING:
     from cables.features.mixer import AlsMixerApp
     from cables.features.pwtop_monitor import PwTopMonitor
     from cables.features.latency_tester import LatencyTester
-    from PipeWireSettingsApp import PipeWireSettingsApp # Although imported locally, for hinting it might be useful
+    from PipeWireSettingsApp import (
+        PipeWireSettingsApp,
+    )  # Although imported locally, for hinting it might be useful
 
 
 class TabManager(QObject):
@@ -39,15 +42,15 @@ class TabManager(QObject):
     - Tab switching and state management
     - Bottom UI controls visibility
     - Global zoom action state coordination
-    
+
     Signals:
         tab_changed(str): Emitted when tab changes, with tab type string
     """
-    
+
     # Signal emitted when tab changes (tab_type: 'audio', 'midi', 'graph', etc.)
     tab_changed = pyqtSignal(str)
 
-    def __init__(self, connection_manager: 'JackConnectionManager') -> None:
+    def __init__(self, connection_manager: "JackConnectionManager") -> None:
         """
         Initialize TabManager with reference to main connection manager.
 
@@ -55,11 +58,13 @@ class TabManager(QObject):
             connection_manager: Reference to JackConnectionManager instance
         """
         super().__init__(connection_manager)
-        
+
         self.connection_manager = connection_manager
         self.tab_ui_manager = TabUIManager()
         self.last_active_tab = 0
-        self._pending_tab_switch = None  # Store tab switch to handle after ui_state_manager is initialized
+        self._pending_tab_switch = (
+            None  # Store tab switch to handle after ui_state_manager is initialized
+        )
 
         # UI element references (populated during setup)
         self.tab_widget = None
@@ -75,63 +80,143 @@ class TabManager(QObject):
         self.tab_widget = self.connection_manager.ui_manager.tab_widget
 
         # Check if Cable should be integrated as the first tab
-        self.integrated_mode = self.connection_manager.config_manager.get_bool(keys.INTEGRATE_CABLE_AND_CABLES, False)
+        self.integrated_mode = self.connection_manager.config_manager.get_bool(
+            keys.INTEGRATE_CABLE_AND_CABLES, False
+        )
         if self.integrated_mode:
             self._add_cable_tab()
 
         # Setup individual tabs
         self.tab_ui_manager.setup_port_tab(
-            self.connection_manager, self.connection_manager.ui_manager.audio_tab_widget, "Audio", 'audio'
+            self.connection_manager,
+            self.connection_manager.ui_manager.audio_tab_widget,
+            "Audio",
+            "audio",
         )
         self.tab_ui_manager.setup_port_tab(
-            self.connection_manager, self.connection_manager.ui_manager.midi_tab_widget, "MIDI", 'midi'
+            self.connection_manager,
+            self.connection_manager.ui_manager.midi_tab_widget,
+            "MIDI",
+            "midi",
         )
 
         # Conditionally setup and add MIDI Matrix tab
-        if self.connection_manager.config_manager.get_bool(keys.ENABLE_MIDI_MATRIX, False):
+        if self.connection_manager.config_manager.get_bool(
+            keys.ENABLE_MIDI_MATRIX, False
+        ):
             self.tab_ui_manager.setup_midi_matrix_tab(
-                self.connection_manager, self.connection_manager.ui_manager.midi_matrix_tab_widget
+                self.connection_manager,
+                self.connection_manager.ui_manager.midi_matrix_tab_widget,
+            )
+
+        # Conditionally setup and add Audio Matrix tab
+        if self.connection_manager.config_manager.get_bool(
+            keys.ENABLE_AUDIO_MATRIX, False
+        ):
+            self.tab_ui_manager.setup_audio_matrix_tab(
+                self.connection_manager,
+                self.connection_manager.ui_manager.audio_matrix_tab_widget,
             )
 
         # Setup pw-top tab
-        self.tab_ui_manager.setup_pwtop_tab(self.connection_manager, self.connection_manager.ui_manager.pwtop_tab_widget)
-        self.connection_manager.pwtop_monitor = getattr(self.connection_manager, 'pwtop_monitor', None)
+        self.tab_ui_manager.setup_pwtop_tab(
+            self.connection_manager, self.connection_manager.ui_manager.pwtop_tab_widget
+        )
+        self.connection_manager.pwtop_monitor = getattr(
+            self.connection_manager, "pwtop_monitor", None
+        )
 
         # Setup latency tab
-        self.tab_ui_manager.setup_latency_tab(self.connection_manager, self.connection_manager.ui_manager.latency_tab_widget)
-        self.connection_manager.latency_tester = getattr(self.connection_manager, 'latency_tester', None)
+        self.tab_ui_manager.setup_latency_tab(
+            self.connection_manager,
+            self.connection_manager.ui_manager.latency_tab_widget,
+        )
+        self.connection_manager.latency_tester = getattr(
+            self.connection_manager, "latency_tester", None
+        )
 
         # New Tab Order:
         # Audio (0), MIDI (1), MIDI Matrix (2), Graph (3), pw-top (4), Alsa Mixer (5), Latency Test (6)
-        self.tab_widget.addTab(self.connection_manager.ui_manager.audio_tab_widget, "Audio") # Index 0
-        self.tab_widget.addTab(self.connection_manager.ui_manager.midi_tab_widget, "MIDI")   # Index 1
-        
-        if self.connection_manager.config_manager.get_bool(keys.ENABLE_MIDI_MATRIX, False):
-            self.tab_widget.addTab(self.connection_manager.ui_manager.midi_matrix_tab_widget, "MIDI Matrix") # Index 2
+        self.tab_widget.addTab(
+            self.connection_manager.ui_manager.audio_tab_widget, "Audio"
+        )  # Index 0
+        self.tab_widget.addTab(
+            self.connection_manager.ui_manager.midi_tab_widget, "MIDI"
+        )  # Index 1
 
-        self.tab_ui_manager.setup_graph_tab(self.connection_manager, self.connection_manager.ui_manager.graph_tab_widget)
-        self.tab_widget.insertTab(self.tab_widget.count(), self.connection_manager.ui_manager.graph_tab_widget, "Graph")
+        if self.connection_manager.config_manager.get_bool(
+            keys.ENABLE_MIDI_MATRIX, False
+        ):
+            self.tab_widget.addTab(
+                self.connection_manager.ui_manager.midi_matrix_tab_widget, "MIDI Matrix"
+            )  # Index 2
 
-        self.tab_widget.addTab(self.connection_manager.ui_manager.pwtop_tab_widget, "pw-top")
+        if self.connection_manager.config_manager.get_bool(
+            keys.ENABLE_AUDIO_MATRIX, False
+        ):
+            self.tab_widget.addTab(
+                self.connection_manager.ui_manager.audio_matrix_tab_widget,
+                "Audio Matrix",
+            )
+
+        self.tab_ui_manager.setup_graph_tab(
+            self.connection_manager, self.connection_manager.ui_manager.graph_tab_widget
+        )
+        self.tab_widget.insertTab(
+            self.tab_widget.count(),
+            self.connection_manager.ui_manager.graph_tab_widget,
+            "Graph",
+        )
+
+        self.tab_widget.addTab(
+            self.connection_manager.ui_manager.pwtop_tab_widget, "pw-top"
+        )
 
         # Alsa Mixer tab
-        alsa_mixer_layout = QVBoxLayout(self.connection_manager.ui_manager.alsa_mixer_tab_widget)
-        self.connection_manager.alsa_mixer_app = AlsMixerApp(config_manager=self.connection_manager.config_manager) # Pass ConfigManager
+        alsa_mixer_layout = QVBoxLayout(
+            self.connection_manager.ui_manager.alsa_mixer_tab_widget
+        )
+        self.connection_manager.alsa_mixer_app = AlsMixerApp(
+            config_manager=self.connection_manager.config_manager
+        )  # Pass ConfigManager
         alsa_mixer_layout.addWidget(self.connection_manager.alsa_mixer_app)
-        self.tab_widget.insertTab(self.tab_widget.count(), self.connection_manager.ui_manager.alsa_mixer_tab_widget, "ALSA Mixer")
+        self.tab_widget.insertTab(
+            self.tab_widget.count(),
+            self.connection_manager.ui_manager.alsa_mixer_tab_widget,
+            "ALSA Mixer",
+        )
 
-        self.tab_widget.addTab(self.connection_manager.ui_manager.latency_tab_widget, "Latency Test")
+        self.tab_widget.addTab(
+            self.connection_manager.ui_manager.latency_tab_widget, "Latency Test"
+        )
 
         # Setup fullscreen functionality
-        if self.connection_manager.graph_main_window and self.connection_manager.graph_main_window.view:
-            self.connection_manager.graph_main_window.view.fullscreen_request_signal.connect(self.connection_manager.toggle_graph_fullscreen)
+        if (
+            self.connection_manager.graph_main_window
+            and self.connection_manager.graph_main_window.view
+        ):
+            self.connection_manager.graph_main_window.view.fullscreen_request_signal.connect(
+                self.connection_manager.toggle_fullscreen
+            )
+            
+        if hasattr(self.connection_manager, 'midi_matrix_widget') and self.connection_manager.midi_matrix_widget:
+            self.connection_manager.midi_matrix_widget.fullscreen_request_signal.connect(
+                self.connection_manager.toggle_fullscreen
+            )
+
+        if hasattr(self.connection_manager, 'audio_matrix_widget') and self.connection_manager.audio_matrix_widget:
+            self.connection_manager.audio_matrix_widget.fullscreen_request_signal.connect(
+                self.connection_manager.toggle_fullscreen
+            )
 
         # Connect tab switching signal FIRST (before setting current index)
         # This ensures switch_tab is called when setCurrentIndex changes the tab
         self.tab_widget.currentChanged.connect(self.switch_tab)
 
         # Load last active tab from config
-        self.last_active_tab = self.connection_manager.config_manager.get_int(keys.LAST_ACTIVE_TAB, 0)
+        self.last_active_tab = self.connection_manager.config_manager.get_int(
+            keys.LAST_ACTIVE_TAB, 0
+        )
         if 0 <= self.last_active_tab < self.tab_widget.count():
             self.tab_widget.setCurrentIndex(self.last_active_tab)
 
@@ -141,19 +226,22 @@ class TabManager(QObject):
         self._update_global_zoom_action_state(current_tab)
 
         self._setup_midi_matrix_v_splitter()
+        self._setup_audio_matrix_v_splitter()
 
     def _add_cable_tab(self) -> None:
         """Add Cable (PipeWireSettingsApp) as the first tab when integrated mode is enabled."""
         # Use local import to avoid circular imports
         from Cable import PipeWireSettingsApp
-        
+
         # Create Cable widget in embedded mode
-        is_minimized = getattr(self.connection_manager, '_load_startup_preset', False)
+        is_minimized = getattr(self.connection_manager, "_load_startup_preset", False)
         self.cable_widget = PipeWireSettingsApp(
             is_minimized_startup=is_minimized, embedded=True, parent=self.tab_widget
         )
-        self.connection_manager.cable_widget = self.cable_widget  # Store reference on connection manager
-        
+        self.connection_manager.cable_widget = (
+            self.cable_widget
+        )  # Store reference on connection manager
+
         # Insert as the first tab
         self.tab_widget.insertTab(0, self.cable_widget, "Cable")
         logger.info("Added Cable tab in integrated mode")
@@ -163,9 +251,11 @@ class TabManager(QObject):
         # midi_matrix_v_splitter only exists when MIDI Matrix tab is enabled
         if self.connection_manager.midi_matrix_v_splitter is not None:
             # Load splitter sizes from config
-            splitter_sizes_str = self.connection_manager.config_manager.get_str(keys.MIDI_MATRIX_V_SPLITTER_SIZES, '0,400')
+            splitter_sizes_str = self.connection_manager.config_manager.get_str(
+                keys.MIDI_MATRIX_V_SPLITTER_SIZES, "0,400"
+            )
             try:
-                sizes = [int(x.strip()) for x in splitter_sizes_str.split(',')]
+                sizes = [int(x.strip()) for x in splitter_sizes_str.split(",")]
                 if len(sizes) == 2:
                     self.connection_manager.midi_matrix_v_splitter.setSizes(sizes)
             except (ValueError, IndexError):
@@ -173,7 +263,9 @@ class TabManager(QObject):
                 self.connection_manager.midi_matrix_v_splitter.setSizes([0, 400])
 
             # Connect splitterMoved signal to save position
-            self.connection_manager.midi_matrix_v_splitter.splitterMoved.connect(self._save_midi_matrix_v_splitter_sizes)
+            self.connection_manager.midi_matrix_v_splitter.splitterMoved.connect(
+                self._save_midi_matrix_v_splitter_sizes
+            )
 
     def _save_midi_matrix_v_splitter_sizes(self, pos: int, index: int) -> None:
         """Save MIDI Matrix vertical splitter sizes to config when splitter is moved."""
@@ -181,8 +273,36 @@ class TabManager(QObject):
             sizes = self.connection_manager.midi_matrix_v_splitter.sizes()
             if len(sizes) == 2:
                 sizes_str = f"{sizes[0]},{sizes[1]}"
-                self.connection_manager.config_manager.set_str(keys.MIDI_MATRIX_V_SPLITTER_SIZES, sizes_str)
+                self.connection_manager.config_manager.set_str(
+                    keys.MIDI_MATRIX_V_SPLITTER_SIZES, sizes_str
+                )
 
+    def _setup_audio_matrix_v_splitter(self) -> None:
+        """Setup Audio Matrix vertical splitter position loading and saving."""
+        if self.connection_manager.audio_matrix_v_splitter is not None:
+            splitter_sizes_str = self.connection_manager.config_manager.get_str(
+                keys.AUDIO_MATRIX_V_SPLITTER_SIZES, "0,400"
+            )
+            try:
+                sizes = [int(x.strip()) for x in splitter_sizes_str.split(",")]
+                if len(sizes) == 2:
+                    self.connection_manager.audio_matrix_v_splitter.setSizes(sizes)
+            except (ValueError, IndexError):
+                self.connection_manager.audio_matrix_v_splitter.setSizes([0, 400])
+
+            self.connection_manager.audio_matrix_v_splitter.splitterMoved.connect(
+                self._save_audio_matrix_v_splitter_sizes
+            )
+
+    def _save_audio_matrix_v_splitter_sizes(self, pos: int, index: int) -> None:
+        """Save Audio Matrix vertical splitter sizes to config when splitter is moved."""
+        if self.connection_manager.audio_matrix_v_splitter is not None:
+            sizes = self.connection_manager.audio_matrix_v_splitter.sizes()
+            if len(sizes) == 2:
+                sizes_str = f"{sizes[0]},{sizes[1]}"
+                self.connection_manager.config_manager.set_str(
+                    keys.AUDIO_MATRIX_V_SPLITTER_SIZES, sizes_str
+                )
 
     def switch_tab(self, index: int) -> None:
         """
@@ -197,23 +317,30 @@ class TabManager(QObject):
             # Store the tab to switch to and do it later in _connect_internal_signals
             self._pending_tab_switch = index
             return
-        
+
         # New Tab Order:
         # Audio (0), MIDI (1), MIDI Matrix (2), Graph (3), pw-top (4), Alsa Mixer (5), Latency Test (6)
 
         # Stop pw-top monitor if switching away from it
-        if self.tab_widget.tabText(self.last_active_tab) == "pw-top" and self.connection_manager.pwtop_monitor is not None:
+        if (
+            self.tab_widget.tabText(self.last_active_tab) == "pw-top"
+            and self.connection_manager.pwtop_monitor is not None
+        ):
             self.connection_manager.pwtop_monitor.stop()
 
         # Configure based on the new tab index
         current_tab_text = self.tab_widget.tabText(index)
 
         if current_tab_text in ["Audio", "MIDI"]:
-            self.connection_manager.port_type = keys.TAB_AUDIO if current_tab_text == "Audio" else keys.TAB_MIDI
+            self.connection_manager.port_type = (
+                keys.TAB_AUDIO if current_tab_text == "Audio" else keys.TAB_MIDI
+            )
             self.connection_manager.ui_state_manager.apply_collapse_state_to_current_trees()
             self.connection_manager.refresh_visualizations()
             self.show_bottom_controls(True)
         elif current_tab_text == "MIDI Matrix":
+            self.show_bottom_controls(False)
+        elif current_tab_text == "Audio Matrix":
             self.show_bottom_controls(False)
         elif current_tab_text == "Graph":
             self.show_bottom_controls(False)
@@ -241,7 +368,10 @@ class TabManager(QObject):
                 self.cable_widget.update_latency_display()
 
         # Stop ALSA mixer updates when switching away from the tab
-        if self.tab_widget.tabText(self.last_active_tab) == "ALSA Mixer" and self.connection_manager.alsa_mixer_app:
+        if (
+            self.tab_widget.tabText(self.last_active_tab) == "ALSA Mixer"
+            and self.connection_manager.alsa_mixer_app
+        ):
             self.connection_manager.alsa_mixer_app.stop_updates()
 
         self.last_active_tab = index
@@ -252,7 +382,7 @@ class TabManager(QObject):
 
         # Update global zoom action enabled state
         self._update_global_zoom_action_state(index)
-        
+
         # Emit tab_changed signal for decoupled listeners (e.g., ActionManager)
         tab_type = keys.TAB_DISPLAY_MAP.get(current_tab_text, keys.TAB_UNKNOWN)
         self.tab_changed.emit(tab_type)
@@ -282,7 +412,6 @@ class TabManager(QObject):
         if ui.zoom_out_button:
             ui.zoom_out_button.setVisible(visible)
 
-
     def _update_global_zoom_action_state(self, current_tab_index: int) -> None:
         """
         Enable/disable global zoom actions based on the active tab.
@@ -294,12 +423,18 @@ class TabManager(QObject):
             return
 
         current_widget = self.tab_widget.widget(current_tab_index)
-        is_alsa_mixer_tab_active = (current_widget == self.connection_manager.ui_manager.alsa_mixer_tab_widget)
+        is_alsa_mixer_tab_active = (
+            current_widget == self.connection_manager.ui_manager.alsa_mixer_tab_widget
+        )
 
         if self.connection_manager.action_manager.zoom_in_action:
-            self.connection_manager.action_manager.zoom_in_action.setEnabled(not is_alsa_mixer_tab_active)
+            self.connection_manager.action_manager.zoom_in_action.setEnabled(
+                not is_alsa_mixer_tab_active
+            )
         if self.connection_manager.action_manager.zoom_out_action:
-            self.connection_manager.action_manager.zoom_out_action.setEnabled(not is_alsa_mixer_tab_active)
+            self.connection_manager.action_manager.zoom_out_action.setEnabled(
+                not is_alsa_mixer_tab_active
+            )
 
     def _update_zoom_button_tooltips(self, current_tab_index: int) -> None:
         """
@@ -314,9 +449,13 @@ class TabManager(QObject):
 
         if current_tab_text in ["Audio", "MIDI"]:
             if ui_manager.zoom_in_button:
-                ui_manager.zoom_in_button.setToolTip("Increase port list font size <span style='color:grey'>Ctrl++</span>")
+                ui_manager.zoom_in_button.setToolTip(
+                    "Increase port list font size <span style='color:grey'>Ctrl++</span>"
+                )
             if ui_manager.zoom_out_button:
-                ui_manager.zoom_out_button.setToolTip("Decrease port list font size <span style='color:grey'>Ctrl+-</span>")
+                ui_manager.zoom_out_button.setToolTip(
+                    "Decrease port list font size <span style='color:grey'>Ctrl+-</span>"
+                )
         elif current_tab_text == "MIDI Matrix":
             # The zoom buttons are in the tab, not in the bottom bar
             pass
@@ -324,31 +463,35 @@ class TabManager(QObject):
     def handle_tab_switch_request(self, forwards: bool) -> None:
         """
         Handle tab switch request from ActionManager (Tab/Shift+Tab shortcuts).
-        
+
         Switches focus between output and input trees on Audio/MIDI tabs,
         and selects connected ports when switching.
-        
+
         Args:
             forwards: True for Tab (output→input), False for Shift+Tab (input→output)
         """
         if not self.tab_widget:
             return
-        
+
         current_tab = self.tab_widget.currentIndex()
         current_tab_text = self.tab_widget.tabText(current_tab)
 
         # Get tree references
-        output_tree = getattr(self.connection_manager, 'output_tree', None)
-        input_tree = getattr(self.connection_manager, 'input_tree', None)
-        midi_output_tree = getattr(self.connection_manager, 'midi_output_tree', None)
-        midi_input_tree = getattr(self.connection_manager, 'midi_input_tree', None)
+        output_tree = getattr(self.connection_manager, "output_tree", None)
+        input_tree = getattr(self.connection_manager, "input_tree", None)
+        midi_output_tree = getattr(self.connection_manager, "midi_output_tree", None)
+        midi_input_tree = getattr(self.connection_manager, "midi_input_tree", None)
 
         # Determine which trees to use based on current tab name (not index)
         if current_tab_text == "Audio":
             trees = [output_tree, input_tree] if forwards else [input_tree, output_tree]
             is_midi = False
         elif current_tab_text == "MIDI":
-            trees = [midi_output_tree, midi_input_tree] if forwards else [midi_input_tree, midi_output_tree]
+            trees = (
+                [midi_output_tree, midi_input_tree]
+                if forwards
+                else [midi_input_tree, midi_output_tree]
+            )
             is_midi = True
         else:
             # Not on Audio or MIDI tab, do nothing
@@ -373,11 +516,15 @@ class TabManager(QObject):
                 return
 
             # Get selected ports from current tree
-            selected_ports = self.connection_manager._get_ports_from_selected_items(current_tree)
+            selected_ports = self.connection_manager._get_ports_from_selected_items(
+                current_tree
+            )
             if selected_ports:
                 # Determine direction and get connected ports
                 is_input_to_output = current_tree in (input_tree, midi_input_tree)
-                connected_ports = self._get_connected_ports(selected_ports, is_input_to_output, is_midi)
+                connected_ports = self._get_connected_ports(
+                    selected_ports, is_input_to_output, is_midi
+                )
 
                 # Select connected ports in the other tree
                 other_tree.clearSelection()
@@ -388,7 +535,7 @@ class TabManager(QObject):
 
             # Move focus to the other tree
             other_tree.setFocus()
-            
+
             # Update connection button states
             if is_midi:
                 self.connection_manager.update_midi_connection_buttons()
@@ -401,42 +548,56 @@ class TabManager(QObject):
     def handle_zoom_request(self, direction: int) -> None:
         """
         Handle zoom request from ActionManager (Ctrl+/Ctrl- shortcuts).
-        
+
         Routes zoom to the appropriate component based on current tab:
         - Graph tab: zoom the graph view
         - MIDI Matrix tab: zoom the matrix widget
         - Audio/MIDI tabs: change port list font size
         - Other tabs: do nothing
-        
+
         Args:
             direction: 1 for zoom in, -1 for zoom out
         """
         if not self.tab_widget:
             return
-        
+
         current_tab = self.tab_widget.currentIndex()
         current_tab_text = self.tab_widget.tabText(current_tab)
-        
+
         # Graph tab - zoom the graph view
         if current_tab_text == "Graph":
             graph_window = self.connection_manager._get_graph_main_window()
-            if graph_window and hasattr(graph_window, 'view') and graph_window.view:
+            if graph_window and hasattr(graph_window, "view") and graph_window.view:
                 if direction > 0:
                     graph_window.view.zoom_in()
                 else:
                     graph_window.view.zoom_out()
             return
-        
+
         # MIDI Matrix tab - zoom the matrix widget
         if current_tab_text == "MIDI Matrix":
-            midi_matrix_widget = getattr(self.connection_manager, 'midi_matrix_widget', None)
+            midi_matrix_widget = getattr(
+                self.connection_manager, "midi_matrix_widget", None
+            )
             if midi_matrix_widget is not None:
                 if direction > 0:
                     midi_matrix_widget.zoom_in()
                 else:
                     midi_matrix_widget.zoom_out()
             return
-        
+
+        # Audio Matrix tab - zoom the matrix widget
+        if current_tab_text == "Audio Matrix":
+            audio_matrix_widget = getattr(
+                self.connection_manager, "audio_matrix_widget", None
+            )
+            if audio_matrix_widget is not None:
+                if direction > 0:
+                    audio_matrix_widget.zoom_in()
+                else:
+                    audio_matrix_widget.zoom_out()
+            return
+
         # Audio/MIDI tabs - change port list font size
         if current_tab_text in ("Audio", "MIDI"):
             if direction > 0:
@@ -444,25 +605,28 @@ class TabManager(QObject):
             else:
                 self.connection_manager.ui_state_manager.decrease_font_size()
             return
-        
+
         # Other tabs (pw-top, ALSA Mixer, Latency, Cable) - no zoom action
 
-    def _get_connected_ports(self, port_names: List[str], is_input_to_output: bool, is_midi: bool) -> List[str]:
+    def _get_connected_ports(
+        self, port_names: List[str], is_input_to_output: bool, is_midi: bool
+    ) -> List[str]:
         """
         Get ports connected to the given port names.
-        
+
         Args:
             port_names: List of port names to check connections for
             is_input_to_output: True if checking input→output, False for output→input
             is_midi: True if checking MIDI ports, False for audio
-            
+
         Returns:
             List of connected port names
         """
         connected_ports = set()
         from cables.jack_service import get_jack_service
+
         jack_service = get_jack_service()
-        
+
         try:
             if is_input_to_output:
                 # Looking for outputs connected to the given inputs
@@ -484,5 +648,5 @@ class TabManager(QObject):
                         continue
         except jack.JackError as e:
             logger.error(f"Error getting connected ports: {e}")
-        
+
         return list(connected_ports)

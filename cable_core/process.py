@@ -47,7 +47,8 @@ class ProcessManager:
             if stop_daemon:
                 arguments.append('--stop-daemon')
 
-            self.connection_manager_process.setProgram('python3')
+            python_exe = 'python3' if getattr(sys, 'frozen', False) else (sys.executable or 'python3')
+            self.connection_manager_process.setProgram(python_exe)
             self.connection_manager_process.setArguments(arguments)
 
             self.connection_manager_process.start()

@@ -1,43 +1,95 @@
 """
-MIDIMatrixWidget - A matrix-style connection view widget for MIDI ports
+MatrixWidget - Unified matrix-style connection view widget for MIDI and Audio ports.
 
-This module provides a matrix-style view for MIDI port connections.
-It uses the MidiMatrixInterface to access the capabilities it needs from
-the main application, enabling better testability and reduced coupling.
+This module provides a matrix-style view for MIDI or Audio port connections,
+parameterized by port_type. It uses the MatrixInterface to access the capabilities
+it needs from the main application, enabling better testability and reduced coupling.
 """
+
 import dataclasses
 
 import logging
+
 logger = logging.getLogger(__name__)
 
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QScrollArea, QFrame,
-                             QVBoxLayout, QSizePolicy, QSplitter)
-from PyQt6.QtCore import Qt, QSize, QRect, QRectF, QTimer, QPointF
+from PyQt6.QtWidgets import (
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QGridLayout,
+    QLabel,
+    QScrollArea,
+    QFrame,
+    QVBoxLayout,
+    QSizePolicy,
+    QSplitter,
+)
+from PyQt6.QtCore import (
+    Qt,
+    QSize,
+    QRect,
+    QRectF,
+    QTimer,
+    QPointF,
+    pyqtSignal,
+    QEvent,
+    QObject,
+)
 from PyQt6.QtGui import QPolygonF
-from PyQt6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QPalette, QPainterPath, QLinearGradient
+from PyQt6.QtGui import (
+    QFont,
+    QColor,
+    QPainter,
+    QPen,
+    QBrush,
+    QPalette,
+    QPainterPath,
+    QLinearGradient,
+)
 
 from cables.jack_service import get_jack_service
-from .midi_matrix_model import MidiMatrixModel
+from .matrix_model import MatrixModel
 from .midi_matrix_grid import _MatrixGridWidget, _OutputLabelsWidget
 from cable_core import config_keys as keys
 
-from typing import TYPE_CHECKING, Optional, Any, Union, List, Tuple, Dict
+from typing import TYPE_CHECKING, Optional, Any, Union, List, Tuple, Dict, Literal
+
 if TYPE_CHECKING:
-    from cables.interfaces import MidiMatrixInterface
+    from cables.interfaces import MatrixInterface
     from cables.features.node_visibility_manager import NodeVisibilityManager
     from PyQt6.QtGui import QEvent
     from PyQt6.QtCore import QPoint, QSize
 
+PortType = Literal["midi", "audio"]
+
+# Config key mapping per port type
+_MATRIX_CONFIG_KEYS: Dict[str, Dict[str, str]] = {
+    "midi": {
+        "zoom_level": keys.MIDI_MATRIX_ZOOM_LEVEL,
+        "splitter_sizes": keys.MIDI_MATRIX_SPLITTER_SIZES,
+        "make_connection": "make_midi_connection",
+        "break_connection": "break_midi_connection",
+    },
+    "audio": {
+        "zoom_level": keys.AUDIO_MATRIX_ZOOM_LEVEL,
+        "splitter_sizes": keys.AUDIO_MATRIX_SPLITTER_SIZES,
+        "make_connection": "make_connection",
+        "break_connection": "break_connection",
+    },
+}
+
+
 @dataclasses.dataclass
-class MidiMatrixStyleConfig:
-    """Configuration for visual styling of the MIDI Matrix."""
+class MatrixStyleConfig:
+    """Configuration for visual styling of the Matrix."""
+
     # --- Input Labels (Bottom) ---
     # Rotation angle for input port labels.
     input_label_rotation: int = 55
     # Horizontal positioning factor for input labels showing clients and ports combo. Smaller values move labels left.
     input_label_x_pos_factor_client_port: float = 1.15
     # Horizontal positioning factor for input labels showing ports only. Smaller values move labels left.
-    input_label_x_pos_factor_ports_only: float = 1.4  # Deprecated: Use input_label_x_pos_factor_client_port and input_label_x_pos_factor_ports_only instead
+    input_label_x_pos_factor_ports_only: float = 1.4
     input_label_x_pos_factor: float = 1.5
     # Vertical offset between client and port names in input labels.
     input_label_port_y_offset: int = -7
@@ -82,39 +134,57 @@ class MidiMatrixStyleConfig:
     horizontal_padding: int = 400
     vertical_padding: int = 200
 
-class MIDIMatrixWidget(QWidget):
+
+# Backward compatibility aliases
+MidiMatrixStyleConfig = MatrixStyleConfig
+AudioMatrixStyleConfig = MatrixStyleConfig
+
+
+class MatrixWidget(QWidget):
     """
-    A matrix-style widget for displaying and managing MIDI port connections.
+    A matrix-style widget for displaying and managing MIDI or Audio port connections.
     Shows output ports (sources) on the vertical left axis and input ports (destinations)
     on the horizontal bottom axis.
-    
-    This class uses the MidiMatrixInterface protocol to access capabilities
+
+    This class uses the MatrixInterface protocol to access capabilities
     from the main application. The connection_manager parameter must implement:
     - ConfigProvider: for config_manager access
-    - ConnectionOperations: for make_midi_connection, break_midi_connection
+    - ConnectionOperations: for make_connection, break_connection, make_midi_connection, break_midi_connection
     - ColorProvider: for background_color
     """
 
-    def __init__(self, connection_manager: 'MidiMatrixInterface', parent: Optional[QWidget] = None) -> None:
+    fullscreen_request_signal = pyqtSignal()
+
+    def __init__(
+        self,
+        connection_manager: "MatrixInterface",
+        parent: Optional[QWidget] = None,
+        port_type: PortType = "midi",
+    ) -> None:
         """
-        Initialize the MIDI matrix widget.
+        Initialize the matrix widget.
 
         Args:
-            connection_manager: Reference to an object implementing MidiMatrixInterface.
+            connection_manager: Reference to an object implementing MatrixInterface.
                                Typically the JackConnectionManager instance.
             parent: The parent widget
+            port_type: Either 'midi' or 'audio' to determine which ports to display
         """
         super().__init__(parent)
         self.connection_manager = connection_manager
+        self.port_type = port_type
         self._jack_service = get_jack_service()
-        self.style_config = MidiMatrixStyleConfig()
-        self.node_visibility_manager: Optional['NodeVisibilityManager'] = None
+        self.style_config = MatrixStyleConfig()
+        self.node_visibility_manager: Optional["NodeVisibilityManager"] = None
+        self._config_keys = _MATRIX_CONFIG_KEYS[port_type]
 
         # Data model for ports, connections, and colors
-        self.model = MidiMatrixModel(self._jack_service)
+        self.model = MatrixModel(self._jack_service, port_type=port_type)
 
         # Zoom configuration
-        self.zoom_level = connection_manager.config_manager.get_float_setting(keys.MIDI_MATRIX_ZOOM_LEVEL, 10.0)
+        self.zoom_level = connection_manager.config_manager.get_float_setting(
+            self._config_keys["zoom_level"], 10.0
+        )
 
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._setup_ui()
@@ -130,7 +200,9 @@ class MIDIMatrixWidget(QWidget):
         # Initial refresh
         self.refresh_matrix()
 
-    def set_node_visibility_manager(self, node_visibility_manager: 'NodeVisibilityManager') -> None:
+    def set_node_visibility_manager(
+        self, node_visibility_manager: "NodeVisibilityManager"
+    ) -> None:
         """
         Set the node visibility manager for this widget.
 
@@ -150,20 +222,32 @@ class MIDIMatrixWidget(QWidget):
 
         # Create a single outer scroll area that contains the entire splitter
         self.main_scroll_area = QScrollArea()
-        self.main_scroll_area.setWidgetResizable(True)  # Resize content to fit, but we'll override for scrolling
-        self.main_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.main_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.main_scroll_area.setWidgetResizable(
+            True
+        )  # Resize content to fit, but we'll override for scrolling
+        self.main_scroll_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self.main_scroll_area.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
 
         # Create horizontal splitter for adjustable output label area
         self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.main_splitter.setChildrenCollapsible(True)
         self.main_splitter.setHandleWidth(0)  # Make splitter handle invisible
-        self.main_splitter.setStyleSheet("QSplitter::handle { background-color: transparent; border: none; }")  # Ensure complete invisibility
-        self.main_splitter.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Minimum)
+        self.main_splitter.setStyleSheet(
+            "QSplitter::handle { background-color: transparent; border: none; }"
+        )  # Ensure complete invisibility
+        self.main_splitter.setSizePolicy(
+            QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Minimum
+        )
 
         # Left panel - Output labels (no individual scroll area)
         self.output_labels_widget = _OutputLabelsWidget(self)
-        self.output_labels_widget.setMinimumWidth(20)  # Allow collapse but prevent disappearing
+        self.output_labels_widget.setMinimumWidth(
+            20
+        )  # Allow collapse but prevent disappearing
 
         # Right panel - Grid (no individual scroll area)
         self.matrix_widget = _MatrixGridWidget(self)
@@ -176,29 +260,70 @@ class MIDIMatrixWidget(QWidget):
         self.main_scroll_area.setWidget(self.main_splitter)
 
         # Load and set splitter proportions from config - give more space to the matrix grid
-        splitter_sizes_str = self.connection_manager.config_manager.get_str(keys.MIDI_MATRIX_SPLITTER_SIZES, '200,800')
+        splitter_sizes_str = self.connection_manager.config_manager.get_str(
+            self._config_keys["splitter_sizes"], "200,800"
+        )
         try:
-            sizes = [int(x.strip()) for x in splitter_sizes_str.split(',')]
+            sizes = [int(x.strip()) for x in splitter_sizes_str.split(",")]
             if len(sizes) == 2:
                 self.main_splitter.setSizes(sizes)
             else:
-                self.main_splitter.setSizes([200, 800])  # Fallback to defaults - more space for grid
+                self.main_splitter.setSizes(
+                    [200, 800]
+                )  # Fallback to defaults - more space for grid
         except (ValueError, IndexError):
-            self.main_splitter.setSizes([200, 800])  # Fallback to defaults - more space for grid
+            self.main_splitter.setSizes(
+                [200, 800]
+            )  # Fallback to defaults - more space for grid
 
         # Connect splitter signals (only horizontal splitter)
         self.main_splitter.splitterMoved.connect(self._on_main_splitter_moved)
 
         layout.addWidget(self.main_scroll_area)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
-    def resizeEvent(self, event: Optional['QEvent']) -> None:
+        # Install event filter on scroll area viewport to intercept Ctrl+scroll for zooming
+        self.main_scroll_area.viewport().installEventFilter(self)
+
+    def resizeEvent(self, event: Optional["QEvent"]) -> None:
         """Handle resize event to ensure proper layout."""
         super().resizeEvent(event)
         # Force the matrix widget to recalculate its size
-        if hasattr(self, 'matrix_widget'):
+        if hasattr(self, "matrix_widget"):
             self.matrix_widget.update_matrix()
             # Defer the call to prevent potential resize loops
             QTimer.singleShot(0, self._update_scroll_behavior)
+
+    def keyPressEvent(self, event: "QEvent") -> None:
+        from PyQt6.QtGui import QKeyEvent
+
+        if isinstance(event, QKeyEvent):
+            if event.key() == Qt.Key.Key_F:
+                self.fullscreen_request_signal.emit()
+                event.accept()
+            elif event.key() == Qt.Key.Key_Escape:
+                if self.window().isFullScreen():
+                    self.fullscreen_request_signal.emit()
+                event.accept()
+            else:
+                super().keyPressEvent(event)
+        else:
+            super().keyPressEvent(event)
+
+    def eventFilter(self, obj: Optional[QObject], event: Optional[QEvent]) -> bool:
+        """Intercept Ctrl+scroll wheel events on the scroll area viewport for zooming."""
+        if event is not None and event.type() == QEvent.Type.Wheel:
+            from PyQt6.QtGui import QWheelEvent
+
+            if isinstance(event, QWheelEvent) and (
+                event.modifiers() & Qt.KeyboardModifier.ControlModifier
+            ):
+                if event.angleDelta().y() > 0:
+                    self.zoom_in()
+                else:
+                    self.zoom_out()
+                return True  # Consume the event
+        return super().eventFilter(obj, event)
 
     def _on_main_splitter_moved(self, pos: int, index: int) -> None:
         """Handle main splitter movement to update output label truncation and save position."""
@@ -210,12 +335,16 @@ class MIDIMatrixWidget(QWidget):
         sizes = self.main_splitter.sizes()
         if len(sizes) == 2:
             sizes_str = f"{sizes[0]},{sizes[1]}"
-            self.connection_manager.config_manager.set_str(keys.MIDI_MATRIX_SPLITTER_SIZES, sizes_str)
+            self.connection_manager.config_manager.set_str(
+                self._config_keys["splitter_sizes"], sizes_str
+            )
 
     def _is_dark_mode(self) -> bool:
         """Check if the current theme is dark mode."""
         window_color = self.palette().color(QPalette.ColorRole.Window)
-        return (window_color.red() + window_color.green() + window_color.blue()) / 3 < 128
+        return (
+            window_color.red() + window_color.green() + window_color.blue()
+        ) / 3 < 128
 
     def refresh_matrix(self) -> None:
         """Refresh the entire matrix by reloading ports and connections."""
@@ -223,6 +352,9 @@ class MIDIMatrixWidget(QWidget):
         self.model.load_connections()
         self.matrix_widget.update_matrix()
         self.output_labels_widget.update_labels()
+        # Update scroll behavior so scrollbars adjust to new grid size
+        # when ports are added/removed without needing a zoom or resize.
+        QTimer.singleShot(0, self._update_scroll_behavior)
 
     def is_connected(self, output_port: str, input_port: str) -> bool:
         """Check if two ports are connected."""
@@ -231,25 +363,44 @@ class MIDIMatrixWidget(QWidget):
     def toggle_connection(self, output_port: str, input_port: str) -> None:
         """Toggle the connection between two ports."""
         connected = self.is_connected(output_port, input_port)
+        handler = self.connection_manager.jack_handler
 
-        if connected:
-            # Break connection
-            self.connection_manager.jack_handler.break_midi_connection(output_port, input_port)
+        if self.port_type == "midi":
+            if connected:
+                handler.break_midi_connection(output_port, input_port)
+            else:
+                handler.make_midi_connection(output_port, input_port)
         else:
-            # Make connection
-            self.connection_manager.jack_handler.make_midi_connection(output_port, input_port)
+            if connected:
+                handler.break_connection(output_port, input_port)
+            else:
+                handler.make_connection(output_port, input_port)
 
-    def on_port_added_or_removed(self, port_name: str, client_name: Optional[str] = None, port_flags: Any = None, port_type: Optional[str] = None, is_input: Optional[bool] = None) -> None:
+    def on_port_added_or_removed(
+        self,
+        port_name: str,
+        client_name: Optional[str] = None,
+        port_flags: Any = None,
+        port_type: Optional[str] = None,
+        is_input: Optional[bool] = None,
+    ) -> None:
         """Handle port addition/removal events."""
         should_refresh = False
 
-        if port_type == "midi":
+        if port_type == self.port_type:
             should_refresh = True
         elif port_name and self._jack_service.client:
             try:
-                should_refresh = any(p.name == port_name for p in self._jack_service.get_ports(is_midi=True))
+                kwarg = (
+                    {"is_midi": True}
+                    if self.port_type == "midi"
+                    else {"is_audio": True}
+                )
+                should_refresh = any(
+                    p.name == port_name for p in self._jack_service.get_ports(**kwarg)
+                )
             except Exception:
-                # If we can't get ports (e.g., JackError), assume it's MIDI-related to be safe
+                # If we can't get ports (e.g., JackError), assume it's related to be safe
                 should_refresh = True
 
         if should_refresh:
@@ -261,15 +412,24 @@ class MIDIMatrixWidget(QWidget):
 
     def on_connection_changed(self, output_port: str, input_port: str) -> None:
         """Handle connection change events."""
-        # Check if this affects MIDI connections
-        is_midi_connection = False
+        # Check if this affects our port type's connections
+        is_relevant_connection = False
         try:
-            if any(p.name == output_port for p in self._jack_service.get_ports(is_midi=True, is_output=True)):
-                is_midi_connection = True
+            kwarg = (
+                {"is_midi": True, "is_output": True}
+                if self.port_type == "midi"
+                else {"is_audio": True, "is_output": True}
+            )
+            if any(
+                p.name == output_port for p in self._jack_service.get_ports(**kwarg)
+            ):
+                is_relevant_connection = True
         except Exception as e:
-            logger.warning(f"Could not check MIDI port status for connection change: {e}")
+            logger.warning(
+                f"Could not check {self.port_type.upper()} port status for connection change: {e}"
+            )
 
-        if is_midi_connection:
+        if is_relevant_connection:
             QTimer.singleShot(10, self.refresh_matrix)  # Debounce updates
 
     def reshuffle_colors(self) -> None:
@@ -280,13 +440,17 @@ class MIDIMatrixWidget(QWidget):
     def zoom_in(self) -> None:
         """Increase zoom level."""
         max_zoom = 20.0
-        zoom_step = 0.5
+        zoom_step = 0.25
         if self.zoom_level < max_zoom:
             self.zoom_level = min(self.zoom_level + zoom_step, max_zoom)
-            self.connection_manager.config_manager.set_float_setting(keys.MIDI_MATRIX_ZOOM_LEVEL, self.zoom_level)
+            self.connection_manager.config_manager.set_float_setting(
+                self._config_keys["zoom_level"], self.zoom_level
+            )
             self.matrix_widget.font_size = int(self.zoom_level)
             self.matrix_widget.client_name_font_size = int(self.zoom_level) + 2
-            self.matrix_widget.grid_cell_scaling = self._calculate_grid_scaling(self.zoom_level)
+            self.matrix_widget.grid_cell_scaling = self._calculate_grid_scaling(
+                self.zoom_level
+            )
             self.output_labels_widget.font_size = int(self.zoom_level)
             self.output_labels_widget.client_name_font_size = int(self.zoom_level) + 2
             self.refresh_matrix()
@@ -295,13 +459,17 @@ class MIDIMatrixWidget(QWidget):
     def zoom_out(self) -> None:
         """Decrease zoom level."""
         min_zoom = 4.0
-        zoom_step = 0.5
+        zoom_step = 0.25
         if self.zoom_level > min_zoom:
             self.zoom_level = max(self.zoom_level - zoom_step, min_zoom)
-            self.connection_manager.config_manager.set_float_setting(keys.MIDI_MATRIX_ZOOM_LEVEL, self.zoom_level)
+            self.connection_manager.config_manager.set_float_setting(
+                self._config_keys["zoom_level"], self.zoom_level
+            )
             self.matrix_widget.font_size = int(self.zoom_level)
             self.matrix_widget.client_name_font_size = int(self.zoom_level) + 2
-            self.matrix_widget.grid_cell_scaling = self._calculate_grid_scaling(self.zoom_level)
+            self.matrix_widget.grid_cell_scaling = self._calculate_grid_scaling(
+                self.zoom_level
+            )
             self.output_labels_widget.font_size = int(self.zoom_level)
             self.output_labels_widget.client_name_font_size = int(self.zoom_level) + 2
             self.refresh_matrix()
@@ -322,7 +490,7 @@ class MIDIMatrixWidget(QWidget):
 
     def _update_scroll_behavior(self) -> None:
         """Update scroll area behavior based on content size vs viewport size."""
-        if not hasattr(self, 'main_scroll_area') or not hasattr(self, 'main_splitter'):
+        if not hasattr(self, "main_scroll_area") or not hasattr(self, "main_splitter"):
             return
 
         # Calculate proper minimum size accounting for angled input labels
@@ -336,32 +504,52 @@ class MIDIMatrixWidget(QWidget):
         viewport_size = self.main_scroll_area.viewport().size()
 
         # Check if content exceeds viewport in either dimension
-        content_too_large = (proper_min_size.width() > viewport_size.width() or
-                           proper_min_size.height() > viewport_size.height())
+        content_too_large = (
+            proper_min_size.width() > viewport_size.width()
+            or proper_min_size.height() > viewport_size.height()
+        )
 
         # If content is too large, disable widget resizing to show scrollbars.
         # The scroll area will then respect the splitter's minimum size.
         # If content fits, enable widget resizing to fill the space.
         self.main_scroll_area.setWidgetResizable(not content_too_large)
 
-    def _calculate_proper_minimum_size(self) -> 'QSize':
+    def _calculate_proper_minimum_size(self) -> "QSize":
         """Calculate the proper minimum size for the splitter accounting for angled input labels."""
-        if not hasattr(self, 'main_splitter') or not hasattr(self, 'output_labels_widget') or not hasattr(self, 'matrix_widget'):
+        if (
+            not hasattr(self, "main_splitter")
+            or not hasattr(self, "output_labels_widget")
+            or not hasattr(self, "matrix_widget")
+        ):
             return QSize(200, 200)
 
         # Get the output labels widget's current width from the splitter
         splitter_sizes = self.main_splitter.sizes()
-        output_min_width = splitter_sizes[0] if splitter_sizes else self.output_labels_widget.minimumWidth()
+        output_min_width = (
+            splitter_sizes[0]
+            if splitter_sizes
+            else self.output_labels_widget.minimumWidth()
+        )
 
         # Get the matrix widget minimum size
         matrix_min_size = self.matrix_widget.minimumSize()
 
         # Calculate total width: output labels + matrix + some padding for angled labels
-        total_width = output_min_width + matrix_min_size.width() + self.style_config.horizontal_padding
+        total_width = (
+            output_min_width
+            + matrix_min_size.width()
+            + self.style_config.horizontal_padding
+        )
 
         # Height is determined by the taller of the two widgets
-        total_height = max(self.output_labels_widget.minimumHeight(), matrix_min_size.height()) + self.style_config.vertical_padding
+        total_height = (
+            max(self.output_labels_widget.minimumHeight(), matrix_min_size.height())
+            + self.style_config.vertical_padding
+        )
 
         return QSize(total_width, total_height)
 
 
+# Backward compatibility aliases
+MIDIMatrixWidget = MatrixWidget
+AudioMatrixWidget = MatrixWidget

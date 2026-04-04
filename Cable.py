@@ -5,6 +5,7 @@ Main entry point for the Cable application. Provides quantum (buffer size),
 sample rate, device, and latency controls via a PyQt6 widget that can run
 standalone or embedded in the Cables connection manager.
 """
+
 import sys
 import signal
 import os
@@ -13,8 +14,13 @@ import configparser
 import argparse
 import shutil
 
+# Parse verbose flag early (before setup_logging) to enable verbose output
+_pre_parser = argparse.ArgumentParser(add_help=False)
+_pre_parser.add_argument('-v', '--verbose', action='store_true')
+_pre_args, _remaining = _pre_parser.parse_known_args()
+
 from cable_core.logging_config import setup_logging
-setup_logging()
+setup_logging(verbose_override=_pre_args.verbose)
 
 from cable_core.autostart import AutostartManager
 from cable_core.config import ConfigManager
@@ -28,6 +34,7 @@ from cable_core.app_config import APP_VERSION, EDIT_LIST_TEXT, load_app_icon
 from cable_core.embedded_settings_panel import EmbeddedSettingsPanel
 from cable_core import app_config
 from cable_core import config_keys as keys
+
 # New managers for decomposed functionality
 from cable_core.dsp_monitor import DSPMonitor
 from cable_core.latency_manager import LatencyManager
@@ -37,13 +44,32 @@ from cables.config.preset_manager import PresetManager
 from cables.jack_service import get_jack_service
 from PyQt6.QtCore import Qt, QTimer, QMargins, QEvent
 from PyQt6.QtGui import QFont, QIcon, QGuiApplication, QActionGroup, QAction
-from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
-                             QComboBox, QLineEdit, QPushButton, QLabel,
-                             QSpacerItem, QSizePolicy, QMessageBox, QGroupBox,
-                             QCheckBox, QSystemTrayIcon, QMenu, QDialog, QDialogButtonBox,
-                             QScrollArea, QWidgetAction, QSplitter, QProgressBar)
+from PyQt6.QtWidgets import (
+    QApplication,
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QComboBox,
+    QLineEdit,
+    QPushButton,
+    QLabel,
+    QSpacerItem,
+    QSizePolicy,
+    QMessageBox,
+    QGroupBox,
+    QCheckBox,
+    QSystemTrayIcon,
+    QMenu,
+    QDialog,
+    QDialogButtonBox,
+    QScrollArea,
+    QWidgetAction,
+    QSplitter,
+    QProgressBar,
+)
 
 from typing import TYPE_CHECKING, List, Optional, Any, Dict, Union
+
 if TYPE_CHECKING:
     from cable_core.config import ConfigManager
     from cable_core.system import SystemManager
@@ -57,36 +83,40 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
 class CableApp(QApplication):
     def __init__(self, argv: List[str]) -> None:
         super().__init__(argv)
 
-
         # This needs to match your .desktop file name exactly
         QGuiApplication.setDesktopFileName("com.github.magillos.cable")
 
-
         # Set the application name to match the .desktop file
         self.setApplicationName("Cable")
-        
+
         # Set window icon explicitly for title bar
         self._set_application_icon()
-    
+
     def _set_application_icon(self) -> None:
         """Set the application window icon."""
         app_icon = load_app_icon()
         if app_icon:
             self.setWindowIcon(app_icon)
 
-class PipeWireSettingsApp(QWidget):
 
+class PipeWireSettingsApp(QWidget):
     # Comment block to ensure it stays in config.ini
 
-    def __init__(self, is_minimized_startup: bool = False, embedded: bool = False, parent: Optional[QWidget] = None) -> None:
+    def __init__(
+        self,
+        is_minimized_startup: bool = False,
+        embedded: bool = False,
+        parent: Optional[QWidget] = None,
+    ) -> None:
         super().__init__(parent)
-        self.is_minimized_startup = is_minimized_startup # Store the flag
-        self.embedded = embedded # Store embedded mode flag
-        self.flatpak_env = os.path.exists('/.flatpak-info')
+        self.is_minimized_startup = is_minimized_startup  # Store the flag
+        self.embedded = embedded  # Store embedded mode flag
+        self.flatpak_env = os.path.exists("/.flatpak-info")
         self.appimage_path = self._detect_appimage_path()  # Detect AppImage path
         self.tray_icon = None  # Initialize tray_icon here
         self.tray_enabled = False
@@ -97,38 +127,48 @@ class PipeWireSettingsApp(QWidget):
         self.autostart_manager = AutostartManager(self.flatpak_env, self.appimage_path)
         # Instantiate ConfigManager
         self.config_manager = ConfigManager(self)
-        
+
         # Check if migration happened and show dialog if needed
         self.config_manager.show_migration_dialog_if_needed(parent_widget=self)
-        
-        self.system_manager = SystemManager(self) # Instantiate SystemManager
-        self.tray_manager = TrayManager(self) # Instantiate TrayManager
-        self.process_manager = ProcessManager(self) # Instantiate ProcessManager
-        self.update_manager = UpdateManager(self, APP_VERSION) # Instantiate UpdateManager, passing APP_VERSION
+
+        self.system_manager = SystemManager(self)  # Instantiate SystemManager
+        self.tray_manager = TrayManager(self)  # Instantiate TrayManager
+        self.process_manager = ProcessManager(self)  # Instantiate ProcessManager
+        self.update_manager = UpdateManager(
+            self, APP_VERSION
+        )  # Instantiate UpdateManager, passing APP_VERSION
         self.pipewire_manager = PipewireManager(self.flatpak_env, self.config_manager)
         self.async_runner = AsyncRunner(self)
-        
-        self.remember_settings = False # Keep placeholder for type hinting/attribute existence if needed elsewhere initially
-        self.restore_only_minimized = False # New setting
+
+        self.remember_settings = False  # Keep placeholder for type hinting/attribute existence if needed elsewhere initially
+        self.restore_only_minimized = False  # New setting
+        self.apply_immediately = (
+            False  # Apply quantum/sample rate instantaneously on change
+        )
+        self.show_confirmation = (
+            False  # Show confirmation dialog after applying quantum/sample rate
+        )
         self.saved_quantum = 0
         self.saved_sample_rate = 0
         self.autostart_enabled = False
-        self.check_updates_at_start = False # Default: Do not check for updates on startup
+        self.check_updates_at_start = (
+            False  # Default: Do not check for updates on startup
+        )
         self.values_initialized = False  # Flag to track if values have been initialized
-        self.autostart_version_action = None # Action for version menu autostart toggle
+        self.autostart_version_action = None  # Action for version menu autostart toggle
 
         # Placeholder for focused managers (initialized after UI)
         self.dsp_monitor: Optional[DSPMonitor] = None
         self.latency_manager: Optional[LatencyManager] = None
         self.device_manager: Optional[DeviceManager] = None
         self.quantum_manager: Optional[QuantumManager] = None
-        
+
         # Initialize UI first (creates widgets needed by managers)
         self.initUI()
-        
+
         # Flag to prevent saving during initial load
         self.initial_load = True
-        
+
         # First load current system settings as fallback
         self._apply_current_settings()
 
@@ -141,45 +181,50 @@ class PipeWireSettingsApp(QWidget):
 
         # Now allow saving of user changes
         self.initial_load = False
-        
+
         # Mark values as initialized
         self.values_initialized = True
 
         # Update autostart manager with configured AppImage path
-        appimage_path_to_use = self.appimage_path if self.appimage_path else self._detect_appimage_path()
+        appimage_path_to_use = (
+            self.appimage_path if self.appimage_path else self._detect_appimage_path()
+        )
         if appimage_path_to_use:
             # Use configured path if available, otherwise use detected path
-            self.autostart_manager = AutostartManager(self.flatpak_env, appimage_path_to_use)
+            self.autostart_manager = AutostartManager(
+                self.flatpak_env, appimage_path_to_use
+            )
 
         # Update latency display after everything is loaded
         self.update_latency_display()
 
         # Conditionally check for updates shortly after startup
-        QTimer.singleShot(2000, self.update_manager._initial_update_check) # Check after 2 seconds if enabled (using UpdateManager)
-        
+        QTimer.singleShot(
+            2000, self.update_manager._initial_update_check
+        )  # Check after 2 seconds if enabled (using UpdateManager)
+
         # Timer for debouncing splitter save (embedded mode)
         self._splitter_save_timer = QTimer(self)
         self._splitter_save_timer.setSingleShot(True)
         self._splitter_save_timer.setInterval(500)
-        self._splitter_save_timer.timeout.connect(self._perform_save_embedded_splitter_position)
+        self._splitter_save_timer.timeout.connect(
+            self._perform_save_embedded_splitter_position
+        )
         self._pending_splitter_pos = None
 
     def _detect_appimage_path(self) -> Optional[str]:
         """Detect if the application is running from an AppImage and return the path."""
         # Check for APPIMAGE environment variable (set by AppImage runtime)
-        appimage_path = os.environ.get('APPIMAGE')
+        appimage_path = os.environ.get("APPIMAGE")
         if appimage_path and os.path.exists(appimage_path):
             logger.info(f"Detected AppImage path: {appimage_path}")
             return appimage_path
         return None
 
-
     def _reset_xrun_count(self, event: Optional[Any] = None) -> None:
         """Reset the xrun counter to zero."""
         if self.dsp_monitor is not None:
             self.dsp_monitor.reset_xrun_count()
-
-
 
     def edit_quantum_list(self) -> None:
         """Opens the dialog to edit the quantum values list."""
@@ -194,11 +239,16 @@ class PipeWireSettingsApp(QWidget):
             self.refresh_all_settings()
 
     def initUI(self) -> None:
-        from cable_core.ui_widgets import (QuantumGroup, SampleRateGroup, AudioProfileGroup, 
-                                           LatencyGroup, RestartGroup)
+        from cable_core.ui_widgets import (
+            QuantumGroup,
+            SampleRateGroup,
+            AudioProfileGroup,
+            LatencyGroup,
+            RestartGroup,
+        )
 
         main_layout = QVBoxLayout()
-        main_layout.setSpacing(10) # Adjust main layout spacing
+        main_layout.setSpacing(10)  # Adjust main layout spacing
 
         # Use vertical buttons in embedded mode
         use_vertical_buttons = self.embedded
@@ -211,10 +261,11 @@ class PipeWireSettingsApp(QWidget):
             apply_slot=self.apply_quantum_settings,
             reset_slot=self._handle_reset_quantum,
             refresh_slot=self.refresh_all_settings,
-            reset_xrun_slot=self._reset_xrun_count
+            reset_xrun_slot=self._reset_xrun_count,
         )
         self.quantum_combo = quantum_group.combo_box
         self.apply_quantum_button = quantum_group.apply_button
+        self.apply_quantum_button.setEnabled(False)  # Initially disabled
         self.reset_quantum_button = quantum_group.reset_button
         self.refresh_quantum_button = quantum_group.refresh_button
         self.latency_display_value = quantum_group.latency_display_value
@@ -229,10 +280,11 @@ class PipeWireSettingsApp(QWidget):
             vertical_buttons=use_vertical_buttons,
             apply_slot=self.apply_sample_rate_settings,
             reset_slot=self._handle_reset_sample_rate,
-            refresh_slot=self.refresh_all_settings
+            refresh_slot=self.refresh_all_settings,
         )
         self.sample_rate_combo = sample_rate_group.combo_box
         self.apply_sample_rate_button = sample_rate_group.apply_button
+        self.apply_sample_rate_button.setEnabled(False)  # Initially disabled
         self.reset_sample_rate_button = sample_rate_group.reset_button
         self.refresh_sample_rate_button = sample_rate_group.refresh_button
 
@@ -246,7 +298,7 @@ class PipeWireSettingsApp(QWidget):
         latency_group = LatencyGroup(
             vertical_buttons=use_vertical_buttons,
             apply_slot=self._handle_apply_latency,
-            reset_all_slot=self._handle_reset_all_latency_and_refresh
+            reset_all_slot=self._handle_reset_all_latency_and_refresh,
         )
         self.node_combo = latency_group.node_combo
         self.latency_input = latency_group.latency_input
@@ -258,7 +310,7 @@ class PipeWireSettingsApp(QWidget):
         restart_group = RestartGroup(
             vertical_buttons=self.embedded,
             restart_wp_slot=self.system_manager.confirm_restart_wireplumber,
-            restart_pw_slot=self.system_manager.confirm_restart_pipewire
+            restart_pw_slot=self.system_manager.confirm_restart_pipewire,
         )
         self.restart_wireplumber_button = restart_group.restart_wp_button
         self.restart_pipewire_button = restart_group.restart_pw_button
@@ -267,7 +319,7 @@ class PipeWireSettingsApp(QWidget):
         if self.embedded:
             # Splitter layout: cable content (left) + spacer/settings panel (right)
             self.embedded_splitter = QSplitter(Qt.Orientation.Horizontal)
-            
+
             # Create cable content column
             cable_column = QWidget()
             cable_column.setMinimumWidth(50)
@@ -279,27 +331,31 @@ class PipeWireSettingsApp(QWidget):
             cable_layout.addWidget(latency_group)
             cable_layout.addWidget(restart_group)
             cable_layout.addStretch()
-            
+
             self.embedded_splitter.addWidget(cable_column)
-            
+
             # Add empty spacer widget (visible when settings hidden)
             self.embedded_spacer = QWidget()
             self.embedded_splitter.addWidget(self.embedded_spacer)
-            
+
             # Create settings panel (hidden by default, will replace spacer when shown)
             self.embedded_settings_panel = EmbeddedSettingsPanel(self)
             self.embedded_settings_panel.setVisible(False)
             self.embedded_splitter.addWidget(self.embedded_settings_panel)
-            
+
             # Configure splitter
             self.embedded_splitter.setCollapsible(0, False)
             self.embedded_splitter.setHandleWidth(6)
-            self.embedded_splitter.setStyleSheet("QSplitter::handle { background: transparent; }")
-            self.embedded_splitter.splitterMoved.connect(self._save_embedded_splitter_position)
-            
+            self.embedded_splitter.setStyleSheet(
+                "QSplitter::handle { background: transparent; }"
+            )
+            self.embedded_splitter.splitterMoved.connect(
+                self._save_embedded_splitter_position
+            )
+
             # Mark for restore after first show
             self._embedded_splitter_restored = False
-            
+
             main_layout.addWidget(self.embedded_splitter)
         else:
             # Original vertical layout for standalone mode — wrapped in scroll area
@@ -314,7 +370,7 @@ class PipeWireSettingsApp(QWidget):
             scroll_layout.addWidget(latency_group)
             scroll_layout.addWidget(restart_group)
 
-            #Connections button
+            # Connections button
             self.cables_button = QPushButton("Cables")
             self.cables_button.clicked.connect(self.process_manager.open_cables)
             scroll_layout.addWidget(self.cables_button)
@@ -326,13 +382,13 @@ class PipeWireSettingsApp(QWidget):
             main_layout.addWidget(scroll_area)
 
         if self.embedded:
-            #Connections button (outside scroll area for embedded mode)
+            # Connections button (outside scroll area for embedded mode)
             self.cables_button = QPushButton("Cables")
             self.cables_button.clicked.connect(self.process_manager.open_cables)
             main_layout.addWidget(self.cables_button)
 
         self.setLayout(main_layout)
-        self.setWindowTitle('Cable')
+        self.setWindowTitle("Cable")
 
         if not self.embedded:
             self._restore_window_geometry()
@@ -342,43 +398,72 @@ class PipeWireSettingsApp(QWidget):
         # Note: Signal connections for device/node/quantum/sample_rate are now handled by the managers
         # after they are initialized in _init_focused_managers()
 
-
         # Initialize the checkboxes (they will be added to version context menu)
         self.tray_toggle_checkbox = QCheckBox("Enable tray icon")
         self.tray_toggle_checkbox.setChecked(False)
-        self.tray_toggle_checkbox.stateChanged.connect(self.tray_manager.toggle_tray_icon) # Use tray_manager
+        self.tray_toggle_checkbox.stateChanged.connect(
+            self.tray_manager.toggle_tray_icon
+        )  # Use tray_manager
 
         self.remember_settings_checkbox = QCheckBox("Save buffer and sample rate")
         self.remember_settings_checkbox.setChecked(False)
-        self.remember_settings_checkbox.stateChanged.connect(self._handle_toggle_remember_settings)
+        self.remember_settings_checkbox.stateChanged.connect(
+            self._handle_toggle_remember_settings
+        )
 
         # New checkbox for restoring only when auto-started
-        self.restore_only_minimized_checkbox = QCheckBox("Restore above only when app is auto-started")
+        self.restore_only_minimized_checkbox = QCheckBox(
+            "Restore above only when app is auto-started"
+        )
         self.restore_only_minimized_checkbox.setChecked(False)
-        self.restore_only_minimized_checkbox.setEnabled(False) # Initially disabled
-        self.restore_only_minimized_checkbox.stateChanged.connect(self._handle_toggle_restore_only_minimized)
+        self.restore_only_minimized_checkbox.setEnabled(False)  # Initially disabled
+        self.restore_only_minimized_checkbox.stateChanged.connect(
+            self._handle_toggle_restore_only_minimized
+        )
+
+        # New checkbox for applying quantum and sample rate instantaneously
+        self.apply_immediately_checkbox = QCheckBox(
+            "Apply Quantum and Sample Rate instantaneously"
+        )
+        self.apply_immediately_checkbox.setChecked(False)
+        self.apply_immediately_checkbox.stateChanged.connect(
+            self._handle_toggle_apply_immediately
+        )
+
+        # New checkbox for showing confirmation after applying
+        self.show_confirmation_checkbox = QCheckBox(
+            "Show confirmation after applying Quantum and Sample Rate"
+        )
+        self.show_confirmation_checkbox.setChecked(False)
+        self.show_confirmation_checkbox.stateChanged.connect(
+            self._handle_toggle_show_confirmation
+        )
 
         # Add Settings button at the bottom right
         version_layout = QHBoxLayout()
-        version_layout.addStretch() # Push button to the right
+        version_layout.addStretch()  # Push button to the right
         self.settings_button = QPushButton("Settings")
         self.settings_button.setToolTip("Click to access Settings")
-        
+
         # In embedded mode, toggle inline settings panel; otherwise show popup menu
         if self.embedded:
             self.settings_button.clicked.connect(self._toggle_embedded_settings)
         else:
-            self.settings_button.clicked.connect(lambda: self.tray_manager.show_version_context_menu(self.settings_button.rect().bottomLeft()))
-        
+            self.settings_button.clicked.connect(
+                lambda: self.tray_manager.show_version_context_menu(
+                    self.settings_button.rect().bottomLeft()
+                )
+            )
+
         version_layout.addWidget(self.settings_button)
-        main_layout.addLayout(version_layout) # Add to the main layout
+        main_layout.addLayout(version_layout)  # Add to the main layout
 
         # Apply embedded mode UI modifications
         self._apply_embedded_mode_ui()
-        
+
         # Initialize focused managers with created widgets
         self._init_focused_managers()
-    
+
     def _init_focused_managers(self) -> None:
         """Initialize focused manager classes for decomposed functionality."""
         # Initialize DSPMonitor for DSP load and XRUN tracking
@@ -386,20 +471,20 @@ class PipeWireSettingsApp(QWidget):
             parent=self,
             dsp_load_value=self.dsp_load_value,
             dsp_load_bar=self.dsp_load_bar,
-            xrun_display_value=self.xrun_display_value
+            xrun_display_value=self.xrun_display_value,
         )
         self.dsp_monitor.initialize_jack_connection()
         self.dsp_monitor.start_monitoring()
-        
+
         # Initialize DeviceManager for device/profile management
         self.device_manager = DeviceManager(
             parent=self,
             pipewire_manager=self.pipewire_manager,
             async_runner=self.async_runner,
             device_combo=self.device_combo,
-            profile_combo=self.profile_combo
+            profile_combo=self.profile_combo,
         )
-        
+
         # Initialize LatencyManager for latency offset management
         self.latency_manager = LatencyManager(
             parent=self,
@@ -407,9 +492,9 @@ class PipeWireSettingsApp(QWidget):
             async_runner=self.async_runner,
             node_combo=self.node_combo,
             latency_input=self.latency_input,
-            nanoseconds_checkbox=self.nanoseconds_checkbox
+            nanoseconds_checkbox=self.nanoseconds_checkbox,
         )
-        
+
         # Initialize QuantumManager for quantum/sample rate settings
         self.quantum_manager = QuantumManager(
             parent=self,
@@ -417,18 +502,28 @@ class PipeWireSettingsApp(QWidget):
             pipewire_manager=self.pipewire_manager,
             quantum_combo=self.quantum_combo,
             sample_rate_combo=self.sample_rate_combo,
-            latency_display_callback=self.update_latency_display
+            latency_display_callback=self.update_latency_display,
+        )
+
+        # Connect combo changes to enable/disable apply buttons
+        self.quantum_combo.currentIndexChanged.connect(
+            self._on_quantum_combo_changed
+        )
+        self.sample_rate_combo.currentIndexChanged.connect(
+            self._on_sample_rate_combo_changed
         )
 
     def _apply_embedded_mode_ui(self) -> None:
         """Hide UI elements that shouldn't appear when embedded in Cables window."""
         if not self.embedded:
             # When not embedded, check if integrated mode is enabled and hide Cables button
-            integrated = self.config_manager.get_bool(keys.INTEGRATE_CABLE_AND_CABLES, False)
+            integrated = self.config_manager.get_bool(
+                keys.INTEGRATE_CABLE_AND_CABLES, False
+            )
             if integrated:
                 self.cables_button.hide()
             return
-        
+
         # In embedded mode, hide elements that would be redundant or problematic
         self.cables_button.hide()
         self.tray_toggle_checkbox.hide()
@@ -436,33 +531,39 @@ class PipeWireSettingsApp(QWidget):
     def _toggle_embedded_settings(self) -> None:
         """Toggle visibility of the embedded settings panel."""
         # embedded_settings_panel and embedded_splitter only exist in embedded mode
-        if hasattr(self, 'embedded_settings_panel') and hasattr(self, 'embedded_splitter'):
+        if hasattr(self, "embedded_settings_panel") and hasattr(
+            self, "embedded_splitter"
+        ):
             is_visible = self.embedded_settings_panel.isVisible()
-            
+
             # Preserve the left column width
             sizes = self.embedded_splitter.sizes()
             left_width = sizes[0]
             total_width = self.embedded_splitter.width()
             remaining = max(0, total_width - left_width)
-            
+
             if is_visible:
                 # Hiding settings, show spacer
                 self.embedded_settings_panel.setVisible(False)
                 self.embedded_spacer.setVisible(True)
                 self.embedded_splitter.setSizes([left_width, remaining, 0])
-                self.config_manager.set_bool_setting(keys.EMBEDDED_SETTINGS_VISIBLE, False)
+                self.config_manager.set_bool_setting(
+                    keys.EMBEDDED_SETTINGS_VISIBLE, False
+                )
             else:
                 # Showing settings, hide spacer
                 self.embedded_spacer.setVisible(False)
                 self.embedded_settings_panel.setVisible(True)
                 self.embedded_settings_panel.refresh_settings()
                 self.embedded_splitter.setSizes([left_width, 0, remaining])
-                self.config_manager.set_bool_setting(keys.EMBEDDED_SETTINGS_VISIBLE, True)
+                self.config_manager.set_bool_setting(
+                    keys.EMBEDDED_SETTINGS_VISIBLE, True
+                )
 
     def _save_embedded_splitter_position(self, pos: int, index: int) -> None:
         """Save the embedded splitter position to config with debounce."""
         # embedded_splitter only exists in embedded mode
-        if hasattr(self, 'embedded_splitter'):
+        if hasattr(self, "embedded_splitter"):
             sizes = self.embedded_splitter.sizes()
             if sizes[0] > 0:
                 self._pending_splitter_pos = sizes[0]
@@ -471,24 +572,34 @@ class PipeWireSettingsApp(QWidget):
     def _perform_save_embedded_splitter_position(self) -> None:
         """Actually save the splitter position to config."""
         if self._pending_splitter_pos is not None:
-            self.config_manager.set_int_setting(keys.EMBEDDED_COLUMN_WIDTH, self._pending_splitter_pos)
+            self.config_manager.set_int_setting(
+                keys.EMBEDDED_COLUMN_WIDTH, self._pending_splitter_pos
+            )
             self.config_manager.flush()
 
     def showEvent(self, event: QEvent) -> None:
         """Handle show event to restore splitter size after widget is visible."""
         super().showEvent(event)
-        if self.embedded and hasattr(self, '_embedded_splitter_restored') and not self._embedded_splitter_restored:
+        if (
+            self.embedded
+            and hasattr(self, "_embedded_splitter_restored")
+            and not self._embedded_splitter_restored
+        ):
             self._embedded_splitter_restored = True
             QTimer.singleShot(0, self._restore_embedded_splitter_size)
 
     def _restore_embedded_splitter_size(self) -> None:
         """Restore the embedded splitter size and settings panel visibility from config."""
-        if hasattr(self, 'embedded_splitter'):
-            saved_width = self.config_manager.get_int_setting(keys.EMBEDDED_COLUMN_WIDTH, 350)
+        if hasattr(self, "embedded_splitter"):
+            saved_width = self.config_manager.get_int_setting(
+                keys.EMBEDDED_COLUMN_WIDTH, 350
+            )
             total_width = self.embedded_splitter.width()
             remaining = max(0, total_width - saved_width)
-            
-            settings_was_visible = self.config_manager.get_bool_setting(keys.EMBEDDED_SETTINGS_VISIBLE, False)
+
+            settings_was_visible = self.config_manager.get_bool_setting(
+                keys.EMBEDDED_SETTINGS_VISIBLE, False
+            )
             if settings_was_visible:
                 self.embedded_spacer.setVisible(False)
                 self.embedded_settings_panel.setVisible(True)
@@ -503,22 +614,30 @@ class PipeWireSettingsApp(QWidget):
         if saved:
             from PyQt6.QtCore import QByteArray
             import base64
+
             self.restoreGeometry(QByteArray(base64.b64decode(saved)))
         else:
-            self.resize(app_config.MAIN_WINDOW_INITIAL_WIDTH,
-                        app_config.MAIN_WINDOW_INITIAL_HEIGHT)
+            self.resize(
+                app_config.MAIN_WINDOW_INITIAL_WIDTH,
+                app_config.MAIN_WINDOW_INITIAL_HEIGHT,
+            )
 
     def _save_window_geometry(self) -> None:
         """Persist current window geometry to config."""
         import base64
-        data = base64.b64encode(bytes(self.saveGeometry())).decode('ascii')
+
+        data = base64.b64encode(bytes(self.saveGeometry())).decode("ascii")
         self.config_manager.set_str_setting(keys.MAIN_WINDOW_GEOMETRY, data)
 
     def closeEvent(self, event: QEvent) -> None:
         if not self.embedded:
             self._save_window_geometry()
         # If tray is enabled, hide the window instead of closing
-        if self.tray_enabled and self.tray_manager.tray_icon and self.tray_manager.tray_icon.isVisible():
+        if (
+            self.tray_enabled
+            and self.tray_manager.tray_icon
+            and self.tray_manager.tray_icon.isVisible()
+        ):
             event.ignore()
             self.hide()
         else:
@@ -530,13 +649,14 @@ class PipeWireSettingsApp(QWidget):
         """Updates the Settings button highlighting if a new version is available."""
         if self.update_manager.update_available:
             self.settings_button.setStyleSheet("color: orange; font-weight: bold;")
-            self.settings_button.setToolTip(f"New version available: {self.update_manager.latest_version}")
+            self.settings_button.setToolTip(
+                f"New version available: {self.update_manager.latest_version}"
+            )
         else:
             self.settings_button.setStyleSheet("")
             self.settings_button.setToolTip("Click to access Settings")
-        if hasattr(self, 'embedded_settings_panel'):
+        if hasattr(self, "embedded_settings_panel"):
             self.embedded_settings_panel._update_version_label()
-
 
     def update_latency_display(self) -> None:
         if self.quantum_manager is not None:
@@ -547,10 +667,6 @@ class PipeWireSettingsApp(QWidget):
                 self.latency_display_value.setText("N/A")
         else:
             self.latency_display_value.setText("N/A")
-
-
-
-
 
     def _handle_reset_all_latency_and_refresh(self) -> None:
         """Reset latency for all nodes and refresh settings."""
@@ -574,13 +690,13 @@ class PipeWireSettingsApp(QWidget):
         self.update_latency_display()
         logger.debug("Finished refreshing all settings.")
 
-
-    def _apply_current_settings(self, force_reset_quantum: bool = False, force_reset_sample_rate: bool = False) -> None:
+    def _apply_current_settings(
+        self, force_reset_quantum: bool = False, force_reset_sample_rate: bool = False
+    ) -> None:
         self._pending_force_reset_quantum = force_reset_quantum
         self._pending_force_reset_sample_rate = force_reset_sample_rate
         self.async_runner.run(
-            self.pipewire_manager.get_current_settings,
-            self._on_current_settings_loaded
+            self.pipewire_manager.get_current_settings, self._on_current_settings_loaded
         )
 
     def _on_current_settings_loaded(self, settings: Dict[str, Any]) -> None:
@@ -622,48 +738,80 @@ class PipeWireSettingsApp(QWidget):
         """Apply quantum settings."""
         if self.quantum_manager is not None:
             self.quantum_manager.initial_load = self.initial_load
-            self.quantum_manager.apply_quantum_settings(
+            success = self.quantum_manager.apply_quantum_settings(
                 skip_save=skip_save,
-                remember_settings=self.remember_settings_checkbox.isChecked()
+                remember_settings=self.remember_settings_checkbox.isChecked(),
             )
+            if success:
+                self.apply_quantum_button.setEnabled(False)
+                # Show confirmation dialog if enabled
+                if self.show_confirmation and not self.initial_load:
+                    self._show_quantum_sample_rate_confirmation(
+                        f"{self.quantum_combo.currentText()} quantum applied"
+                    )
 
     def apply_sample_rate_settings(self, skip_save: bool = False) -> None:
         """Apply sample rate settings."""
         if self.quantum_manager is not None:
             self.quantum_manager.initial_load = self.initial_load
-            self.quantum_manager.apply_sample_rate_settings(
+            success = self.quantum_manager.apply_sample_rate_settings(
                 skip_save=skip_save,
-                remember_settings=self.remember_settings_checkbox.isChecked()
+                remember_settings=self.remember_settings_checkbox.isChecked(),
             )
+            if success:
+                self.apply_sample_rate_button.setEnabled(False)
+                # Show confirmation dialog if enabled
+                if self.show_confirmation and not self.initial_load:
+                    self._show_quantum_sample_rate_confirmation(
+                        f"{self.sample_rate_combo.currentText()} sample rate applied"
+                    )
 
     def _handle_reset_quantum(self) -> None:
         """Reset quantum to default."""
         if self.quantum_manager is not None:
             if self.quantum_manager.reset_quantum():
                 self._apply_current_settings(force_reset_quantum=True)
+                # Show confirmation dialog if enabled
+                if self.show_confirmation:
+                    self._show_quantum_sample_rate_confirmation(
+                        "Default quantum restored"
+                    )
 
     def _handle_reset_sample_rate(self) -> None:
         """Reset sample rate to default."""
         if self.quantum_manager is not None:
             if self.quantum_manager.reset_sample_rate():
                 self._apply_current_settings(force_reset_sample_rate=True)
+                # Show confirmation dialog if enabled
+                if self.show_confirmation:
+                    self._show_quantum_sample_rate_confirmation(
+                        "Default sample rate restored"
+                    )
 
     def _get_settings_dict(self) -> Dict[str, Any]:
         """Build a settings dict from current app state for save_settings."""
         return {
-            'tray_enabled': self.tray_toggle_checkbox.isChecked(),
-            'tray_click_opens_cables': self.tray_click_opens_cables,
-            'remember_settings': self.remember_settings,
-            'restore_only_minimized': self.restore_only_minimized,
-            'autostart_enabled': self.autostart_enabled,
-            'check_updates_at_start': self.check_updates_at_start,
-            'appimage_path': self.appimage_path,
+            "tray_enabled": self.tray_toggle_checkbox.isChecked(),
+            "tray_click_opens_cables": self.tray_click_opens_cables,
+            "remember_settings": self.remember_settings,
+            "restore_only_minimized": self.restore_only_minimized,
+            "apply_quantum_sample_rate_instantaneously": self.apply_immediately,
+            "show_quantum_sample_rate_confirmation": self.show_confirmation,
+            "autostart_enabled": self.autostart_enabled,
+            "check_updates_at_start": self.check_updates_at_start,
+            "appimage_path": self.appimage_path,
         }
 
     def _apply_loaded_settings(self, settings: Dict[str, Any]) -> None:
         """Apply loaded settings dict to app state and widgets."""
         self.remember_settings = settings["remember_settings"]
         self.restore_only_minimized = settings["restore_only_minimized"]
+        self.apply_immediately = settings.get(
+            "apply_quantum_sample_rate_instantaneously", False
+        )
+        self.show_confirmation = settings.get(
+            "show_quantum_sample_rate_confirmation", False
+        )
         self.saved_quantum = settings["saved_quantum"]
         self.saved_sample_rate = settings["saved_sample_rate"]
         self.autostart_enabled = settings["autostart_enabled"]
@@ -698,6 +846,14 @@ class PipeWireSettingsApp(QWidget):
         self.restore_only_minimized_checkbox.setEnabled(self.remember_settings)
         self.restore_only_minimized_checkbox.blockSignals(False)
 
+        self.apply_immediately_checkbox.blockSignals(True)
+        self.apply_immediately_checkbox.setChecked(self.apply_immediately)
+        self.apply_immediately_checkbox.blockSignals(False)
+
+        self.show_confirmation_checkbox.blockSignals(True)
+        self.show_confirmation_checkbox.setChecked(self.show_confirmation)
+        self.show_confirmation_checkbox.blockSignals(False)
+
         if tray_enabled:
             if self.tray_manager.tray_icon:
                 self.tray_manager.tray_icon.hide()
@@ -710,8 +866,8 @@ class PipeWireSettingsApp(QWidget):
 
         # Apply saved audio settings if enabled AND the conditions for restoring are met
         should_restore = self.remember_settings and (
-            not self.restore_only_minimized or
-            (self.restore_only_minimized and self.is_minimized_startup)
+            not self.restore_only_minimized
+            or (self.restore_only_minimized and self.is_minimized_startup)
         )
 
         if should_restore:
@@ -720,33 +876,51 @@ class PipeWireSettingsApp(QWidget):
                     quantum_str = str(self.saved_quantum)
                     logger.info(f"Applying saved quantum: {quantum_str}")
                     if self.quantum_manager is not None:
-                        self.quantum_manager._set_combo_to_value(self.quantum_combo, quantum_str, 'last_valid_quantum_index')
+                        self.quantum_manager._set_combo_to_value(
+                            self.quantum_combo, quantum_str, "last_valid_quantum_index"
+                        )
                     self.apply_quantum_settings(skip_save=True)
 
                 if self.saved_sample_rate > 0:
                     sample_rate_str = str(self.saved_sample_rate)
                     logger.info(f"Applying saved sample rate: {sample_rate_str}")
                     if self.quantum_manager is not None:
-                        self.quantum_manager._set_combo_to_value(self.sample_rate_combo, sample_rate_str, 'last_valid_sample_rate_index')
+                        self.quantum_manager._set_combo_to_value(
+                            self.sample_rate_combo,
+                            sample_rate_str,
+                            "last_valid_sample_rate_index",
+                        )
                     self.apply_sample_rate_settings(skip_save=True)
             except Exception as e:
                 logger.error(f"Error applying saved audio settings: {e}")
         else:
-             # Sync indices from combo boxes to quantum_manager
-             if self.quantum_manager is not None:
-                 current_quantum_index = self.quantum_combo.currentIndex()
-                 if current_quantum_index >= 0 and self.quantum_combo.itemText(current_quantum_index) != "Edit List...":
-                     self.quantum_manager.last_valid_quantum_index = current_quantum_index
-                 elif self.quantum_combo.count() > 1:
-                     self.quantum_manager.last_valid_quantum_index = 0
-                     self.quantum_combo.setCurrentIndex(0)
+            # Sync indices from combo boxes to quantum_manager
+            if self.quantum_manager is not None:
+                current_quantum_index = self.quantum_combo.currentIndex()
+                if (
+                    current_quantum_index >= 0
+                    and self.quantum_combo.itemText(current_quantum_index)
+                    != "Edit List..."
+                ):
+                    self.quantum_manager.last_valid_quantum_index = (
+                        current_quantum_index
+                    )
+                elif self.quantum_combo.count() > 1:
+                    self.quantum_manager.last_valid_quantum_index = 0
+                    self.quantum_combo.setCurrentIndex(0)
 
-                 current_sample_rate_index = self.sample_rate_combo.currentIndex()
-                 if current_sample_rate_index >= 0 and self.sample_rate_combo.itemText(current_sample_rate_index) != "Edit List...":
-                     self.quantum_manager.last_valid_sample_rate_index = current_sample_rate_index
-                 elif self.sample_rate_combo.count() > 1:
-                     self.quantum_manager.last_valid_sample_rate_index = 0
-                     self.sample_rate_combo.setCurrentIndex(0)
+                current_sample_rate_index = self.sample_rate_combo.currentIndex()
+                if (
+                    current_sample_rate_index >= 0
+                    and self.sample_rate_combo.itemText(current_sample_rate_index)
+                    != "Edit List..."
+                ):
+                    self.quantum_manager.last_valid_sample_rate_index = (
+                        current_sample_rate_index
+                    )
+                elif self.sample_rate_combo.count() > 1:
+                    self.quantum_manager.last_valid_sample_rate_index = 0
+                    self.sample_rate_combo.setCurrentIndex(0)
 
         # Unblock signals after potentially setting indices
         self.quantum_combo.blockSignals(False)
@@ -759,15 +933,15 @@ class PipeWireSettingsApp(QWidget):
         # Reset device and node selections
         if self.device_manager is not None:
             self.device_manager.reset_selection()
-        
+
         if self.latency_manager is not None:
             self.latency_manager.clear()
 
         if self.remember_settings:
             try:
                 cm = self.config_manager
-                saved_quantum = cm.get_str_setting(keys.SAVED_QUANTUM, '')
-                saved_sample_rate = cm.get_str_setting(keys.SAVED_SAMPLE_RATE, '')
+                saved_quantum = cm.get_str_setting(keys.SAVED_QUANTUM, "")
+                saved_sample_rate = cm.get_str_setting(keys.SAVED_SAMPLE_RATE, "")
 
                 if saved_quantum or saved_sample_rate:
                     self.quantum_combo.blockSignals(True)
@@ -775,12 +949,20 @@ class PipeWireSettingsApp(QWidget):
                     try:
                         if saved_quantum:
                             if self.quantum_manager is not None:
-                                self.quantum_manager._set_combo_to_value(self.quantum_combo, saved_quantum, 'last_valid_quantum_index')
+                                self.quantum_manager._set_combo_to_value(
+                                    self.quantum_combo,
+                                    saved_quantum,
+                                    "last_valid_quantum_index",
+                                )
                             self.apply_quantum_settings(skip_save=True)
 
                         if saved_sample_rate:
                             if self.quantum_manager is not None:
-                                self.quantum_manager._set_combo_to_value(self.sample_rate_combo, saved_sample_rate, 'last_valid_sample_rate_index')
+                                self.quantum_manager._set_combo_to_value(
+                                    self.sample_rate_combo,
+                                    saved_sample_rate,
+                                    "last_valid_sample_rate_index",
+                                )
                             self.apply_sample_rate_settings(skip_save=True)
                     finally:
                         self.quantum_combo.blockSignals(False)
@@ -801,8 +983,14 @@ class PipeWireSettingsApp(QWidget):
         current_sample_rate = self.sample_rate_combo.currentText()
 
         # Get reset states from quantum_manager
-        quantum_was_reset = self.quantum_manager.quantum_was_reset if self.quantum_manager else False
-        sample_rate_was_reset = self.quantum_manager.sample_rate_was_reset if self.quantum_manager else False
+        quantum_was_reset = (
+            self.quantum_manager.quantum_was_reset if self.quantum_manager else False
+        )
+        sample_rate_was_reset = (
+            self.quantum_manager.sample_rate_was_reset
+            if self.quantum_manager
+            else False
+        )
 
         result = self.config_manager.toggle_remember_settings(
             remember=remember,
@@ -811,7 +999,7 @@ class PipeWireSettingsApp(QWidget):
             quantum_was_reset=quantum_was_reset,
             sample_rate_was_reset=sample_rate_was_reset,
             tray_enabled=self.tray_toggle_checkbox.isChecked(),
-            tray_click_opens_cables=self.tray_click_opens_cables
+            tray_click_opens_cables=self.tray_click_opens_cables,
         )
 
         if result.get("clear_restore_only_minimized"):
@@ -822,6 +1010,68 @@ class PipeWireSettingsApp(QWidget):
         """Handle restore only when auto-started checkbox state changes."""
         self.restore_only_minimized = bool(state)
         self.config_manager.toggle_restore_only_minimized(self.restore_only_minimized)
+
+    def _handle_toggle_apply_immediately(self, state: int) -> None:
+        """Handle apply immediately checkbox state changes."""
+        self.apply_immediately = bool(state)
+        self.config_manager.set_bool_setting(
+            keys.APPLY_QUANTUM_SAMPLE_RATE_INSTANTANEOUSLY, self.apply_immediately
+        )
+        self._update_apply_buttons_state()
+
+    def _handle_toggle_show_confirmation(self, state: int) -> None:
+        """Handle show confirmation checkbox state changes."""
+        self.show_confirmation = bool(state)
+        self.config_manager.set_bool_setting(
+            keys.SHOW_QUANTUM_SAMPLE_RATE_CONFIRMATION, self.show_confirmation
+        )
+
+    def _show_quantum_sample_rate_confirmation(self, message: str) -> None:
+        """Show auto-closing confirmation dialog for quantum/sample rate changes."""
+        from cable_core.dialogs import QuantumSampleRateConfirmationDialog
+        from cable_core.app_config import QUANTUM_SAMPLE_RATE_CONFIRMATION_DURATION_MS
+        
+        dialog = QuantumSampleRateConfirmationDialog(
+            message=message,
+            duration_ms=QUANTUM_SAMPLE_RATE_CONFIRMATION_DURATION_MS,
+            parent=self
+        )
+        dialog.show()
+
+    def _update_quantum_apply_button(self, index: int) -> None:
+        """Enable/disable quantum apply button based on combo selection."""
+        if index >= 0:
+            text = self.quantum_combo.itemText(index)
+            enabled = text != EDIT_LIST_TEXT and not self.apply_immediately
+            self.apply_quantum_button.setEnabled(enabled)
+
+    def _update_sample_rate_apply_button(self, index: int) -> None:
+        """Enable/disable sample rate apply button based on combo selection."""
+        if index >= 0:
+            text = self.sample_rate_combo.itemText(index)
+            enabled = text != EDIT_LIST_TEXT and not self.apply_immediately
+            self.apply_sample_rate_button.setEnabled(enabled)
+
+    def _on_quantum_combo_changed(self, index: int) -> None:
+        """Handle quantum combo box changes - apply immediately if enabled."""
+        self._update_quantum_apply_button(index)
+        if index >= 0:
+            text = self.quantum_combo.itemText(index)
+            if self.apply_immediately and text != EDIT_LIST_TEXT:
+                self.apply_quantum_settings()
+
+    def _on_sample_rate_combo_changed(self, index: int) -> None:
+        """Handle sample rate combo box changes - apply immediately if enabled."""
+        self._update_sample_rate_apply_button(index)
+        if index >= 0:
+            text = self.sample_rate_combo.itemText(index)
+            if self.apply_immediately and text != EDIT_LIST_TEXT:
+                self.apply_sample_rate_settings()
+
+    def _update_apply_buttons_state(self) -> None:
+        """Update apply button enabled state based on apply_immediately setting."""
+        self._update_quantum_apply_button(self.quantum_combo.currentIndex())
+        self._update_sample_rate_apply_button(self.sample_rate_combo.currentIndex())
 
     def changeEvent(self, event: QEvent) -> None:
         """Handle window state changes, refresh settings when gaining focus."""
@@ -860,6 +1110,31 @@ class PipeWireSettingsApp(QWidget):
     def set_restore_only_minimized_checked(self, checked: bool) -> None:
         self.restore_only_minimized_checkbox.setChecked(checked)
 
+    def is_apply_immediately_checked(self) -> bool:
+        return self.apply_immediately_checkbox.isChecked()
+
+    def set_apply_immediately_checked(self, checked: bool) -> None:
+        self.apply_immediately = checked
+        self.apply_immediately_checkbox.blockSignals(True)
+        self.apply_immediately_checkbox.setChecked(checked)
+        self.apply_immediately_checkbox.blockSignals(False)
+        self.config_manager.set_bool_setting(
+            keys.APPLY_QUANTUM_SAMPLE_RATE_INSTANTANEOUSLY, self.apply_immediately
+        )
+        self._update_apply_buttons_state()
+
+    def is_show_confirmation_checked(self) -> bool:
+        return self.show_confirmation_checkbox.isChecked()
+
+    def set_show_confirmation_checked(self, checked: bool) -> None:
+        self.show_confirmation = checked
+        self.show_confirmation_checkbox.blockSignals(True)
+        self.show_confirmation_checkbox.setChecked(checked)
+        self.show_confirmation_checkbox.blockSignals(False)
+        self.config_manager.set_bool_setting(
+            keys.SHOW_QUANTUM_SAMPLE_RATE_CONFIRMATION, self.show_confirmation
+        )
+
     def get_settings_button_global_pos(self, local_pos: Any) -> Any:
         return self.settings_button.mapToGlobal(local_pos)
 
@@ -867,7 +1142,7 @@ class PipeWireSettingsApp(QWidget):
         """Clean up resources before quitting."""
         logger.debug("Performing cleanup before quitting...")
         # First, shutdown async workers to prevent signals on deleted QObjects
-        if hasattr(self, 'async_runner') and self.async_runner:
+        if hasattr(self, "async_runner") and self.async_runner:
             self.async_runner.shutdown(wait_ms=500)
         # Clean up DSPMonitor
         if self.dsp_monitor is not None:
@@ -881,8 +1156,9 @@ class PipeWireSettingsApp(QWidget):
         preset_manager = PresetManager()
         preset_manager.stop_daemon_mode()
         # Flush config to disk
-        if hasattr(self, 'config_manager') and self.config_manager:
+        if hasattr(self, "config_manager") and self.config_manager:
             self.config_manager.flush()
+
 
 def _check_integrated_mode() -> bool:
     """Check if integrated mode is enabled by reading config directly."""
@@ -890,11 +1166,14 @@ def _check_integrated_mode() -> bool:
     if os.path.exists(config_path):
         try:
             config = configparser.ConfigParser()
-            config.read(config_path, encoding='utf-8')
-            return config.getboolean('DEFAULT', 'integrate_cable_and_cables', fallback=False)
+            config.read(config_path, encoding="utf-8")
+            return config.getboolean(
+                "DEFAULT", "integrate_cable_and_cables", fallback=False
+            )
         except (configparser.Error, ValueError):
             pass
     return False
+
 
 def _find_connection_manager() -> Optional[str]:
     """Find connection-manager.py in various possible locations."""
@@ -903,50 +1182,53 @@ def _find_connection_manager() -> Optional[str]:
         # Same directory as this script (development mode)
         os.path.dirname(os.path.abspath(__file__)),
         # System-wide installation locations
-        '/usr/share/cable',
-        '/usr/local/share/cable',
+        "/usr/share/cable",
+        "/usr/local/share/cable",
         # Flatpak locations
-        '/app/bin',  # Flatpak installs to /app/bin
-        '/app/share/cable',
+        "/app/bin",  # Flatpak installs to /app/bin
+        "/app/share/cable",
         # User local installation
-        os.path.expanduser('~/.local/share/cable'),
-        os.path.expanduser('~/.local/bin'),
+        os.path.expanduser("~/.local/share/cable"),
+        os.path.expanduser("~/.local/bin"),
     ]
-    
+
     # Also check directories in sys.path (for pip-installed packages)
     for sys_path in sys.path:
         if sys_path and os.path.isdir(sys_path):
             search_paths.append(sys_path)
-    
+
     for path in search_paths:
-        candidate = os.path.join(path, 'connection-manager.py')
+        candidate = os.path.join(path, "connection-manager.py")
         if os.path.exists(candidate):
             return candidate
-    
+
     # Also try using shutil.which to find it in PATH
-    result = shutil.which('connection-manager.py')
+    result = shutil.which("connection-manager.py")
     if result:
         return result
-    
+
     return None
+
 
 def main() -> None:
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description='Cable - PipeWire Settings Manager')
-    parser.add_argument('--minimized', action='store_true',
-                        help='Start application minimized to tray')
-    parser.add_argument('-v', '--verbose', action='store_true',
-                        help='Enable verbose output for this session (overrides config setting)')
-    args = parser.parse_args(sys.argv[1:]) # Skip the first argument (script name)
-
-    # Reconfigure logging if verbose flag is set
-    if args.verbose:
-        from cable_core.logging_config import setup_logging
-        setup_logging(verbose_override=True)
+    parser = argparse.ArgumentParser(description="Cable - PipeWire Settings Manager")
+    parser.add_argument(
+        "--minimized", action="store_true", help="Start application minimized to tray"
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable verbose output for this session (overrides config setting)",
+    )
+    args = parser.parse_args(sys.argv[1:])  # Skip the first argument (script name)
 
     # Check if integrated mode is enabled - if so, launch connection-manager.py instead
     if _check_integrated_mode():
-        logger.info("Integrated mode enabled, launching Cables (connection-manager.py) instead...")
+        logger.info(
+            "Integrated mode enabled, launching Cables (connection-manager.py) instead..."
+        )
         # Find the connection-manager.py script
         connection_manager_path = _find_connection_manager()
 
@@ -955,19 +1237,21 @@ def main() -> None:
             # Build arguments for connection-manager, preserving verbose flag
             cm_args = [sys.executable, connection_manager_path]
             if args.minimized:
-                cm_args.append('--minimized')
+                cm_args.append("--minimized")
             if args.verbose:
-                cm_args.append('--verbose')
+                cm_args.append("--verbose")
             # Replace current process with connection-manager.py
             os.execv(sys.executable, cm_args)
         else:
             logger.warning("connection-manager.py not found in any known location")
-            logger.warning(f"Searched in: {os.path.dirname(os.path.abspath(__file__))}, /usr/share/cable, /app/bin, etc.")
+            logger.warning(
+                f"Searched in: {os.path.dirname(os.path.abspath(__file__))}, /usr/share/cable, /app/bin, etc."
+            )
             logger.warning("Falling back to standalone Cable mode.")
-    
+
     # Create application instance
     app = CableApp(sys.argv)
-    
+
     # Create main window, passing the minimized flag
     ex = PipeWireSettingsApp(is_minimized_startup=args.minimized)
 
@@ -981,27 +1265,30 @@ def main() -> None:
     timer = QTimer()
     timer.start(100)  # Check for signals every 100ms
     timer.timeout.connect(lambda: None)  # No-op to wake up the interpreter
-    
+
     # Handle initial window state
     if args.minimized:
         # Ensure tray is enabled when starting minimized
         if not ex.tray_enabled:
             ex.tray_toggle_checkbox.setChecked(True)
-            ex.tray_manager.toggle_tray_icon(Qt.CheckState.Checked) # Use tray_manager
+            ex.tray_manager.toggle_tray_icon(Qt.CheckState.Checked)  # Use tray_manager
         # Start hidden
         ex.hide()
         # Force a complete refresh of settings after a short delay
         # This simulates clicking the "Refresh" button when starting minimized
         # Also launch connection manager to load startup preset if configured
         logger.info("Cable started minimized, launching connection manager...")
-        ex.process_manager.launch_connection_manager(headless=True) # Pass headless=True when Cable starts minimized
+        ex.process_manager.launch_connection_manager(
+            headless=True
+        )  # Pass headless=True when Cable starts minimized
         # _apply_current_settings is already called in __init__
     else:
         # Show window normally
         ex.show()
-    
+
     # Run the application and exit
     sys.exit(app.exec())
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()

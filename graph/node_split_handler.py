@@ -290,14 +290,15 @@ class NodeSplitHandler:
                     break
             
             # Update visibility settings - make both input and output visible
+            # Use graph-specific visibility dictionaries since we're in the graph tab
             client_name = ni.client_name
             
             if is_midi:
-                scene.node_visibility_manager.midi_input_visibility[client_name] = True
-                scene.node_visibility_manager.midi_output_visibility[client_name] = True
+                scene.node_visibility_manager.graph_midi_input_visibility[client_name] = True
+                scene.node_visibility_manager.graph_midi_output_visibility[client_name] = True
             else:
-                scene.node_visibility_manager.audio_input_visibility[client_name] = True
-                scene.node_visibility_manager.audio_output_visibility[client_name] = True
+                scene.node_visibility_manager.graph_audio_input_visibility[client_name] = True
+                scene.node_visibility_manager.graph_audio_output_visibility[client_name] = True
             
             # Save the updated visibility settings to the config file
             scene.node_visibility_manager.save_visibility_settings()

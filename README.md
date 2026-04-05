@@ -17,9 +17,15 @@ Various packages are available in [releases](https://github.com/magillos/Cable/r
 
 On Arch Linux, install using PKGBUILD or with Arch package. App is also available on AUR. 
 
-Packaging files (Flatpak, AppImage, Debian) are in [cable-packaging](https://github.com/magillos/cable-packaging) repository.
+AppImage requires dependencies to be installed.
+
+Flatpak requires Flathub repository: `flatpak remote-add --if-not-exists --user flathub https://dl.flathub.org/repo/flathub.flatpakrepo`.
 
 With AppImage version 0.9.16, auto-start should work (toggle Autostart option off/on to recreate `.desktop` file).
+
+Packaging files (Flatpak, AppImage, Debian) are in [cable-packaging](https://github.com/magillos/cable-packaging) repository.
+
+
 
 
 ## Screenshots

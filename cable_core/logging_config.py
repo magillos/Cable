@@ -115,28 +115,31 @@ def _load_verbose_setting() -> bool:
     return False  # Default to verbose off
 
 
-def setup_logging(verbose_override: bool = False) -> None:
+def setup_logging(verbose_override: int = 0) -> None:
     """Configure root logger and install stderr filters.
 
     Call once at application startup.
 
     Args:
-        verbose_override: If True, force verbose output for this session,
-        regardless of the config setting. This is typically
-        set via -v/--verbose command line flag.
+        verbose_override: Verbosity level from command line flags.
+            0 — no override (use config setting).
+            1 (-v) — force verbose logging (DEBUG level); JACK cffi
+                     errors on stderr are still filtered out.
+            2 (-vv) — extra verbose: DEBUG logging AND python-jack-client
+                      stderr errors are shown unfiltered.
 
     When verbose_output is False in config (and no override), sets level to ERROR
     so that info/debug/warning messages are suppressed.
     """
     # Command-line override takes precedence over config setting
-    if verbose_override:
+    if verbose_override >= 1:
         verbose = True
     else:
         verbose = _load_verbose_setting()
 
     # Suppress verbose output when not in a terminal to avoid flooding journalctl
     # (unless explicitly overridden via command line)
-    if verbose and not sys.stdout.isatty() and not verbose_override:
+    if verbose and not sys.stdout.isatty() and verbose_override < 1:
         verbose = False
 
     # When verbose is off, use ERROR level to suppress WARNING messages too
@@ -148,4 +151,6 @@ def setup_logging(verbose_override: bool = False) -> None:
     )
 
     # Suppress harmless python-jack-client cffi assertion errors on stderr
-    _install_jack_error_filter()
+    # unless extra-verbose (-vv) is requested
+    if verbose_override < 2:
+        _install_jack_error_filter()

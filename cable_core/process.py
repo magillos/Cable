@@ -47,6 +47,15 @@ class ProcessManager:
             if stop_daemon:
                 arguments.append('--stop-daemon')
 
+            # Propagate the effective integrated-mode state so the child process
+            # mirrors what the parent was started with (-i / -n flags), rather
+            # than re-reading the config file and potentially disagreeing.
+            effective_integrated = self.app.get_integrated_mode()
+            if effective_integrated:
+                arguments.append('--integrated')
+            else:
+                arguments.append('--non-integrated')
+
             python_exe = 'python3' if getattr(sys, 'frozen', False) else (sys.executable or 'python3')
             self.connection_manager_process.setProgram(python_exe)
             self.connection_manager_process.setArguments(arguments)

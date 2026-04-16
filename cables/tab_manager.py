@@ -73,16 +73,25 @@ class TabManager(QObject):
         self.pwtop_monitor = None
         self.latency_tester = None
 
-    def setup_tabs(self) -> None:
-        """Setup all tabs in the connection manager."""
+    def setup_tabs(self, integrated_override: Optional[bool] = None) -> None:
+        """Setup all tabs in the connection manager.
+
+        Args:
+            integrated_override: If not None, overrides the config value for
+                                 integrated mode (True = always show Cable tab).
+                                 None means read from config as normal.
+        """
 
         # Get reference to tab widget from ui_manager
         self.tab_widget = self.connection_manager.ui_manager.tab_widget
 
         # Check if Cable should be integrated as the first tab
-        self.integrated_mode = self.connection_manager.config_manager.get_bool(
-            keys.INTEGRATE_CABLE_AND_CABLES, False
-        )
+        if integrated_override is not None:
+            self.integrated_mode = integrated_override
+        else:
+            self.integrated_mode = self.connection_manager.config_manager.get_bool(
+                keys.INTEGRATE_CABLE_AND_CABLES, False
+            )
         if self.integrated_mode:
             self._add_cable_tab()
 
@@ -225,8 +234,7 @@ class TabManager(QObject):
         self._update_zoom_button_tooltips(current_tab)
         self._update_global_zoom_action_state(current_tab)
 
-        self._setup_midi_matrix_v_splitter()
-        self._setup_audio_matrix_v_splitter()
+
 
     def _add_cable_tab(self) -> None:
         """Add Cable (PipeWireSettingsApp) as the first tab when integrated mode is enabled."""
@@ -246,63 +254,7 @@ class TabManager(QObject):
         self.tab_widget.insertTab(0, self.cable_widget, "Cable")
         logger.info("Added Cable tab in integrated mode")
 
-    def _setup_midi_matrix_v_splitter(self) -> None:
-        """Setup MIDI Matrix vertical splitter position loading and saving."""
-        # midi_matrix_v_splitter only exists when MIDI Matrix tab is enabled
-        if self.connection_manager.midi_matrix_v_splitter is not None:
-            # Load splitter sizes from config
-            splitter_sizes_str = self.connection_manager.config_manager.get_str(
-                keys.MIDI_MATRIX_V_SPLITTER_SIZES, "0,400"
-            )
-            try:
-                sizes = [int(x.strip()) for x in splitter_sizes_str.split(",")]
-                if len(sizes) == 2:
-                    self.connection_manager.midi_matrix_v_splitter.setSizes(sizes)
-            except (ValueError, IndexError):
-                # Use default sizes if config is invalid
-                self.connection_manager.midi_matrix_v_splitter.setSizes([0, 400])
 
-            # Connect splitterMoved signal to save position
-            self.connection_manager.midi_matrix_v_splitter.splitterMoved.connect(
-                self._save_midi_matrix_v_splitter_sizes
-            )
-
-    def _save_midi_matrix_v_splitter_sizes(self, pos: int, index: int) -> None:
-        """Save MIDI Matrix vertical splitter sizes to config when splitter is moved."""
-        if self.connection_manager.midi_matrix_v_splitter is not None:
-            sizes = self.connection_manager.midi_matrix_v_splitter.sizes()
-            if len(sizes) == 2:
-                sizes_str = f"{sizes[0]},{sizes[1]}"
-                self.connection_manager.config_manager.set_str(
-                    keys.MIDI_MATRIX_V_SPLITTER_SIZES, sizes_str
-                )
-
-    def _setup_audio_matrix_v_splitter(self) -> None:
-        """Setup Audio Matrix vertical splitter position loading and saving."""
-        if self.connection_manager.audio_matrix_v_splitter is not None:
-            splitter_sizes_str = self.connection_manager.config_manager.get_str(
-                keys.AUDIO_MATRIX_V_SPLITTER_SIZES, "0,400"
-            )
-            try:
-                sizes = [int(x.strip()) for x in splitter_sizes_str.split(",")]
-                if len(sizes) == 2:
-                    self.connection_manager.audio_matrix_v_splitter.setSizes(sizes)
-            except (ValueError, IndexError):
-                self.connection_manager.audio_matrix_v_splitter.setSizes([0, 400])
-
-            self.connection_manager.audio_matrix_v_splitter.splitterMoved.connect(
-                self._save_audio_matrix_v_splitter_sizes
-            )
-
-    def _save_audio_matrix_v_splitter_sizes(self, pos: int, index: int) -> None:
-        """Save Audio Matrix vertical splitter sizes to config when splitter is moved."""
-        if self.connection_manager.audio_matrix_v_splitter is not None:
-            sizes = self.connection_manager.audio_matrix_v_splitter.sizes()
-            if len(sizes) == 2:
-                sizes_str = f"{sizes[0]},{sizes[1]}"
-                self.connection_manager.config_manager.set_str(
-                    keys.AUDIO_MATRIX_V_SPLITTER_SIZES, sizes_str
-                )
 
     def switch_tab(self, index: int) -> None:
         """

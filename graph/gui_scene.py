@@ -63,6 +63,7 @@ class JackGraphScene(QGraphicsScene):
         self.node_configs: Dict[str, dict] = {}
         self._first_refresh_done = False
         self._in_full_refresh = False
+        self._node_press_pos: Optional[QPointF] = None
 
         # Optional managers - initialized to None, set via setters
         self.node_visibility_manager: Optional['NodeVisibilityManager'] = None
@@ -639,11 +640,15 @@ class JackGraphScene(QGraphicsScene):
         # Let handler process first (e.g., store potential drag item)
         self.interaction_handler.mousePressEvent(event)
 
+        # Capture the pressed node's position so we can detect actual moves on release
+        self._node_press_pos = None
+        if self.interaction_handler._moved_node and isinstance(self.interaction_handler._moved_node, NodeItem):
+            self._node_press_pos = self.interaction_handler._moved_node.scenePos()
+
         # Always call super() AFTER handler.
         # super() handles selection state changes based on modifiers and button clicks,
         # and initiates the move operation for movable items if appropriate.
         super().mousePressEvent(event)
-        # print(f"Scene mousePress: Called super().") # Optional debug
 
 
     def mouseMoveEvent(self, event: QGraphicsSceneMouseEvent) -> None:
@@ -733,13 +738,20 @@ class JackGraphScene(QGraphicsScene):
         # (or a split part) finishes moving. This ensures the latest position
         # is available for re-splitting and is saved on exit.
 
+        # Determine if any node actually moved compared to its press-time position
+        _any_state_changed = False
 
         # Check the node that was potentially moved by the interaction handler or super()
         # Note: moved_node comes from the handler's return value
         node_that_moved = moved_node
 
-        # Update config for the node that was directly moved/dragged
         if node_that_moved and isinstance(node_that_moved, NodeItem):
+            # Check if this node actually moved from its press position
+            if self._node_press_pos is not None and node_that_moved.scenePos() != self._node_press_pos:
+                _any_state_changed = True
+            elif self._node_press_pos is None:
+                # No press position captured (e.g. node was dragged via port/bulk interaction)
+                _any_state_changed = True
             self._update_config_for_moved_node(node_that_moved)
 
         # Also update config for any *other* selected nodes that might have moved together
@@ -747,8 +759,12 @@ class JackGraphScene(QGraphicsScene):
              if isinstance(item, NodeItem) and item != node_that_moved: # Avoid double update
                  self._update_config_for_moved_node(item)
 
-        # Emit that node states changed (manual move complete)
-        self.node_states_changed.emit()
+        # Emit that node states changed only if something actually moved
+        if _any_state_changed:
+            self.node_states_changed.emit()
+
+        # Clear press position tracking
+        self._node_press_pos = None
 
 
     # --- Selection Linking Logic (Moved to Handler) ---

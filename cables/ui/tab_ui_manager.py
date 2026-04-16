@@ -381,19 +381,8 @@ class TabUIManager:
         zoom_in_button.clicked.connect(matrix_widget.zoom_in)
         zoom_out_button.clicked.connect(matrix_widget.zoom_out)
 
-        # Add splitter to main layout
-        splitter = QSplitter(Qt.Orientation.Vertical)
-        splitter.setChildrenCollapsible(True)
-
-        top_widget = QWidget()
-        top_widget.setMinimumHeight(0)
-
-        splitter.addWidget(top_widget)
-        splitter.addWidget(matrix_widget)
-        splitter.setSizes([0, 400])
-
-        layout.addWidget(splitter)
-        setattr(manager, f"{port_type}_matrix_v_splitter", splitter)
+        # Add matrix widget directly to layout
+        layout.addWidget(matrix_widget)
 
     def setup_midi_matrix_tab(
         self, manager: "JackConnectionManager", tab_widget: QWidget

@@ -88,15 +88,18 @@ class JackConnectionManager(QMainWindow):
     disconnecting JACK/PipeWire ports, as well as managing presets.
     """
 
-    def __init__(self, load_startup_preset: bool = False) -> None:
+    def __init__(self, load_startup_preset: bool = False, integrated_override: Optional[bool] = None) -> None:
         """Initialize the JackConnectionManager.
 
         Args:
             load_startup_preset: If True, load the configured startup preset on init.
                                  Should be True for --minimized and headless modes.
+            integrated_override: If not None, overrides the config-based integrated-mode
+                                 setting (True = show Cable tab, None = read from config).
         """
         super().__init__()
         self._load_startup_preset = load_startup_preset
+        self._integrated_override: Optional[bool] = integrated_override
 
         self._is_fullscreen = False
         self._widgets_original_visibility = {}  # For storing visibility of main UI chrome
@@ -118,9 +121,7 @@ class JackConnectionManager(QMainWindow):
         self.node_visibility_manager: Optional[NodeVisibilityManager] = None
         self.graph_main_window = None
         self.midi_matrix_widget = None
-        self.midi_matrix_v_splitter = None
         self.audio_matrix_widget = None
-        self.audio_matrix_v_splitter = None
         self.midi_matrix_controls_widget = None
         self.audio_matrix_controls_widget = None
         self.pwtop_monitor = None
@@ -250,7 +251,7 @@ class JackConnectionManager(QMainWindow):
 
         # Initialize Tab Manager to set up tabs and create tree widgets
         self.tab_manager = TabManager(self)
-        self.tab_manager.setup_tabs()
+        self.tab_manager.setup_tabs(integrated_override=self._integrated_override)
 
         # Now create Port Manager after trees are available
         self.port_manager = PortManager(

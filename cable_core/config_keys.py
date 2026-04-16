@@ -62,6 +62,7 @@ __all__ = [
     "GRAPH_WALLPAPER_LAST_DIR",
     # Connection Settings
     "USE_STRAIGHT_LINES",
+    "HIDE_MATRIX_SPLITTERS",
     "CONNECTION_LINE_THICKNESS",
     "CONNECTION_VIEW_INITIAL_WIDTH",
     "PWTOP_FONT_SIZE_PT",
@@ -74,6 +75,7 @@ __all__ = [
     "DEFAULT_PRESET_SKIP_CONFIRMATION",
     # Migration Status
     "MIGRATION_DIALOG_SHOWN",
+    "QUICK_SETTINGS",
     # Mixer Settings
     "ALSA_MIXER_ZOOM_LEVEL",
     "LAST_ALSA_MIXER_CARD_INDEX",
@@ -128,11 +130,11 @@ LOAD_PRESET_DAEMON_MODE = "load_preset_daemon_mode"
 LOAD_PRESET_RESTORE_LAYOUT = "load_preset_restore_layout"
 MIDI_SPLITTER_SIZES = "midi_splitter_sizes"
 MIDI_MATRIX_SPLITTER_SIZES = "midi_matrix_splitter_sizes"
-MIDI_MATRIX_V_SPLITTER_SIZES = "midi_matrix_v_splitter_sizes"
+MIDI_MATRIX_V_SPLITTER_SIZES = "midi_matrix_input_labels_splitter_sizes"
 MIDI_MATRIX_ZOOM_LEVEL = "midi_matrix_zoom_level"
 ENABLE_MIDI_MATRIX = "enable_midi_matrix"
 AUDIO_MATRIX_SPLITTER_SIZES = "audio_matrix_splitter_sizes"
-AUDIO_MATRIX_V_SPLITTER_SIZES = "audio_matrix_v_splitter_sizes"
+AUDIO_MATRIX_V_SPLITTER_SIZES = "audio_matrix_input_labels_splitter_sizes"
 AUDIO_MATRIX_ZOOM_LEVEL = "audio_matrix_zoom_level"
 ENABLE_AUDIO_MATRIX = "enable_audio_matrix"
 
@@ -152,6 +154,7 @@ GRAPH_WALLPAPER_LAST_DIR = "_graph_wallpaper_last_dir"
 
 # --- Connection Settings ---
 USE_STRAIGHT_LINES = "use_straight_lines"
+HIDE_MATRIX_SPLITTERS = "hide_matrix_splitters"
 CONNECTION_LINE_THICKNESS = "CONNECTION_LINE_THICKNESS"
 CONNECTION_VIEW_INITIAL_WIDTH = "CONNECTION_VIEW_INITIAL_WIDTH"
 PWTOP_FONT_SIZE_PT = "PWTOP_FONT_SIZE_PT"
@@ -164,6 +167,9 @@ ACTIVE_PRESET = "active_preset"
 SHOW_HIDE_NODE_CONFIRMATION = "show_hide_node_confirmation"
 SHOW_UNLOAD_ALL_SINKS_CONFIRMATION = "show_unload_all_sinks_confirmation"
 DEFAULT_PRESET_SKIP_CONFIRMATION = "default_preset_skip_confirmation"
+
+# --- Quick Settings ---
+QUICK_SETTINGS = "quick_settings"
 
 # --- Mixer Settings ---
 ALSA_MIXER_ZOOM_LEVEL = "alsa_mixer_zoom_level"

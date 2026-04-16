@@ -1,16 +1,17 @@
 """
-Reusable PyQt6 dialog classes: ValueSelectorDialog, AppImagePathDialog, CombinedSinkSourceDialog.
+Reusable PyQt6 dialog classes: ValueSelectorDialog, AppImagePathDialog, CombinedSinkSourceDialog, QuickSettingsDialog.
 """
 
 import os
 from typing import List, Optional, Tuple
 
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QScrollArea, QWidget,
-                              QCheckBox, QDialogButtonBox, QLineEdit, QLabel,
-                              QPushButton, QFileDialog, QHBoxLayout, QRadioButton,
-                              QButtonGroup)
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QShowEvent
+    QCheckBox, QDialogButtonBox, QLineEdit, QLabel,
+    QPushButton, QFileDialog, QHBoxLayout, QRadioButton,
+    QButtonGroup, QComboBox, QGroupBox, QListWidget,
+    QListWidgetItem, QFormLayout, QAbstractItemView)
+from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtGui import QShowEvent, QIcon
 
 import logging
 logger = logging.getLogger(__name__)
@@ -342,12 +343,184 @@ class QuantumSampleRateConfirmationDialog(QDialog):
         QTimer.singleShot(duration_ms, self.accept)
     
     def showEvent(self, event: QShowEvent) -> None:
-        """Override show event to center the dialog on parent."""
+        """Override show event to center the dialog on parent or screen."""
         super().showEvent(event)
-        if self.parent():
-            parent_rect = self.parent().geometry()
+        parent_widget = self.parent()
+        if parent_widget and parent_widget.isVisible():
+            # Center on visible parent
+            parent_rect = parent_widget.geometry()
             dialog_rect = self.geometry()
             x = parent_rect.x() + (parent_rect.width() - dialog_rect.width()) // 2
             y = parent_rect.y() + (parent_rect.height() - dialog_rect.height()) // 2
             self.move(x, y)
+        else:
+            # Parent is hidden or None: center on primary screen
+            from PyQt6.QtGui import QGuiApplication
+            screen = QGuiApplication.primaryScreen()
+            if screen:
+                screen_geometry = screen.availableGeometry()
+                x = screen_geometry.x() + (screen_geometry.width() - self.width()) // 2
+                y = screen_geometry.y() + (screen_geometry.height() - self.height()) // 2
+                self.move(x, y)
 # ------------------------------------
+
+
+# --- Quick Settings Dialog ---
+class QuickSettingsDialog(QDialog):
+    """Dialog to configure quick quantum and sample rate settings for the system tray.
+
+    Displays all available quantum and sample rate values plus a "Default" option.
+    The "Default" option triggers a reset (same as the Reset button in Cable).
+    Existing quick settings are shown with trash icon buttons for removal.
+    Use "Add to quick settings" to add the current dropdown selection to the list.
+    Click OK to save the current list state.
+    """
+
+    _DEFAULT_LABEL = "Default"
+
+    def __init__(
+        self,
+        existing_settings: List[dict],
+        quantum_values: List[int],
+        sample_rate_values: List[int],
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Quick Settings")
+        self.setMinimumWidth(350)
+        self.setToolTip("Configure quick quantum and sample rate settings")
+
+        self._settings: List[dict] = list(existing_settings)
+        self._quantum_values = quantum_values
+        self._sample_rate_values = sample_rate_values
+
+        layout = QVBoxLayout(self)
+
+        # --- Existing quick settings ---
+        existing_group = QGroupBox("Existing Quick Settings")
+        existing_layout = QVBoxLayout(existing_group)
+
+        self._list_widget = QListWidget()
+        self._list_widget.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self._populate_list()
+        existing_layout.addWidget(self._list_widget)
+
+        layout.addWidget(existing_group)
+
+        # --- New quick setting ---
+        new_group = QGroupBox("Add New Quick Setting")
+        form_layout = QFormLayout(new_group)
+
+        # Quantum combo - Default first, then values
+        self._quantum_combo = QComboBox()
+        self._quantum_combo.addItem(self._DEFAULT_LABEL)
+        for val in quantum_values:
+            self._quantum_combo.addItem(str(val))
+        form_layout.addRow("Quantum:", self._quantum_combo)
+
+        # Sample rate combo - Default first, then values
+        self._sample_rate_combo = QComboBox()
+        self._sample_rate_combo.addItem(self._DEFAULT_LABEL)
+        for val in sample_rate_values:
+            self._sample_rate_combo.addItem(str(val))
+        form_layout.addRow("Sample Rate:", self._sample_rate_combo)
+
+        # Add button below dropdowns
+        self._add_button = QPushButton("Add to quick settings")
+        self._add_button.clicked.connect(self._add_current_to_list)
+        form_layout.addRow(self._add_button)
+
+        layout.addWidget(new_group)
+
+        # --- OK / Cancel ---
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+        self.setLayout(layout)
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _populate_list(self) -> None:
+        """Populate the list widget with existing settings, each with a trash button."""
+        self._list_widget.clear()
+        for i, entry in enumerate(self._settings):
+            self._add_list_item(entry, i)
+
+    def _add_list_item(self, entry: dict, index: int) -> None:
+        """Add a single item with trash button to the list."""
+        # Create a widget to hold the label and trash button
+        item_widget = QWidget()
+        item_layout = QHBoxLayout(item_widget)
+        item_layout.setContentsMargins(4, 2, 4, 2)
+        item_layout.setSpacing(8)
+
+        # Label on the left
+        label = self._make_label(entry)
+        label_widget = QLabel(label)
+        item_layout.addWidget(label_widget)
+
+        item_layout.addStretch()
+
+        # Trash button on the right
+        trash_button = QPushButton()
+        trash_button.setFixedSize(24, 24)
+        trash_button.setFlat(True)
+        trash_button.setToolTip("Remove this quick setting")
+        trash_icon = QIcon.fromTheme("user-trash")
+        if trash_icon.isNull():
+            # Fallback: use edit-clear or edit-delete
+            trash_icon = QIcon.fromTheme("edit-clear")
+        if not trash_icon.isNull():
+            trash_button.setIcon(trash_icon)
+            trash_button.setIconSize(QSize(16, 16))
+        else:
+            # Final fallback: use text
+            trash_button.setText("🗑")
+        trash_button.clicked.connect(lambda checked, idx=index: self._remove_at_index(idx))
+        item_layout.addWidget(trash_button)
+
+        # Create list item and set the widget
+        item = QListWidgetItem()
+        item.setData(Qt.ItemDataRole.UserRole, index)
+        self._list_widget.addItem(item)
+        self._list_widget.setItemWidget(item, item_widget)
+
+    @classmethod
+    def _make_label(cls, entry: dict) -> str:
+        """Create a display label like '128/48000' or '128/default'."""
+        q = entry.get("quantum", cls._DEFAULT_LABEL)
+        sr = entry.get("sample_rate", cls._DEFAULT_LABEL)
+        return f"{q}/{sr}"
+
+    def _remove_at_index(self, index: int) -> None:
+        """Remove the quick setting entry at the given index."""
+        if 0 <= index < len(self._settings):
+            self._settings.pop(index)
+            # Rebuild the entire list to update indices
+            self._populate_list()
+
+    def _add_current_to_list(self) -> None:
+        """Add the currently selected quantum/sample rate to the quick settings list."""
+        q_text = self._quantum_combo.currentText()
+        sr_text = self._sample_rate_combo.currentText()
+        quantum = "default" if q_text == self._DEFAULT_LABEL else q_text
+        sample_rate = "default" if sr_text == self._DEFAULT_LABEL else sr_text
+        entry = {"quantum": quantum, "sample_rate": sample_rate}
+
+        self._settings.append(entry)
+        self._populate_list()
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def get_quick_settings(self) -> List[dict]:
+        """Return the current quick settings list (including additions and removals)."""
+        return list(self._settings)
+    # ------------------------------------

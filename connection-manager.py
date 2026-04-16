@@ -9,6 +9,7 @@ import argparse
 import os
 import signal
 import logging
+from typing import Optional
 
 # Add the script directory to path first so we can import cable_core
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -18,7 +19,7 @@ if script_dir not in sys.path:
 # Pre-parse arguments to check for verbose flag before setting up logging
 # This allows verbose output during import phase
 _pre_parser = argparse.ArgumentParser(add_help=False)
-_pre_parser.add_argument('-v', '--verbose', action='store_true', default=False)
+_pre_parser.add_argument('-v', '--verbose', action='count', default=0)
 _pre_args, _remaining = _pre_parser.parse_known_args()
 
 from cable_core.logging_config import setup_logging
@@ -44,9 +45,21 @@ def main() -> int:
     parser.add_argument('--headless', action='store_true', help='Run in headless mode to apply startup preset')
     parser.add_argument('--stop-daemon', action='store_true', help='Stop the aj-snapshot daemon')
     parser.add_argument('--minimized', action='store_true', help='Start application minimized to tray')
-    parser.add_argument('-v', '--verbose', action='store_true',
-                        help='Enable verbose output for this session (overrides config setting)')
+    parser.add_argument('-v', '--verbose', action='count', default=0,
+                        help='Enable verbose output (-v) or extra verbose with JACK errors (-vv)')
+    parser.add_argument('--integrated', action='store_true', default=False,
+                        help='Force integrated mode: show Cable tab regardless of config (set by Cable.py -i)')
+    parser.add_argument('--non-integrated', action='store_true', default=False,
+                        help='Force non-integrated mode: hide Cable tab regardless of config (set by Cable.py -n)')
     args = parser.parse_args()
+
+    # None = read from config; True = force integrated (-i); False = force non-integrated (-n)
+    if args.integrated:
+        integrated_override: Optional[bool] = True
+    elif args.non_integrated:
+        integrated_override = False
+    else:
+        integrated_override = None
 
     if args.stop_daemon:
         logger.info("Stopping aj-snapshot daemon...")
@@ -64,7 +77,7 @@ def main() -> int:
     window = None
     if args.headless:
         logger.info("Connection Manager starting in headless mode...")
-        headless_manager = JackConnectionManager(load_startup_preset=True)
+        headless_manager = JackConnectionManager(load_startup_preset=True, integrated_override=integrated_override)
         startup_preset = headless_manager.preset_handler.startup_preset_name
         if startup_preset and startup_preset != 'None':
             logger.info(f"Headless mode: Startup preset '{startup_preset}' loaded.")
@@ -73,7 +86,7 @@ def main() -> int:
         QTimer.singleShot(1000, QApplication.quit)
     elif args.minimized:
         logger.info("Connection Manager starting minimized to tray...")
-        window = JackConnectionManager(load_startup_preset=True)
+        window = JackConnectionManager(load_startup_preset=True, integrated_override=integrated_override)
         window.start_startup_refresh()
         # Start minimized - enable tray if Cable tab exists and has tray functionality
         if hasattr(window, 'cable_widget') and window.cable_widget:
@@ -88,7 +101,7 @@ def main() -> int:
             # No Cable tab, just hide the window (no tray functionality without Cable)
             window.hide()
     else:
-        window = JackConnectionManager(load_startup_preset=False)
+        window = JackConnectionManager(load_startup_preset=False, integrated_override=integrated_override)
         window.start_startup_refresh()
         window.show()
 

@@ -16,10 +16,11 @@ import shutil
 
 # Parse verbose flag early (before setup_logging) to enable verbose output
 _pre_parser = argparse.ArgumentParser(add_help=False)
-_pre_parser.add_argument('-v', '--verbose', action='store_true')
+_pre_parser.add_argument("-v", "--verbose", action="count", default=0)
 _pre_args, _remaining = _pre_parser.parse_known_args()
 
 from cable_core.logging_config import setup_logging
+
 setup_logging(verbose_override=_pre_args.verbose)
 
 from cable_core.autostart import AutostartManager
@@ -111,11 +112,14 @@ class PipeWireSettingsApp(QWidget):
         self,
         is_minimized_startup: bool = False,
         embedded: bool = False,
+        integrated_override: Optional[bool] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
         self.is_minimized_startup = is_minimized_startup  # Store the flag
         self.embedded = embedded  # Store embedded mode flag
+        # CLI override for integrated mode (-i/-n). None means "read from config".
+        self.integrated_override: Optional[bool] = integrated_override
         self.flatpak_env = os.path.exists("/.flatpak-info")
         self.appimage_path = self._detect_appimage_path()  # Detect AppImage path
         self.tray_icon = None  # Initialize tray_icon here
@@ -212,6 +216,16 @@ class PipeWireSettingsApp(QWidget):
         )
         self._pending_splitter_pos = None
 
+    def get_integrated_mode(self) -> bool:
+        """Return the effective integrated-mode state.
+
+        If a CLI override was supplied (-i or -n), that value is used and the
+        config file is never consulted, so no permanent changes are made.
+        """
+        if self.integrated_override is not None:
+            return self.integrated_override
+        return self.config_manager.get_bool(keys.INTEGRATE_CABLE_AND_CABLES, False)
+
     def _detect_appimage_path(self) -> Optional[str]:
         """Detect if the application is running from an AppImage and return the path."""
         # Check for APPIMAGE environment variable (set by AppImage runtime)
@@ -230,13 +244,13 @@ class PipeWireSettingsApp(QWidget):
         """Opens the dialog to edit the quantum values list."""
         if self.quantum_manager is not None:
             self.quantum_manager.edit_quantum_list()
-            self.refresh_all_settings()
+            # Don't call refresh_all_settings() - QuantumManager already handles repopulating
 
     def edit_sample_rate_list(self) -> None:
         """Opens the dialog to edit the sample rate values list."""
         if self.quantum_manager is not None:
             self.quantum_manager.edit_sample_rate_list()
-            self.refresh_all_settings()
+            # Don't call refresh_all_settings() - QuantumManager already handles repopulating
 
     def initUI(self) -> None:
         from cable_core.ui_widgets import (
@@ -506,9 +520,7 @@ class PipeWireSettingsApp(QWidget):
         )
 
         # Connect combo changes to enable/disable apply buttons
-        self.quantum_combo.currentIndexChanged.connect(
-            self._on_quantum_combo_changed
-        )
+        self.quantum_combo.currentIndexChanged.connect(self._on_quantum_combo_changed)
         self.sample_rate_combo.currentIndexChanged.connect(
             self._on_sample_rate_combo_changed
         )
@@ -516,11 +528,9 @@ class PipeWireSettingsApp(QWidget):
     def _apply_embedded_mode_ui(self) -> None:
         """Hide UI elements that shouldn't appear when embedded in Cables window."""
         if not self.embedded:
-            # When not embedded, check if integrated mode is enabled and hide Cables button
-            integrated = self.config_manager.get_bool(
-                keys.INTEGRATE_CABLE_AND_CABLES, False
-            )
-            if integrated:
+            # When not embedded, hide Cables button only when integrated mode is active
+            # (use get_integrated_mode() so CLI -n/-i override is respected)
+            if self.get_integrated_mode():
                 self.cables_button.hide()
             return
 
@@ -1030,11 +1040,11 @@ class PipeWireSettingsApp(QWidget):
         """Show auto-closing confirmation dialog for quantum/sample rate changes."""
         from cable_core.dialogs import QuantumSampleRateConfirmationDialog
         from cable_core.app_config import QUANTUM_SAMPLE_RATE_CONFIRMATION_DURATION_MS
-        
+
         dialog = QuantumSampleRateConfirmationDialog(
             message=message,
             duration_ms=QUANTUM_SAMPLE_RATE_CONFIRMATION_DURATION_MS,
-            parent=self
+            parent=self,
         )
         dialog.show()
 
@@ -1160,8 +1170,15 @@ class PipeWireSettingsApp(QWidget):
             self.config_manager.flush()
 
 
-def _check_integrated_mode() -> bool:
-    """Check if integrated mode is enabled by reading config directly."""
+def _check_integrated_mode(override: Optional[bool] = None) -> bool:
+    """Check if integrated mode is enabled.
+
+    Args:
+        override: If not None, bypass the config file and return this value
+                  directly (used for -i / -n CLI flags).
+    """
+    if override is not None:
+        return override
     config_path = os.path.expanduser("~/.config/cable/config.ini")
     if os.path.exists(config_path):
         try:
@@ -1222,10 +1239,32 @@ def main() -> None:
         action="store_true",
         help="Enable verbose output for this session (overrides config setting)",
     )
+    integrated_group = parser.add_mutually_exclusive_group()
+    integrated_group.add_argument(
+        "-i",
+        "--integrated",
+        action="store_true",
+        default=False,
+        help="Run in integrated mode for this session (overrides setting, no permanent change)",
+    )
+    integrated_group.add_argument(
+        "-n",
+        "--no-integrated",
+        action="store_true",
+        default=False,
+        help="Run in non-integrated (standalone) mode for this session (overrides setting, no permanent change)",
+    )
     args = parser.parse_args(sys.argv[1:])  # Skip the first argument (script name)
 
+    # Determine integrated-mode override from CLI flags (None = read from config)
+    integrated_override: Optional[bool] = None
+    if args.integrated:
+        integrated_override = True
+    elif args.no_integrated:
+        integrated_override = False
+
     # Check if integrated mode is enabled - if so, launch connection-manager.py instead
-    if _check_integrated_mode():
+    if _check_integrated_mode(override=integrated_override):
         logger.info(
             "Integrated mode enabled, launching Cables (connection-manager.py) instead..."
         )
@@ -1240,6 +1279,9 @@ def main() -> None:
                 cm_args.append("--minimized")
             if args.verbose:
                 cm_args.append("--verbose")
+            if integrated_override is True:
+                # Tell connection-manager to show Cable tab even if config says otherwise
+                cm_args.append("--integrated")
             # Replace current process with connection-manager.py
             os.execv(sys.executable, cm_args)
         else:
@@ -1253,7 +1295,10 @@ def main() -> None:
     app = CableApp(sys.argv)
 
     # Create main window, passing the minimized flag
-    ex = PipeWireSettingsApp(is_minimized_startup=args.minimized)
+    ex = PipeWireSettingsApp(
+        is_minimized_startup=args.minimized,
+        integrated_override=integrated_override,
+    )
 
     # Connect the cleanup function to the application's quit signal
     app.aboutToQuit.connect(ex.cleanup_before_quit)

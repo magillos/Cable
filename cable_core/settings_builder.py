@@ -60,6 +60,7 @@ class SettingsWidgetBuilder:
         self.text_fields: Dict[str, QLineEdit] = {}
         self.midi_matrix_checkbox: Optional[QCheckBox] = None
         self.audio_matrix_checkbox: Optional[QCheckBox] = None
+        self.hide_matrix_splitters_checkbox: Optional[QCheckBox] = None
         self.straight_lines_checkbox: Optional[QCheckBox] = None
         self.split_audio_midi_checkbox: Optional[QCheckBox] = None
         self.auto_layout_split_checkbox: Optional[QCheckBox] = None
@@ -157,6 +158,16 @@ class SettingsWidgetBuilder:
         )
         target_layout.addWidget(self.audio_matrix_checkbox)
 
+        self.hide_matrix_splitters_checkbox = QCheckBox("Hide splitters in matrices")
+        self.hide_matrix_splitters_checkbox.setToolTip(
+            "When enabled, splitters in Audio and MIDI matrices are hidden.\n"
+            "(Requires application restart)"
+        )
+        self.hide_matrix_splitters_checkbox.stateChanged.connect(
+            lambda _: self._mark_settings_modified()
+        )
+        target_layout.addWidget(self.hide_matrix_splitters_checkbox)
+
         self.straight_lines_checkbox = QCheckBox("Use straight connection lines")
         self.straight_lines_checkbox.setToolTip(
             "Use straight lines instead of curves in Audio/MIDI tabs"
@@ -230,6 +241,7 @@ class SettingsWidgetBuilder:
             field.blockSignals(True)
         self.midi_matrix_checkbox.blockSignals(True)
         self.audio_matrix_checkbox.blockSignals(True)
+        self.hide_matrix_splitters_checkbox.blockSignals(True)
         self.straight_lines_checkbox.blockSignals(True)
         self.split_audio_midi_checkbox.blockSignals(True)
         self.auto_layout_split_checkbox.blockSignals(True)
@@ -258,6 +270,9 @@ class SettingsWidgetBuilder:
             self.audio_matrix_checkbox.setChecked(
                 self.config_manager.get_bool(keys.ENABLE_AUDIO_MATRIX, False)
             )
+            self.hide_matrix_splitters_checkbox.setChecked(
+                self.config_manager.get_bool(keys.HIDE_MATRIX_SPLITTERS, False)
+            )
             self.straight_lines_checkbox.setChecked(
                 self.config_manager.get_bool(keys.USE_STRAIGHT_LINES, False)
             )
@@ -284,6 +299,7 @@ class SettingsWidgetBuilder:
                 field.blockSignals(False)
             self.midi_matrix_checkbox.blockSignals(False)
             self.audio_matrix_checkbox.blockSignals(False)
+            self.hide_matrix_splitters_checkbox.blockSignals(False)
             self.straight_lines_checkbox.blockSignals(False)
             self.split_audio_midi_checkbox.blockSignals(False)
             self.auto_layout_split_checkbox.blockSignals(False)
@@ -304,6 +320,9 @@ class SettingsWidgetBuilder:
         )
         self.config_manager.set_bool(
             keys.ENABLE_AUDIO_MATRIX, self.audio_matrix_checkbox.isChecked()
+        )
+        self.config_manager.set_bool(
+            keys.HIDE_MATRIX_SPLITTERS, self.hide_matrix_splitters_checkbox.isChecked()
         )
         self.config_manager.set_bool(
             keys.USE_STRAIGHT_LINES, self.straight_lines_checkbox.isChecked()

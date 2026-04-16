@@ -49,7 +49,7 @@ from PyQt6.QtGui import (
 
 from cables.jack_service import get_jack_service
 from .matrix_model import MatrixModel
-from .midi_matrix_grid import _MatrixGridWidget, _OutputLabelsWidget
+from .midi_matrix_grid import _MatrixGridWidget, _OutputLabelsWidget, _InputLabelsWidget
 from cable_core import config_keys as keys
 
 from typing import TYPE_CHECKING, Optional, Any, Union, List, Tuple, Dict, Literal
@@ -67,12 +67,14 @@ _MATRIX_CONFIG_KEYS: Dict[str, Dict[str, str]] = {
     "midi": {
         "zoom_level": keys.MIDI_MATRIX_ZOOM_LEVEL,
         "splitter_sizes": keys.MIDI_MATRIX_SPLITTER_SIZES,
+        "v_splitter_sizes": keys.MIDI_MATRIX_V_SPLITTER_SIZES,
         "make_connection": "make_midi_connection",
         "break_connection": "break_midi_connection",
     },
     "audio": {
         "zoom_level": keys.AUDIO_MATRIX_ZOOM_LEVEL,
         "splitter_sizes": keys.AUDIO_MATRIX_SPLITTER_SIZES,
+        "v_splitter_sizes": keys.AUDIO_MATRIX_V_SPLITTER_SIZES,
         "make_connection": "make_connection",
         "break_connection": "break_connection",
     },
@@ -220,7 +222,24 @@ class MatrixWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Create a single outer scroll area that contains the entire splitter
+        hide_splitters = self.connection_manager.config_manager.get_bool(
+            keys.HIDE_MATRIX_SPLITTERS, False
+        )
+
+        self.v_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.v_splitter.setChildrenCollapsible(True)
+        if hide_splitters:
+            self.v_splitter.setHandleWidth(0)
+            self.v_splitter.setStyleSheet(
+                "QSplitter::handle { background-color: transparent; border: none; }"
+            )
+        else:
+            self.v_splitter.setHandleWidth(2)
+            self.v_splitter.setStyleSheet(
+                "QSplitter::handle { background-color: #444444; border: none; }"
+            )
+
+        # --- Top panel: scroll area with output labels + grid ---
         self.main_scroll_area = QScrollArea()
         self.main_scroll_area.setWidgetResizable(
             True
@@ -231,14 +250,22 @@ class MatrixWidget(QWidget):
         self.main_scroll_area.setVerticalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAsNeeded
         )
+        self.main_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.main_scroll_area.setStyleSheet("QScrollArea { background-color: transparent; } QWidget#qt_scrollarea_viewport { background-color: transparent; }")
 
         # Create horizontal splitter for adjustable output label area
         self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.main_splitter.setChildrenCollapsible(True)
-        self.main_splitter.setHandleWidth(0)  # Make splitter handle invisible
-        self.main_splitter.setStyleSheet(
-            "QSplitter::handle { background-color: transparent; border: none; }"
-        )  # Ensure complete invisibility
+        if hide_splitters:
+            self.main_splitter.setHandleWidth(0)
+            self.main_splitter.setStyleSheet(
+                "QSplitter::handle { background-color: transparent; border: none; }"
+            )
+        else:
+            self.main_splitter.setHandleWidth(2)
+            self.main_splitter.setStyleSheet(
+                "QSplitter::handle { background-color: #444444; border: none; }"
+            )
         self.main_splitter.setSizePolicy(
             QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Minimum
         )
@@ -259,7 +286,7 @@ class MatrixWidget(QWidget):
         # Set the splitter as the widget for the main scroll area
         self.main_scroll_area.setWidget(self.main_splitter)
 
-        # Load and set splitter proportions from config - give more space to the matrix grid
+        # Load and set horizontal splitter proportions from config
         splitter_sizes_str = self.connection_manager.config_manager.get_str(
             self._config_keys["splitter_sizes"], "200,800"
         )
@@ -276,11 +303,39 @@ class MatrixWidget(QWidget):
                 [200, 800]
             )  # Fallback to defaults - more space for grid
 
-        # Connect splitter signals (only horizontal splitter)
+        # Connect horizontal splitter signals
         self.main_splitter.splitterMoved.connect(self._on_main_splitter_moved)
 
-        layout.addWidget(self.main_scroll_area)
+        # --- Bottom panel: input labels (outside scroll area, always visible) ---
+        self.input_labels_widget = _InputLabelsWidget(self)
+
+        # Add to vertical splitter
+        self.v_splitter.addWidget(self.main_scroll_area)
+        self.v_splitter.addWidget(self.input_labels_widget)
+
+        # Load vertical splitter sizes from config
+        v_splitter_sizes_str = self.connection_manager.config_manager.get_str(
+            self._config_keys["v_splitter_sizes"], "400,120"
+        )
+        try:
+            sizes = [int(x.strip()) for x in v_splitter_sizes_str.split(",")]
+            if len(sizes) == 2:
+                self.v_splitter.setSizes(sizes)
+            else:
+                self.v_splitter.setSizes([400, 120])
+        except (ValueError, IndexError):
+            self.v_splitter.setSizes([400, 120])
+
+        # Connect vertical splitter signals
+        self.v_splitter.splitterMoved.connect(self._on_v_splitter_moved)
+
+        layout.addWidget(self.v_splitter)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+        # Sync horizontal scrolling to input labels
+        self.main_scroll_area.horizontalScrollBar().valueChanged.connect(
+            self.input_labels_widget.set_scroll_offset
+        )
 
         # Install event filter on scroll area viewport to intercept Ctrl+scroll for zooming
         self.main_scroll_area.viewport().installEventFilter(self)
@@ -331,12 +386,25 @@ class MatrixWidget(QWidget):
         self.output_labels_widget._calculate_truncation_lengths()
         self.output_labels_widget.update()
 
+        # Sync input labels with new output labels width
+        self.input_labels_widget.sync_with_grid()
+        self.input_labels_widget.update()
+
         # Save splitter sizes to config
         sizes = self.main_splitter.sizes()
         if len(sizes) == 2:
             sizes_str = f"{sizes[0]},{sizes[1]}"
             self.connection_manager.config_manager.set_str(
                 self._config_keys["splitter_sizes"], sizes_str
+            )
+
+    def _on_v_splitter_moved(self, pos: int, index: int) -> None:
+        """Handle vertical splitter movement to save position."""
+        sizes = self.v_splitter.sizes()
+        if len(sizes) == 2:
+            sizes_str = f"{sizes[0]},{sizes[1]}"
+            self.connection_manager.config_manager.set_str(
+                self._config_keys["v_splitter_sizes"], sizes_str
             )
 
     def _is_dark_mode(self) -> bool:
@@ -352,6 +420,7 @@ class MatrixWidget(QWidget):
         self.model.load_connections()
         self.matrix_widget.update_matrix()
         self.output_labels_widget.update_labels()
+        self.input_labels_widget.update_labels()
         # Update scroll behavior so scrollbars adjust to new grid size
         # when ports are added/removed without needing a zoom or resize.
         QTimer.singleShot(0, self._update_scroll_behavior)
@@ -453,6 +522,8 @@ class MatrixWidget(QWidget):
             )
             self.output_labels_widget.font_size = int(self.zoom_level)
             self.output_labels_widget.client_name_font_size = int(self.zoom_level) + 2
+            self.input_labels_widget.font_size = int(self.zoom_level)
+            self.input_labels_widget.client_name_font_size = int(self.zoom_level) + 2
             self.refresh_matrix()
             QTimer.singleShot(0, self._update_scroll_behavior)
 
@@ -472,6 +543,8 @@ class MatrixWidget(QWidget):
             )
             self.output_labels_widget.font_size = int(self.zoom_level)
             self.output_labels_widget.client_name_font_size = int(self.zoom_level) + 2
+            self.input_labels_widget.font_size = int(self.zoom_level)
+            self.input_labels_widget.client_name_font_size = int(self.zoom_level) + 2
             self.refresh_matrix()
             QTimer.singleShot(0, self._update_scroll_behavior)
 
@@ -493,26 +566,26 @@ class MatrixWidget(QWidget):
         if not hasattr(self, "main_scroll_area") or not hasattr(self, "main_splitter"):
             return
 
+        # Ensure input labels are synced with the evaluated splitter sizes
+        if hasattr(self, "input_labels_widget"):
+            self.input_labels_widget.sync_with_grid()
+            self.input_labels_widget.update()
+
         # Calculate proper minimum size accounting for angled input labels
         proper_min_size = self._calculate_proper_minimum_size()
 
-        # Explicitly set the minimum size of the splitter. This is the key.
-        # It forces the splitter to have a minimum size that reflects its content.
+        # Explicitly set the minimum size of the splitter.
         self.main_splitter.setMinimumSize(proper_min_size)
 
-        # Get the scroll area's viewport size
-        viewport_size = self.main_scroll_area.viewport().size()
+        # Set maximum height on the scroll area to prevent it from growing larger than the true grid content.
+        # This forces the vertical QSplitter to pull the input labels widget up exactly to the bottom of the grid,
+        # "magnetically" attaching them. The user can still drag the splitter UP to compress the scroll area.
+        self.main_scroll_area.setMaximumHeight(proper_min_size.height())
 
-        # Check if content exceeds viewport in either dimension
-        content_too_large = (
-            proper_min_size.width() > viewport_size.width()
-            or proper_min_size.height() > viewport_size.height()
-        )
-
-        # If content is too large, disable widget resizing to show scrollbars.
-        # The scroll area will then respect the splitter's minimum size.
-        # If content fits, enable widget resizing to fill the space.
-        self.main_scroll_area.setWidgetResizable(not content_too_large)
+        # ALWAYS enable widget resizability. This ensures that:
+        # 1. If content is larger, the minimum size is respected and scrollbars appear automatically.
+        # 2. If content is smaller, the widget seamlessly expands to fill the viewport, preventing random gaps.
+        self.main_scroll_area.setWidgetResizable(True)
 
     def _calculate_proper_minimum_size(self) -> "QSize":
         """Calculate the proper minimum size for the splitter accounting for angled input labels."""
@@ -541,11 +614,8 @@ class MatrixWidget(QWidget):
             + self.style_config.horizontal_padding
         )
 
-        # Height is determined by the taller of the two widgets
-        total_height = (
-            max(self.output_labels_widget.minimumHeight(), matrix_min_size.height())
-            + self.style_config.vertical_padding
-        )
+        # Height is determined by the taller of the two widgets (no padding needed because we want the labels to magnetically snap to it)
+        total_height = max(self.output_labels_widget.minimumHeight(), matrix_min_size.height())
 
         return QSize(total_width, total_height)
 

@@ -2,10 +2,12 @@
 System tray icon and menu management for Cable.
 """
 
+import json
 import os
 import sys
-from typing import Optional
+from typing import Any, Dict, List, Optional
 from PyQt6.QtWidgets import (
+    QDialog,
     QSystemTrayIcon,
     QMenu,
     QApplication,
@@ -24,26 +26,26 @@ logger = logging.getLogger(__name__)
 from cable_core.app_config import load_app_icon
 from cable_core import config_keys as keys
 from cable_core.other_settings_dialog import OtherSettingsDialog
-from cable_core.dialogs import AppImagePathDialog
+from cable_core.dialogs import AppImagePathDialog, QuickSettingsDialog
 
 
 class TrayManager:
     def __init__(self, app: QWidget) -> None:
         self.app = app
         self.tray_icon: Optional[QSystemTrayIcon] = None
+        self.tray_menu: Optional[QMenu] = None
         self.autostart_action: Optional[QAction] = None
         self.autostart_version_action: Optional[QAction] = (
             None  # Add placeholder for version menu action
         )
         self.cable_action: Optional[QAction] = None
         self.cables_action: Optional[QAction] = None
+        self._quick_setting_actions: List[QAction] = []
 
     def setup_tray_icon(self) -> None:
         if not self.tray_icon:
-            # Check if integrated mode is enabled
-            self.integrated_mode = self.app.config_manager.get_bool(
-                keys.INTEGRATE_CABLE_AND_CABLES, False
-            )
+            # Check if integrated mode is enabled; respect CLI -i/-n override if present
+            self.integrated_mode = self.app.get_integrated_mode()
             logger.debug(
                 f"Setting up tray icon with tray_click_opens_cables: {self.app.tray_click_opens_cables}, integrated_mode: {self.integrated_mode}"
             )
@@ -56,7 +58,8 @@ class TrayManager:
                 self.tray_icon.setIcon(QIcon.fromTheme("application-x-executable"))
 
             # Create the menu
-            tray_menu = QMenu(self.app)  # Parent is the app
+            self.tray_menu = QMenu(self.app)  # Parent is the app
+            tray_menu = self.tray_menu
 
             if self.integrated_mode:
                 # Simplified menu for integrated mode: just "Open" to launch Cables
@@ -117,16 +120,20 @@ class TrayManager:
                 tray_menu.addMenu(click_menu)
                 tray_menu.addSeparator()
 
-            # Add autostart toggle
-            self.autostart_action = QAction("Autostart", self.app)  # Store reference
-            self.autostart_action.setCheckable(True)
-            self.autostart_action.setChecked(
-                self.app.autostart_enabled
-            )  # Use app state
-            self.autostart_action.triggered.connect(
-                self.toggle_autostart
-            )  # Connect to internal method
-            tray_menu.addAction(self.autostart_action)
+            # --- Quick settings ---
+            self._quick_settings_action = QAction("Quick settings", self.app)
+            self._quick_settings_action.setToolTip(
+                "Configure quick quantum and sample rate settings"
+            )
+            self._quick_settings_action.triggered.connect(
+                self._show_quick_settings_dialog
+            )
+            tray_menu.addAction(self._quick_settings_action)
+
+            # Load saved quick setting entries (directly below Quick settings, no separator)
+            self._load_quick_settings(tray_menu)
+
+            # Separator before quit
             tray_menu.addSeparator()
 
             # Add quit action
@@ -509,3 +516,188 @@ class TrayManager:
             self.autostart_action.setChecked(self.app.autostart_enabled)
         if self.autostart_version_action:
             self.autostart_version_action.setChecked(self.app.autostart_enabled)
+
+    # ------------------------------------------------------------------
+    # Quick Settings helpers
+    # ------------------------------------------------------------------
+
+    def _get_quick_settings(self) -> List[Dict[str, str]]:
+        """Load quick settings list from config."""
+        raw = self.app.config_manager.get_str(keys.QUICK_SETTINGS, "")
+        if not raw:
+            return []
+        try:
+            settings = json.loads(raw)
+            if isinstance(settings, list):
+                return settings
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("Failed to parse quick_settings from config")
+        return []
+
+    def _save_quick_settings(self, settings: List[Dict[str, str]]) -> None:
+        """Persist quick settings list to config."""
+        self.app.config_manager.set_str(keys.QUICK_SETTINGS, json.dumps(settings))
+        self.app.config_manager.flush()
+
+    def _find_insertion_point(self) -> Optional[QAction]:
+        """Find where to insert quick setting entries: after _quick_settings_action, before separator-before-quit."""
+        if not self.tray_menu:
+            return None
+        actions = self.tray_menu.actions()
+        # Find the separator that comes after _quick_settings_action and its entries
+        # That separator is the one just before Quit
+        found_quick = False
+        for a in actions:
+            if a is self._quick_settings_action:
+                found_quick = True
+                continue
+            if found_quick and a.isSeparator():
+                # This is the separator before Quit — insert before it
+                return a
+        return None
+
+    def _load_quick_settings(self, menu: QMenu) -> None:
+        """Populate the tray menu with saved quick setting entries."""
+        self._quick_setting_actions.clear()
+        settings = self._get_quick_settings()
+        insert_before = self._find_insertion_point()
+        for entry in settings:
+            label = QuickSettingsDialog._make_label(entry)
+            action = QAction(f"★ {label}", self.app)
+            action.triggered.connect(
+                lambda checked, e=entry: self._apply_quick_setting(e)
+            )
+            if insert_before:
+                menu.insertAction(insert_before, action)
+            else:
+                menu.addAction(action)
+            self._quick_setting_actions.append(action)
+
+    def _add_quick_setting_to_menu(self, entry: Dict[str, str]) -> None:
+        """Add a single quick setting entry to the tray menu."""
+        if not self.tray_menu:
+            return
+        label = QuickSettingsDialog._make_label(entry)
+        action = QAction(f"★ {label}", self.app)
+        action.triggered.connect(lambda checked, e=entry: self._apply_quick_setting(e))
+        insert_before = self._find_insertion_point()
+        if insert_before:
+            self.tray_menu.insertAction(insert_before, action)
+        else:
+            self.tray_menu.addAction(action)
+        self._quick_setting_actions.append(action)
+
+    def _rebuild_quick_settings_menu(self) -> None:
+        """Remove existing quick setting actions from the menu and re-add from config."""
+        if not self.tray_menu:
+            return
+        for action in self._quick_setting_actions:
+            self.tray_menu.removeAction(action)
+        self._quick_setting_actions.clear()
+        settings = self._get_quick_settings()
+        for entry in settings:
+            self._add_quick_setting_to_menu(entry)
+
+    def _show_quick_settings_dialog(self) -> None:
+        """Open the Quick Settings dialog and handle the result."""
+        existing = self._get_quick_settings()
+        # Use get_all_values_from_config to show ALL available values (including commented-out ones)
+        quantum_values = self.app.config_manager.get_all_values_from_config(
+            "quantum_values",
+            [16, 32, 48, 64, 96, 128, 144, 192, 240, 256, 512, 1024, 2048, 4096, 8192],
+        )
+        sample_rate_values = self.app.config_manager.get_all_values_from_config(
+            "sample_rate_values", [44100, 48000, 88200, 96000, 176400, 192000]
+        )
+
+        dialog = QuickSettingsDialog(
+            existing_settings=existing,
+            quantum_values=quantum_values,
+            sample_rate_values=sample_rate_values,
+            parent=self.app,
+        )
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            # Get the full settings list (additions/removals already applied in dialog)
+            settings = dialog.get_quick_settings()
+
+            # Save and rebuild menu
+            self._save_quick_settings(settings)
+            self._rebuild_quick_settings_menu()
+
+    def _apply_quick_setting(self, entry: Dict[str, str]) -> None:
+        """Apply a quick setting: set quantum and/or sample rate via PipeWire."""
+        quantum = entry.get("quantum", "")
+        sample_rate = entry.get("sample_rate", "")
+        force_reset_quantum = False
+        force_reset_sample_rate = False
+        confirmation_messages: List[str] = []
+
+        if quantum and quantum != "default":
+            # Apply quantum via pw-metadata
+            self.app.pipewire_manager.apply_quantum_settings(
+                value_str=str(quantum),
+                skip_save=False,
+                remember_settings=self.app.remember_settings,
+                initial_load=False,
+                quantum_was_reset=False,
+            )
+            logger.info(f"Quick setting: applied quantum={quantum}")
+            confirmation_messages.append(f"{quantum} quantum applied")
+        elif quantum == "default":
+            # Reset quantum to default
+            self.app.pipewire_manager.reset_quantum_settings()
+            force_reset_quantum = True
+            logger.info("Quick setting: reset quantum to default")
+            confirmation_messages.append("Default quantum restored")
+
+        if sample_rate and sample_rate != "default":
+            # Apply sample rate via pw-metadata
+            self.app.pipewire_manager.apply_sample_rate_settings(
+                value_str=str(sample_rate),
+                skip_save=False,
+                remember_settings=self.app.remember_settings,
+                initial_load=False,
+                sample_rate_was_reset=False,
+            )
+            logger.info(f"Quick setting: applied sample_rate={sample_rate}")
+            confirmation_messages.append(f"{sample_rate} sample rate applied")
+        elif sample_rate == "default":
+            # Reset sample rate to default
+            self.app.pipewire_manager.reset_sample_rate_settings()
+            force_reset_sample_rate = True
+            logger.info("Quick setting: reset sample rate to default")
+            confirmation_messages.append("Default sample rate restored")
+
+        # Refresh the Cable UI to reflect the new settings
+        self.app._apply_current_settings(
+            force_reset_quantum=force_reset_quantum,
+            force_reset_sample_rate=force_reset_sample_rate,
+        )
+
+        # Show confirmation dialog if enabled
+        if self.app.show_confirmation and confirmation_messages:
+            self._show_quick_setting_confirmation(confirmation_messages)
+
+    def _show_quick_setting_confirmation(self, messages: List[str]) -> None:
+        """Show confirmation dialog for quick setting changes.
+
+        Handles the case where the app window may be hidden by using the tray icon
+        as a visual anchor point for the dialog.
+        """
+        from cable_core.dialogs import QuantumSampleRateConfirmationDialog
+        from cable_core.app_config import QUANTUM_SAMPLE_RATE_CONFIRMATION_DURATION_MS
+
+        # Combine messages if both quantum and sample rate were changed
+        if len(messages) == 2:
+            message = f"{messages[0]}\n{messages[1]}"
+        else:
+            message = messages[0]
+
+        # Use the app as parent; the dialog will center on it if visible,
+        # or appear near the tray icon area if the app is hidden
+        dialog = QuantumSampleRateConfirmationDialog(
+            message=message,
+            duration_ms=QUANTUM_SAMPLE_RATE_CONFIRMATION_DURATION_MS,
+            parent=self.app,
+        )
+        dialog.show()

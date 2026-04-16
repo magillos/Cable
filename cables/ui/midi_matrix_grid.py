@@ -63,7 +63,7 @@ class _MatrixGridWidget(QWidget):
         self.top_margin: int = 10  # Minimal space at top
         self.left_margin: int = 10  # Minimal space on left (grid starts immediately)
         self.bottom_margin: int = (
-            120  # Minimal space at bottom (input labels are separate)
+            10  # Minimal space at bottom (input labels are in separate widget)
         )
         self.right_margin: int = 20
 
@@ -330,8 +330,7 @@ class _MatrixGridWidget(QWidget):
             self.rect(), self.parent_matrix.connection_manager.background_color
         )
 
-        # Draw input labels first (underneath squares)
-        self._draw_input_labels(painter)
+        # Input labels are now drawn in a separate _InputLabelsWidget
 
         # Draw grid
         self._draw_grid(painter, grid_rect)
@@ -718,146 +717,6 @@ class _MatrixGridWidget(QWidget):
 
         painter.restore()
 
-    def _draw_input_labels(self, painter: QPainter) -> None:
-        """Draw input labels underneath the squares at a 45-degree angle."""
-        painter.save()
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-        client_font = QFont()
-        client_font.setPointSize(self.client_name_font_size)
-        client_font.setBold(True)
-
-        port_font = QFont()
-        port_font.setPointSize(self.font_size)
-
-        # Access grouped input clients info to draw client name once per group
-        input_client_port_counts = getattr(
-            self.parent_matrix.matrix_widget, "input_client_port_counts", {}
-        )
-        ports = self.parent_matrix.model.input_ports
-
-        idx = 0
-        while idx < len(ports):
-            client_name, _, _ = ports[idx]
-            count = input_client_port_counts.get(client_name, 1)
-
-            # Draw client label on the first (rightmost) port column for this client block.
-            first_col_index = idx + count - 1
-
-            for offset in range(count):
-                col_index = idx + offset
-                if col_index >= len(self.column_positions):
-                    break
-
-                _, port_name, display_name = ports[col_index]
-                col_x = self.column_positions[col_index]
-                column_width = self.column_widths[col_index]
-                is_hovered = col_index == self.hover_col
-
-                # Common setup for both client and port labels
-                grid_bottom_y = getattr(self, "top_margin", 10) + getattr(
-                    self, "grid_height", self.height() - 20
-                )
-                label_start_y = grid_bottom_y + 5  # Adjust margin to be smaller
-
-                painter.save()
-
-                # --- Draw Client Name (only on the rightmost column of this client block) ---
-                if col_index == first_col_index:
-                    # Position for labels showing clients and ports combo
-                    x_pos = (
-                        col_x
-                        + column_width
-                        / self.parent_matrix.style_config.input_label_x_pos_factor_client_port
-                    )
-                    painter.translate(x_pos, label_start_y)
-                    painter.rotate(self.parent_matrix.style_config.input_label_rotation)
-
-                    current_client_font = QFont(client_font)
-                    if is_hovered:
-                        current_client_font.setPointSize(self.client_name_font_size + 1)
-                    painter.setFont(current_client_font)
-                    painter.setPen(
-                        QPen(
-                            self.parent_matrix.model.client_colors.get(
-                                client_name, QColor(Qt.GlobalColor.black)
-                            )
-                        )
-                    )
-
-                    client_text = client_name.upper()
-                    client_text_rect = painter.boundingRect(
-                        QRect(0, 0, 500, 100),
-                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
-                        client_text,
-                    )
-                    painter.drawText(
-                        client_text_rect,
-                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
-                        client_text,
-                    )
-
-                    # --- Draw Port Name (always) ---
-                    current_port_font = QFont(port_font)
-                    if is_hovered:
-                        current_port_font.setBold(True)
-                    painter.setFont(current_port_font)
-                    painter.setPen(
-                        QPen(
-                            self.parent_matrix.model.client_colors.get(
-                                client_name, QColor(Qt.GlobalColor.black)
-                            )
-                        )
-                    )
-
-                    # Offset the port name to be below the reserved client label area
-                    port_y_start = (
-                        client_text_rect.height()
-                        + self.parent_matrix.style_config.input_label_port_y_offset
-                    )
-                    port_text_rect = QRect(0, port_y_start, 500, 100)
-                    painter.drawText(
-                        port_text_rect,
-                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
-                        display_name,
-                    )
-                else:
-                    # Position for labels showing ports only
-                    x_pos = (
-                        col_x
-                        + column_width
-                        / self.parent_matrix.style_config.input_label_x_pos_factor_ports_only
-                    )
-                    painter.translate(x_pos, label_start_y)
-                    painter.rotate(self.parent_matrix.style_config.input_label_rotation)
-
-                    # This is a subsequent port, draw only the port name, centered and shifted.
-                    current_port_font = QFont(port_font)
-                    if is_hovered:
-                        current_port_font.setBold(True)
-                    painter.setFont(current_port_font)
-                    painter.setPen(
-                        QPen(
-                            self.parent_matrix.model.client_colors.get(
-                                client_name, QColor(Qt.GlobalColor.black)
-                            )
-                        )
-                    )
-
-                    # No vertical offset, and a slight horizontal shift to the right
-                    port_text_rect = QRect(5, 0, 500, 100)  # 5px right
-                    painter.drawText(
-                        port_text_rect,
-                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
-                        display_name,
-                    )
-
-                painter.restore()
-
-            idx += count
-
-        painter.restore()
-
     def _draw_selection_rectangle(self, painter: QPainter) -> None:
         """Draw the selection arrow/line during drag operations."""
         if not self.drag_start_pos or not self.drag_end_pos:
@@ -1045,6 +904,7 @@ class _MatrixGridWidget(QWidget):
             self.hover_col = col
             self.update()
             self.parent_matrix.output_labels_widget.update()
+            self.parent_matrix.input_labels_widget.update()
 
             # Reset tooltip timer on hover change
             self._tooltip_timer.stop()
@@ -1110,6 +970,7 @@ class _MatrixGridWidget(QWidget):
             self.hover_col = -1
             self.update()
             self.parent_matrix.output_labels_widget.update()
+            self.parent_matrix.input_labels_widget.update()
         # Cancel tooltip timer
         self._tooltip_timer.stop()
         QToolTip.hideText()
@@ -1394,6 +1255,14 @@ class _MatrixGridWidget(QWidget):
             event.accept()
         else:
             super().mouseDoubleClickEvent(event)
+
+    def resizeEvent(self, event: Optional["QEvent"]) -> None:
+        """Handle resize events to recalculate column positions when viewport size changes."""
+        super().resizeEvent(event)
+        # Recalculate column positions for new width
+        self.update_matrix()
+        # Sync input labels with new positions
+        QTimer.singleShot(0, self.parent_matrix._update_scroll_behavior)
 
 
 class _OutputLabelsWidget(QWidget):
@@ -1705,6 +1574,269 @@ class _OutputLabelsWidget(QWidget):
         hide_action.triggered.connect(hide_client)
         context_menu.addAction(hide_action)
 
+        context_menu.exec(event.globalPos())
+
+    def mouseDoubleClickEvent(self, event: Any) -> None:
+        """Handle double click to request fullscreen."""
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.parent_matrix.fullscreen_request_signal.emit()
+            event.accept()
+        else:
+            super().mouseDoubleClickEvent(event)
+
+
+class _InputLabelsWidget(QWidget):
+    """
+    Widget that displays input port labels in a separate panel below the matrix grid.
+
+    This widget sits outside the main scroll area and can be resized via a vertical
+    QSplitter. This makes input labels always visible even when the grid has many
+    rows, because the labels float below the grid viewport instead of being at the
+    far bottom of the scrollable grid content.
+    """
+
+    def __init__(self, parent_matrix: "MatrixWidget") -> None:
+        """
+        Initialize the input labels widget.
+
+        Args:
+            parent_matrix: The parent MatrixWidget instance
+        """
+        super().__init__()
+        self.parent_matrix = parent_matrix
+        self.column_positions: List[int] = []
+        self.column_widths: List[int] = []
+        self.input_client_port_counts: Dict[str, int] = {}
+        self.scroll_offset_x: int = 0
+        self.output_labels_width: int = 0
+
+        # Layout parameters matching the grid
+        self.font_size: int = int(self.parent_matrix.zoom_level)
+        self.client_name_font_size: int = int(self.parent_matrix.zoom_level) + 2
+
+        self.setMouseTracking(False)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+    def sync_with_grid(self) -> None:
+        """Sync column positions and other data from the grid widget."""
+        if (
+            hasattr(self.parent_matrix, "matrix_widget")
+            and self.parent_matrix.matrix_widget
+        ):
+            grid = self.parent_matrix.matrix_widget
+            self.column_positions = list(grid.column_positions)
+            self.column_widths = list(grid.column_widths)
+            self.input_client_port_counts = dict(
+                getattr(grid, "input_client_port_counts", {})
+            )
+
+        # Get output labels width from the h_splitter
+        if hasattr(self.parent_matrix, "main_splitter"):
+            sizes = self.parent_matrix.main_splitter.sizes()
+            if sizes:
+                self.output_labels_width = sizes[0]
+
+    def set_scroll_offset(self, offset_x: int) -> None:
+        """Set the horizontal scroll offset to match the main scroll area."""
+        if self.scroll_offset_x != offset_x:
+            self.scroll_offset_x = offset_x
+            self.update()
+
+    def update_labels(self) -> None:
+        """Update the widget when data changes."""
+        self.sync_with_grid()
+        self.update()
+
+    def paintEvent(self, event: Optional["QEvent"]) -> None:
+        """Paint the input labels."""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # Draw background
+        painter.fillRect(
+            self.rect(), self.parent_matrix.connection_manager.background_color
+        )
+
+        self._draw_input_labels(painter)
+
+    def _draw_input_labels(self, painter: QPainter) -> None:
+        """Draw input labels starting from the top of this widget."""
+        painter.save()
+
+        client_font = QFont()
+        client_font.setPointSize(self.client_name_font_size)
+        client_font.setBold(True)
+
+        port_font = QFont()
+        port_font.setPointSize(self.font_size)
+
+        ports = self.parent_matrix.model.input_ports
+        input_client_port_counts = self.input_client_port_counts
+
+        # Determine hover col from grid widget only (not from hovering labels directly)
+        hover_col = -1
+        if (
+            hasattr(self.parent_matrix, "matrix_widget")
+            and self.parent_matrix.matrix_widget
+        ):
+            hover_col = self.parent_matrix.matrix_widget.hover_col
+
+        label_start_y = 5  # Start near the top of this widget
+
+        idx = 0
+        while idx < len(ports):
+            client_name, _, _ = ports[idx]
+            count = input_client_port_counts.get(client_name, 1)
+            first_col_index = idx + count - 1
+
+            for offset in range(count):
+                col_index = idx + offset
+                if col_index >= len(self.column_positions):
+                    break
+
+                _, port_name, display_name = ports[col_index]
+
+                # Calculate X accounting for output labels width and scroll
+                col_x = (
+                    self.output_labels_width
+                    + self.column_positions[col_index]
+                    - self.scroll_offset_x
+                )
+                column_width = self.column_widths[col_index]
+                is_hovered = col_index == hover_col
+
+                painter.save()
+
+                if col_index == first_col_index:
+                    # Client + port label
+                    x_pos = (
+                        col_x
+                        + column_width
+                        / self.parent_matrix.style_config.input_label_x_pos_factor_client_port
+                    )
+                    painter.translate(x_pos, label_start_y)
+                    painter.rotate(self.parent_matrix.style_config.input_label_rotation)
+
+                    current_client_font = QFont(client_font)
+                    if is_hovered:
+                        current_client_font.setPointSize(self.client_name_font_size + 1)
+                    painter.setFont(current_client_font)
+                    painter.setPen(
+                        QPen(
+                            self.parent_matrix.model.client_colors.get(
+                                client_name, QColor(Qt.GlobalColor.black)
+                            )
+                        )
+                    )
+
+                    client_text = client_name.upper()
+                    client_text_rect = painter.boundingRect(
+                        QRect(0, 0, 500, 100),
+                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+                        client_text,
+                    )
+                    painter.drawText(
+                        client_text_rect,
+                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+                        client_text,
+                    )
+
+                    # Port name below client name
+                    current_port_font = QFont(port_font)
+                    if is_hovered:
+                        current_port_font.setBold(True)
+                    painter.setFont(current_port_font)
+                    painter.setPen(
+                        QPen(
+                            self.parent_matrix.model.client_colors.get(
+                                client_name, QColor(Qt.GlobalColor.black)
+                            )
+                        )
+                    )
+
+                    port_y_start = (
+                        client_text_rect.height()
+                        + self.parent_matrix.style_config.input_label_port_y_offset
+                    )
+                    port_text_rect = QRect(0, port_y_start, 500, 100)
+                    painter.drawText(
+                        port_text_rect,
+                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+                        display_name,
+                    )
+                else:
+                    # Port-only label
+                    x_pos = (
+                        col_x
+                        + column_width
+                        / self.parent_matrix.style_config.input_label_x_pos_factor_ports_only
+                    )
+                    painter.translate(x_pos, label_start_y)
+                    painter.rotate(self.parent_matrix.style_config.input_label_rotation)
+
+                    current_port_font = QFont(port_font)
+                    if is_hovered:
+                        current_port_font.setBold(True)
+                    painter.setFont(current_port_font)
+                    painter.setPen(
+                        QPen(
+                            self.parent_matrix.model.client_colors.get(
+                                client_name, QColor(Qt.GlobalColor.black)
+                            )
+                        )
+                    )
+
+                    port_text_rect = QRect(5, 0, 500, 100)
+                    painter.drawText(
+                        port_text_rect,
+                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+                        display_name,
+                    )
+
+                painter.restore()
+
+            idx += count
+
+        painter.restore()
+
+    def leaveEvent(self, event: Optional["QEvent"]) -> None:
+        """No hover state to clear — highlighting is driven by grid hover only."""
+        super().leaveEvent(event)
+
+    def _get_column_at_position(self, pos) -> int:
+        """Get the column index at the given widget position."""
+        # Convert widget X to grid-relative X
+        x = pos.x() - self.output_labels_width + self.scroll_offset_x
+        for i, col_x in enumerate(self.column_positions):
+            if i < len(self.column_widths):
+                if x >= col_x and x < col_x + self.column_widths[i]:
+                    return i
+        return -1
+
+    def contextMenuEvent(self, event: Any) -> None:
+        """Show context menu for input labels — allows hiding individual clients."""
+        from PyQt6.QtWidgets import QMenu
+        from PyQt6.QtGui import QAction
+
+        col = self._get_column_at_position(event.pos())
+        if col < 0 or col >= len(self.parent_matrix.model.input_ports):
+            return
+
+        client_name = self.parent_matrix.model.input_ports[col][0]
+
+        context_menu = QMenu(self)
+        hide_action = QAction(f"Hide {client_name}", self)
+
+        def hide_client():
+            if self.parent_matrix.node_visibility_manager:
+                tab_type = f"{self.parent_matrix.port_type}_matrix"
+                is_midi = self.parent_matrix.port_type == "midi"
+                self.parent_matrix.node_visibility_manager.hide_client(
+                    client_name, is_midi, tab_type
+                )
+
+        hide_action.triggered.connect(hide_client)
+        context_menu.addAction(hide_action)
         context_menu.exec(event.globalPos())
 
     def mouseDoubleClickEvent(self, event: Any) -> None:

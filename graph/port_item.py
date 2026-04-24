@@ -257,30 +257,15 @@ class PortItem(QGraphicsItem):
                             handler._is_in_auto_selection_cascade = False
                     # End of controlled port-to-port cascade. The original empty line (256) is now covered.
 
-                    # 2. Update parent BulkAreaItem's selection state
-                    bulk_area_to_update = None
-                    sibling_ports_map = {}
-                    if self.is_input:
-                        bulk_area_to_update = self.parent_node.input_area_item
-                        sibling_ports_map = self.parent_node.input_ports
-                    else:
-                        bulk_area_to_update = self.parent_node.output_area_item
-                        sibling_ports_map = self.parent_node.output_ports
-
+                    # 2. Update parent BulkAreaItem's selection state (per-pair)
+                    bulk_area_to_update = self.parent_node._port_to_bulk_area.get(self.port_name)
                     if bulk_area_to_update:
-                        all_siblings_selected = True
-                        if not sibling_ports_map:
-                            all_siblings_selected = False
-                        else:
-                            for port in sibling_ports_map.values():
-                                if not port.isSelected():
-                                    all_siblings_selected = False
-                                    break
-                        
-                        if bulk_area_to_update.isSelected() != all_siblings_selected:
+                        all_paired_selected = all(p.isSelected() for p in bulk_area_to_update.paired_ports)
+            
+                        if bulk_area_to_update.isSelected() != all_paired_selected:
                             # This will trigger BulkAreaItem.itemChange, which will then handle
                             # its own cascades (to its ports and other bulk areas)
-                            bulk_area_to_update.setSelected(all_siblings_selected)
+                            bulk_area_to_update.setSelected(all_paired_selected)
                 finally:
                     self._is_handling_selection_change = False
             

@@ -59,6 +59,8 @@ class GraphLayouter:
         self.NODE_TITLE_HEIGHT: float = 24.0
         self.NODE_BULK_AREA_HPADDING: float = 2.0
         self.NODE_BULK_AREA_HEIGHT: float = 10.0
+        self.NODE_BULK_PAIR_AREA_HEIGHT: float = 12.0
+        self.NODE_CONTENT_PADDING: float = 2.0
         self.PORT_HEIGHT: float = 18.0
         self.PORT_WIDTH_MIN: float = 60.0
         
@@ -84,6 +86,8 @@ class GraphLayouter:
             for const_name in [
                 'NODE_PADDING', 'NODE_VMARGIN', 'NODE_TITLE_HEIGHT',
                 'NODE_BULK_AREA_HPADDING', 'NODE_BULK_AREA_HEIGHT',
+                'NODE_BULK_PAIR_AREA_HEIGHT',
+                'NODE_CONTENT_PADDING',
                 'PORT_HEIGHT', 'PORT_WIDTH_MIN'
             ]:
                 if hasattr(scene_constants, const_name):
@@ -114,23 +118,24 @@ class GraphLayouter:
 
         # Default minimum node width if not specified
         DEFAULT_NODE_WIDTH = 150.0
-        
+        content_pad = constants.NODE_CONTENT_PADDING  # Inset to keep content clear of node border
+    
         if node.is_split_origin:
-            node_width = max(DEFAULT_NODE_WIDTH, 
-                           max_in_width + max_out_width + 2 * self.NODE_PADDING)
+            node_width = max(DEFAULT_NODE_WIDTH,
+                             max_in_width + max_out_width + 2 * self.NODE_PADDING + 2 * content_pad)
         elif node.is_split_part:
-            if node.input_ports and not node.output_ports:  # Input part
-                node_width = max(DEFAULT_NODE_WIDTH, 
-                               max_in_width + 2 * self.NODE_PADDING)
-            elif node.output_ports and not node.input_ports:  # Output part
-                node_width = max(DEFAULT_NODE_WIDTH, 
-                               max_out_width + 2 * self.NODE_PADDING)
-            else:  # Fallback for unexpected split part state
-                node_width = max(DEFAULT_NODE_WIDTH, 
-                               max_in_width + max_out_width + 2 * self.NODE_PADDING)
-        else:  # Normal node
-            node_width = max(DEFAULT_NODE_WIDTH, 
-                           max_in_width + max_out_width + 2 * self.NODE_PADDING)
+            if node.input_ports and not node.output_ports: # Input part
+                node_width = max(DEFAULT_NODE_WIDTH,
+                                 max_in_width + 2 * self.NODE_PADDING + 2 * content_pad)
+            elif node.output_ports and not node.input_ports: # Output part
+                node_width = max(DEFAULT_NODE_WIDTH,
+                                 max_out_width + 2 * self.NODE_PADDING + 2 * content_pad)
+            else: # Fallback for unexpected split part state
+                node_width = max(DEFAULT_NODE_WIDTH,
+                                 max_in_width + max_out_width + 2 * self.NODE_PADDING + 2 * content_pad)
+        else: # Normal node
+            node_width = max(DEFAULT_NODE_WIDTH,
+                             max_in_width + max_out_width + 2 * self.NODE_PADDING + 2 * content_pad)
         
         node._bounding_rect.setWidth(node_width)
         title_height = self._calculate_and_set_title_geometry(node, node_width)
@@ -152,38 +157,29 @@ class GraphLayouter:
             return
 
         self._show_all_ports_and_bulk_areas(node)
-
+    
         y_current = title_height + self.NODE_VMARGIN
-        self._layout_bulk_areas(node, node_width, max_in_width, max_out_width, y_current)
-
-        if node.input_area_item or node.output_area_item:
-            y_current += self.NODE_BULK_AREA_HEIGHT + self.NODE_VMARGIN
-        
+    
         y_in_final, y_out_final = self._layout_individual_ports(node, node_width, y_current)
-
-        # Calculate the height based on the maximum extent of ports or bulk areas
+    
+        # Calculate the height based on the maximum extent of ports (bulk areas
+        # are now interleaved above their paired ports, so their height is
+        # already included in y_in_final / y_out_final).
         max_y_ports = 0
         if node.input_ports or node.output_ports:
-            max_y_ports = max(y_in_final, y_out_final) - self.NODE_VMARGIN  # Remove last margin
-        else:  # No ports, height is determined by bulk areas or just title
-            max_y_ports = y_current  # This is the y_start_offset for ports
-
-        max_y_bulk = 0
-        if node.input_area_item or node.output_area_item:
-            max_y_bulk = title_height + self.NODE_VMARGIN + self.NODE_BULK_AREA_HEIGHT
-        else:  # No bulk areas
-            max_y_bulk = title_height
-            
-        content_bottom_y = max(max_y_ports, max_y_bulk)
-        
-        # If there's no content below the title (e.g., only title, or title + empty bulk area space)
-        # ensure a minimum content height for padding.
-        if not (node.input_ports or node.output_ports or 
-                node.input_area_item or node.output_area_item):
+            max_y_ports = max(y_in_final, y_out_final) - self.NODE_VMARGIN # Remove last margin
+        else: # No ports
+            max_y_ports = y_current
+    
+        content_bottom_y = max_y_ports
+    
+        # If there's no content below the title, ensure a minimum content height.
+        has_bulk_areas = bool(node.input_bulk_areas or node.output_bulk_areas)
+        if not (node.input_ports or node.output_ports or has_bulk_areas):
             # Only title is visible, or node is empty after title
-            final_node_height = title_height + self.NODE_PADDING  # Minimal padding below title
+            final_node_height = title_height + self.NODE_PADDING # Minimal padding below title
         else:
-            final_node_height = content_bottom_y + self.NODE_PADDING
+            final_node_height = content_bottom_y + self.NODE_PADDING + constants.NODE_CONTENT_PADDING
 
         node._bounding_rect.setHeight(final_node_height)
         node.update()
@@ -236,120 +232,201 @@ class GraphLayouter:
     def _hide_all_ports_and_bulk_areas(self, node: 'NodeItem') -> None:
         """
         Hides all port items and bulk area items for the given node.
-        
+
         Args:
             node: The NodeItem to update
         """
         for port in list(node.input_ports.values()) + list(node.output_ports.values()):
             if port.isVisible():
                 port.hide()
-        if node.input_area_item and node.input_area_item.isVisible():
-            node.input_area_item.hide()
-        if node.output_area_item and node.output_area_item.isVisible():
-            node.output_area_item.hide()
-    
+        for bulk in node.input_bulk_areas:
+            if bulk.isVisible():
+                bulk.hide()
+        for bulk in node.output_bulk_areas:
+            if bulk.isVisible():
+                bulk.hide()
+
     def _show_all_ports_and_bulk_areas(self, node: 'NodeItem') -> None:
         """
         Shows all port items and bulk area items for the given node.
-        
+
         Args:
             node: The NodeItem to update
         """
         for port in list(node.input_ports.values()) + list(node.output_ports.values()):
             if not port.isVisible():
                 port.show()
-        if node.input_area_item and not node.input_area_item.isVisible():
-            node.input_area_item.show()
-        if node.output_area_item and not node.output_area_item.isVisible():
-            node.output_area_item.show()
-    
-    def _layout_bulk_areas(self, node: 'NodeItem', current_node_width: float, 
-                         max_in_width: float, max_out_width: float, 
-                         y_start_bulk: float) -> None:
-        """
-        Positions the bulk area items for the given node.
-        
-        Args:
-            node: The NodeItem to update
-            current_node_width: Current width of the node
-            max_in_width: Maximum width of input ports
-            max_out_width: Maximum width of output ports
-            y_start_bulk: Y-coordinate to start placing bulk areas
-        """
-        pad = self.NODE_BULK_AREA_HPADDING
-        if node.input_area_item:
-            bulk_in_width = max_in_width - 2 * pad
-            node.input_area_item._bounding_rect.setWidth(bulk_in_width)
-            node.input_area_item.setPos(pad, y_start_bulk)
-        
-        if node.output_area_item:
-            bulk_out_width = max_out_width - 2 * pad
-            node.output_area_item._bounding_rect.setWidth(bulk_out_width)
-            out_x = pad if (node.is_split_part and node.input_ports) else \
-                   (current_node_width - max_out_width + pad)
-            node.output_area_item.setPos(out_x, y_start_bulk)
-    
-    def _layout_individual_ports(self, node: 'NodeItem', current_node_width: float, 
-                              y_start_ports: float) -> Tuple[float, float]:
-        """
-        Positions individual port items and returns the final y-offsets for inputs and outputs.
-        
+        for bulk in node.input_bulk_areas:
+            if not bulk.isVisible():
+                bulk.show()
+        for bulk in node.output_bulk_areas:
+            if not bulk.isVisible():
+                bulk.show()
+
+    def _layout_individual_ports(self, node: 'NodeItem', current_node_width: float,
+                                 y_start_ports: float) -> Tuple[float, float]:
+        """Positions port items with interleaved per-pair bulk areas above their stereo pairs.
+
+        Bulk areas are placed directly above their paired ports.  Unpaired
+        ports receive no bulk area.  The layout walks ports in visual order
+        (audio first, then MIDI, each naturally sorted); when the first port
+        of a detected stereo pair is encountered, its BulkAreaItem is placed
+        at the current y-offset, then both paired ports follow.
+
+        Additionally:
+        - Each bulk group's bounding rect (header + 2 ports) is recorded on
+          the node for visual enclosure rendering in ``NodeItem.paint()``.
+        - Extra vertical gap is inserted at bulk↔non-bulk transitions (both
+          directions) but not between consecutive bulk groups.
+
         Args:
             node: The NodeItem to update
             current_node_width: Current width of the node
             y_start_ports: Y-coordinate to start placing ports
-            
+
         Returns:
             Tuple[float, float]: Final y-offsets for input and output ports
         """
         from .node_item import natural_sort_key
-        
+
+        # Pre-calculate all port widths so bulk areas can reference their
+        # paired ports' widths even before those ports are positioned.
+        for port_item in node.input_ports.values():
+            port_item.calculated_width = port_item._calculate_required_width()
+        for port_item in node.output_ports.values():
+            port_item.calculated_width = port_item._calculate_required_width()
+
         # Separate and sort audio ports first, then MIDI ports
-        input_audio_ports = [p for p in node.input_ports.values() 
-                            if not p.port_obj.is_midi]
-        input_midi_ports = [p for p in node.input_ports.values() 
-                           if p.port_obj.is_midi]
-        output_audio_ports = [p for p in node.output_ports.values() 
-                             if not p.port_obj.is_midi]
-        output_midi_ports = [p for p in node.output_ports.values() 
-                            if p.port_obj.is_midi]
+        input_audio_ports = sorted(
+            [p for p in node.input_ports.values() if not p.port_obj.is_midi],
+            key=natural_sort_key)
+        input_midi_ports = sorted(
+            [p for p in node.input_ports.values() if p.port_obj.is_midi],
+            key=natural_sort_key)
+        output_audio_ports = sorted(
+            [p for p in node.output_ports.values() if not p.port_obj.is_midi],
+            key=natural_sort_key)
+        output_midi_ports = sorted(
+            [p for p in node.output_ports.values() if p.port_obj.is_midi],
+            key=natural_sort_key)
 
+        pad = self.NODE_BULK_AREA_HPADDING
+        bulk_h = self.NODE_BULK_PAIR_AREA_HEIGHT
+        sep_gap = constants.NODE_BULK_SEPARATOR_GAP
+        content_pad = constants.NODE_CONTENT_PADDING  # Inset to keep content clear of node border
+    
+        # Will collect QRectF for each bulk group (input + output sides)
+        bulk_group_rects: list[QRectF] = []
+    
+        # --- Input side ---
+        placed_in_bulks: set[int] = set() # ids of already-placed bulk areas
         y_in = y_start_ports
-        # Layout audio input ports first
-        for port_item in sorted(input_audio_ports, key=natural_sort_key):
-            port_item.calculated_width = port_item._calculate_required_width()
-            port_item.setPos(0, y_in)
-            port_item._bounding_rect = QRectF(0, 0, port_item.calculated_width, 
-                                            self.PORT_HEIGHT)
-            y_in += self.PORT_HEIGHT + self.NODE_VMARGIN
-            
-        # Then MIDI input ports
-        for port_item in sorted(input_midi_ports, key=natural_sort_key):
-            port_item.calculated_width = port_item._calculate_required_width()
-            port_item.setPos(0, y_in)
-            port_item._bounding_rect = QRectF(0, 0, port_item.calculated_width, 
-                                            self.PORT_HEIGHT)
-            y_in += self.PORT_HEIGHT + self.NODE_VMARGIN
-
+        prev_was_bulked_in = False # whether previous port belonged to any bulk pair
+        all_input_ports = input_audio_ports + input_midi_ports
+        for port_item in all_input_ports:
+            bulk_area = node._port_to_bulk_area.get(port_item.port_name)
+            is_bulked = bulk_area is not None
+    
+            # Detect bulk↔non-bulk transitions for extra gap
+            if prev_was_bulked_in and not is_bulked:
+                y_in += sep_gap
+            elif not prev_was_bulked_in and is_bulked and port_item != all_input_ports[0]:
+                y_in += sep_gap
+    
+            if bulk_area is not None and id(bulk_area) not in placed_in_bulks:
+                # Record start of this bulk group
+                bulk_group_y_start = y_in
+    
+                # Place bulk area above this stereo pair
+                paired_widths = [p.calculated_width for p in bulk_area.paired_ports]
+                bulk_area._bounding_rect.setWidth(max(max(paired_widths), 1.0))
+                bulk_area.setPos(content_pad, y_in)
+                y_in += bulk_h + self.NODE_VMARGIN
+                placed_in_bulks.add(id(bulk_area))
+    
+                # Place both paired ports
+                for paired_port in bulk_area.paired_ports:
+                    paired_port.setPos(content_pad, y_in)
+                    paired_port._bounding_rect = QRectF(
+                        0, 0, paired_port.calculated_width, self.PORT_HEIGHT)
+                    y_in += self.PORT_HEIGHT + self.NODE_VMARGIN
+    
+                # Record the bulk group rect (from header top to bottom of last port)
+                group_width = max(paired_widths)
+                group_height = y_in - bulk_group_y_start - self.NODE_VMARGIN
+                bulk_group_rects.append(QRectF(content_pad, bulk_group_y_start, group_width, group_height))
+            elif bulk_area is None:
+                # Non-bulked port — position normally
+                port_item.setPos(content_pad, y_in)
+                port_item._bounding_rect = QRectF(
+                    0, 0, port_item.calculated_width, self.PORT_HEIGHT)
+                y_in += self.PORT_HEIGHT + self.NODE_VMARGIN
+            # else: port is part of a bulk pair already placed — skip (already positioned above)
+    
+            prev_was_bulked_in = is_bulked
+    
+        # --- Output side ---
+        placed_out_bulks: set[int] = set()
         y_out = y_start_ports
-        # Layout audio output ports first
-        for port_item in sorted(output_audio_ports, key=natural_sort_key):
-            port_item.calculated_width = port_item._calculate_required_width()
-            x_pos = current_node_width - port_item.calculated_width
-            port_item.setPos(x_pos, y_out)
-            port_item._bounding_rect = QRectF(0, 0, port_item.calculated_width, 
-                                            self.PORT_HEIGHT)
-            y_out += self.PORT_HEIGHT + self.NODE_VMARGIN
-            
-        # Then MIDI output ports
-        for port_item in sorted(output_midi_ports, key=natural_sort_key):
-            port_item.calculated_width = port_item._calculate_required_width()
-            x_pos = current_node_width - port_item.calculated_width
-            port_item.setPos(x_pos, y_out)
-            port_item._bounding_rect = QRectF(0, 0, port_item.calculated_width, 
-                                            self.PORT_HEIGHT)
-            y_out += self.PORT_HEIGHT + self.NODE_VMARGIN
-            
+        prev_was_bulked_out = False
+        all_output_ports = output_audio_ports + output_midi_ports
+        for port_item in all_output_ports:
+            bulk_area = node._port_to_bulk_area.get(port_item.port_name)
+            is_bulked = bulk_area is not None
+    
+            # Detect bulk↔non-bulk transitions for extra gap
+            if prev_was_bulked_out and not is_bulked:
+                y_out += sep_gap
+            elif not prev_was_bulked_out and is_bulked and port_item != all_output_ports[0]:
+                y_out += sep_gap
+    
+            if bulk_area is not None and id(bulk_area) not in placed_out_bulks:
+                # Record start of this bulk group
+                bulk_group_y_start = y_out
+    
+                # Place bulk area above this stereo pair (right-aligned)
+                paired_widths = [p.calculated_width for p in bulk_area.paired_ports]
+                bulk_area._bounding_rect.setWidth(max(max(paired_widths), 1.0))
+                out_x = current_node_width - max(paired_widths) - content_pad
+                if node.is_split_part and node.input_ports:
+                    out_x = content_pad
+                bulk_area.setPos(out_x, y_out)
+                y_out += bulk_h + self.NODE_VMARGIN
+                placed_out_bulks.add(id(bulk_area))
+    
+                # Place both paired ports
+                for paired_port in bulk_area.paired_ports:
+                    x_pos = current_node_width - paired_port.calculated_width - content_pad
+                    if node.is_split_part and node.input_ports:
+                        x_pos = content_pad
+                    paired_port.setPos(x_pos, y_out)
+                    paired_port._bounding_rect = QRectF(
+                        0, 0, paired_port.calculated_width, self.PORT_HEIGHT)
+                    y_out += self.PORT_HEIGHT + self.NODE_VMARGIN
+    
+                # Record the bulk group rect (right-aligned)
+                group_width = max(paired_widths)
+                group_height = y_out - bulk_group_y_start - self.NODE_VMARGIN
+                group_x = current_node_width - group_width - content_pad
+                if node.is_split_part and node.input_ports:
+                    group_x = content_pad
+                bulk_group_rects.append(QRectF(group_x, bulk_group_y_start, group_width, group_height))
+            elif bulk_area is None:
+                # Non-bulked port — position normally
+                x_pos = current_node_width - port_item.calculated_width - content_pad
+                if node.is_split_part and node.input_ports:
+                    x_pos = content_pad
+                port_item.setPos(x_pos, y_out)
+                port_item._bounding_rect = QRectF(
+                    0, 0, port_item.calculated_width, self.PORT_HEIGHT)
+                y_out += self.PORT_HEIGHT + self.NODE_VMARGIN
+            # else: port is part of a bulk pair already placed — skip
+    
+            prev_was_bulked_out = is_bulked
+
+        # Store the computed bulk group rects on the node for painting
+        node._bulk_group_rects = bulk_group_rects
+
         return y_in, y_out
     
     def untangle_graph(self, max_nodes_per_row: int = 6) -> None:

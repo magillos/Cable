@@ -361,11 +361,11 @@ class NodeSplitHandler:
         # original_client_name remains on ni, it's not reset by unsplit.
         # is_split_part is on the parts, not ni.
 
-        # Make sure all ports are visible
+        # Make sure all ports and bulk areas are visible
         for port_item in ni.input_ports.values(): port_item.show()
         for port_item in ni.output_ports.values(): port_item.show()
-        if ni.input_area_item: ni.input_area_item.show()
-        if ni.output_area_item: ni.output_area_item.show()
+        for bulk in ni.input_bulk_areas: bulk.show()
+        for bulk in ni.output_bulk_areas: bulk.show()
 
         ni.show()
         ni.layout_ports()

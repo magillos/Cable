@@ -16,7 +16,6 @@ from .port_item import PortItem
 from .bulk_area_item import BulkAreaItem
 from .node_item import NodeItem
 from . import graph_drag_helpers
-from .graph_drag_helpers import get_ports_in_visual_order
 
 if typing.TYPE_CHECKING:
     from .gui_scene import JackGraphScene
@@ -242,44 +241,26 @@ class GraphInteractionHandler:
 
     def _handle_port_to_bulk_interaction(self, source_port: 'PortItem', target_bulk_area: 'BulkAreaItem') -> None:
         """Handles connection/disconnection logic between a PortItem and a BulkAreaItem.
-        
-        Sequential mapping: finds the source port's index among its siblings and pairs
-        source_siblings[source_idx + i] → target_ports[i] for each target port.
+
+        Connects the single source port to all ports in the bulk area's ``paired_ports``.
         """
         source_parent_node = source_port.parent_node
         if source_parent_node == target_bulk_area.parent_node and \
-           (source_parent_node.is_split_origin or source_parent_node.is_split_part):
+            (source_parent_node.is_split_origin or source_parent_node.is_split_part):
             return # Silently disallow self-connection to bulk on split nodes
-        
-        # Get target ports from the bulk area (in visual order)
-        if not source_port.is_input and target_bulk_area.is_input: # Source OUT, Target Bulk IN
-            target_ports = get_ports_in_visual_order(target_bulk_area.parent_node.input_ports)
-        elif source_port.is_input and not target_bulk_area.is_input: # Source IN, Target Bulk OUT
-            target_ports = get_ports_in_visual_order(target_bulk_area.parent_node.output_ports)
-        else:
-            return # Invalid port-to-bulk type combination
 
+        # Use only the bulk area's paired ports as targets
+        if source_port.is_input == target_bulk_area.is_input:
+            return # Invalid port-to-bulk type combination (same direction)
+
+        target_ports = target_bulk_area.paired_ports
         if not target_ports:
             return
 
-        # Get source port's siblings in visual order and find its index
-        if not source_port.is_input:
-            source_siblings = get_ports_in_visual_order(source_parent_node.output_ports)
-        else:
-            source_siblings = get_ports_in_visual_order(source_parent_node.input_ports)
-
-        try:
-            source_idx = source_siblings.index(source_port)
-        except ValueError:
-            return
-
-        # Build sequential pairs: source_siblings[source_idx + i] → target_ports[i]
+        # Build pairs: source_port → every port in target_bulk_area.paired_ports
         pairs: list[tuple[PortItem, PortItem]] = []
-        for i, t_port in enumerate(target_ports):
-            s_idx = source_idx + i
-            if s_idx >= len(source_siblings):
-                break
-            pairs.append((source_siblings[s_idx], t_port))
+        for t_port in target_ports:
+            pairs.append((source_port, t_port))
 
         if not pairs:
             return
@@ -295,7 +276,7 @@ class GraphInteractionHandler:
                 connections_to_break.append((out_p, in_p))
             else:
                 connections_to_make.append((out_p, in_p))
-        
+
         action_performed = False
         if num_already_connected == len(pairs) and connections_to_break: # All pairs are connected
             for out_p, in_p in connections_to_break:
@@ -311,9 +292,9 @@ class GraphInteractionHandler:
                     else: self.jack_connection_handler.make_connection(out_p.port_name, in_p.port_name)
                     action_performed = True
                 except Exception as e: logger.error(f"Error making port-to-bulk connection: {e}")
-        
+
         if action_performed:
-             self._select_items([source_port, target_bulk_area])
+            self._select_items([source_port, target_bulk_area])
 
     def end_connection_drag(self, source_port: 'PortItem', target_item: Optional[QGraphicsItem], _is_disconnect_drag_hint: bool) -> None:
         """Finalize drag from a PortItem: connect or disconnect based on existing connections."""
@@ -343,46 +324,25 @@ class GraphInteractionHandler:
 
     def _handle_bulk_to_port_interaction(self, source_bulk_area: 'BulkAreaItem', target_port: 'PortItem') -> None:
         """Handles connection/disconnection logic between a BulkAreaItem and a PortItem.
-        
-        Sequential mapping: finds the target port's index among its siblings and pairs
-        source_ports[i] → target_siblings[target_idx + i] for each source port.
+
+        Connects all ports in the bulk area's ``paired_ports`` to the single target port.
         """
         source_node = source_bulk_area.parent_node
         if not source_node: return
 
         # Disallow self-connection on split nodes
         if source_node == target_port.parent_node and \
-           (source_node.is_split_origin or source_node.is_split_part):
+            (source_node.is_split_origin or source_node.is_split_part):
             return
 
-        # Get source ports in visual order
-        if source_bulk_area.is_input:
-            source_ports = get_ports_in_visual_order(source_node.input_ports)
-        else:
-            source_ports = get_ports_in_visual_order(source_node.output_ports)
-        source_ports = [sp for sp in source_ports if sp.is_input != target_port.is_input]
-
+        # Use only the bulk area's paired ports as sources
+        source_ports = source_bulk_area.paired_ports
         if not source_ports: return
 
-        # Get target port's siblings in visual order and find its index
-        target_node = target_port.parent_node
-        if target_port.is_input:
-            target_siblings = get_ports_in_visual_order(target_node.input_ports)
-        else:
-            target_siblings = get_ports_in_visual_order(target_node.output_ports)
-
-        try:
-            target_idx = target_siblings.index(target_port)
-        except ValueError:
-            return
-
-        # Build sequential pairs: source_ports[i] → target_siblings[target_idx + i]
+        # Build pairs: every port in source_bulk_area.paired_ports → target_port
         pairs: list[tuple[PortItem, PortItem]] = []
-        for i, s_port in enumerate(source_ports):
-            t_idx = target_idx + i
-            if t_idx >= len(target_siblings):
-                break
-            pairs.append((s_port, target_siblings[t_idx]))
+        for s_port in source_ports:
+            pairs.append((s_port, target_port))
 
         if not pairs: return
 
@@ -397,7 +357,7 @@ class GraphInteractionHandler:
                 connections_to_break.append((out_p, in_p))
             else:
                 connections_to_make.append((out_p, in_p))
-        
+
         action_performed = False
         if num_already_connected == len(pairs) and connections_to_break: # All pairs are connected
             for out_p, in_p in connections_to_break:
@@ -413,35 +373,43 @@ class GraphInteractionHandler:
                     else: self.jack_connection_handler.make_connection(out_p.port_name, in_p.port_name)
                     action_performed = True
                 except Exception as e: logger.error(f"Error making bulk-to-port connection: {e}")
-        
+
         if action_performed:
-             self._select_items([source_bulk_area, target_port])
+            self._select_items([source_bulk_area, target_port])
 
     def _handle_bulk_to_bulk_interaction(self, source_bulk_area: 'BulkAreaItem', target_bulk_area: 'BulkAreaItem') -> None:
-        """Handles connection/disconnection logic between two BulkAreaItems."""
+        """Handles connection/disconnection logic between two BulkAreaItems.
+
+        Per-pair mapping: uses each bulk area's ``paired_ports`` instead of
+        all node ports.  Sequential mapping by index.
+        """
         source_node = source_bulk_area.parent_node
         target_node = target_bulk_area.parent_node
         if not source_node or not target_node: return
 
         if source_node == target_node and \
-           (source_node.is_split_origin or source_node.is_split_part):
+            (source_node.is_split_origin or source_node.is_split_part):
             return # Disallow self-connection on split nodes
 
         if source_bulk_area.is_input == target_bulk_area.is_input:
             return # Cannot connect IN-to-IN or OUT-to-OUT
 
-        out_node, in_node = (source_node, target_node) if not source_bulk_area.is_input else (target_node, source_node)
-        out_ports_list = list(out_node.output_ports.values())
-        in_ports_list = list(in_node.input_ports.values())
+        # Use paired ports from each bulk area
+        if not source_bulk_area.is_input:
+            out_ports_list = source_bulk_area.paired_ports
+            in_ports_list = target_bulk_area.paired_ports
+        else:
+            out_ports_list = target_bulk_area.paired_ports
+            in_ports_list = source_bulk_area.paired_ports
 
         if not out_ports_list or not in_ports_list: return
 
         num_existing_connections = 0
         for out_p_item in out_ports_list:
             for conn in out_p_item.connections:
-                if conn.dest_port in in_ports_list and conn.dest_port.parent_node == in_node:
+                if conn.dest_port in in_ports_list:
                     num_existing_connections += 1
-        
+
         num_potential_connections = min(len(out_ports_list), len(in_ports_list))
         if num_potential_connections == 0: return
 
@@ -449,7 +417,7 @@ class GraphInteractionHandler:
         if num_existing_connections >= num_potential_connections: # Disconnect existing pairs
             for out_p_item in out_ports_list:
                 for conn_item in list(out_p_item.connections): # Iterate copy
-                    if conn_item.dest_port in in_ports_list and conn_item.dest_port.parent_node == in_node:
+                    if conn_item.dest_port in in_ports_list:
                         try:
                             if conn_item.source_port.is_midi: self.jack_connection_handler.break_midi_connection(conn_item.source_port.port_name, conn_item.dest_port.port_name)
                             else: self.jack_connection_handler.break_connection(conn_item.source_port.port_name, conn_item.dest_port.port_name)
@@ -463,7 +431,7 @@ class GraphInteractionHandler:
                 action_performed = True
             except Exception as e:
                 logger.error(f"Error in bulk make_multiple_connections: {e}")
-        
+
         if action_performed:
             self._select_items([source_bulk_area, target_bulk_area])
 
@@ -484,10 +452,11 @@ class GraphInteractionHandler:
             target_node_for_connection = resolved_target_bulk_area.parent_node
         elif isinstance(target_item_at_release, NodeItem):
             target_node_for_connection = target_item_at_release
-            if source_bulk_item.is_input and target_node_for_connection.output_area_item:
-                 resolved_target_bulk_area = target_node_for_connection.output_area_item
-            elif not source_bulk_item.is_input and target_node_for_connection.input_area_item:
-                 resolved_target_bulk_area = target_node_for_connection.input_area_item
+            # Resolve to the first bulk area on the opposite side of the target node
+            if source_bulk_item.is_input and target_node_for_connection.output_bulk_areas:
+                resolved_target_bulk_area = target_node_for_connection.output_bulk_areas[0]
+            elif not source_bulk_item.is_input and target_node_for_connection.input_bulk_areas:
+                resolved_target_bulk_area = target_node_for_connection.input_bulk_areas[0]
         
         if not target_node_for_connection:
             return

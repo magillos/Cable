@@ -694,76 +694,53 @@ class MainWindow(QMainWindow):
         elif len(selected_output_bulk_areas) == 1 and len(selected_input_ports) == 1:
             source_bulk = selected_output_bulk_areas[0]
             target_port = selected_input_ports[0]
-            
+    
             if source_bulk.parent_node == target_port.parent_node and \
                (source_bulk.parent_node.is_split_origin or source_bulk.parent_node.is_split_part):
                 pass # Disallow self-connection on split nodes
             else:
-                # Get source ports in visual order
-                source_ports = graph_drag_helpers.get_ports_in_visual_order(source_bulk.parent_node.output_ports)
-                source_ports = [sp for sp in source_ports if not sp.is_input and target_port.is_input]
-                
+                # Use the bulk area's paired ports as sources
+                source_ports = source_bulk.paired_ports
+    
                 if source_ports:
-                    # Get target port's siblings in visual order and find its index
-                    target_siblings = graph_drag_helpers.get_ports_in_visual_order(target_port.parent_node.input_ports)
-                    try:
-                        target_idx = target_siblings.index(target_port)
-                    except ValueError:
-                        pass
-                    else:
-                        # Build sequential pairs and check connections
-                        num_pairs = 0
-                        num_already_connected = 0
-                        for i, s_port in enumerate(source_ports):
-                            t_idx = target_idx + i
-                            if t_idx >= len(target_siblings):
-                                break
-                            num_pairs += 1
-                            t_port = target_siblings[t_idx]
-                            if (s_port.port_name, t_port.port_name) in self.scene.connections:
-                                num_already_connected += 1
-                        
-                        if num_pairs > 0 and num_already_connected < num_pairs:
-                            can_connect = True
+                    # Check if any source port is not yet connected to the target port
+                    num_pairs = 0
+                    num_already_connected = 0
+                    for s_port in source_ports:
+                        num_pairs += 1
+                        if (s_port.port_name, target_port.port_name) in self.scene.connections:
+                            num_already_connected += 1
+    
+                    if num_pairs > 0 and num_already_connected < num_pairs:
+                        can_connect = True
 
         # Check for port-to-bulk connections (OUT port + IN bulk)
         elif len(selected_output_ports) == 1 and len(selected_input_bulk_areas) == 1:
             source_port = selected_output_ports[0]
             target_bulk = selected_input_bulk_areas[0]
-            
+    
             if source_port.parent_node == target_bulk.parent_node and \
-               (source_port.parent_node.is_split_origin or source_port.parent_node.is_split_part):
+                (source_port.parent_node.is_split_origin or source_port.parent_node.is_split_part):
                 pass # Disallow self-connection on split nodes
             else:
-                # Get target ports in visual order
-                target_ports = graph_drag_helpers.get_ports_in_visual_order(target_bulk.parent_node.input_ports)
-                
+                # Use the bulk area's paired ports as targets
+                target_ports = target_bulk.paired_ports
+    
                 if target_ports:
-                    # Get source port's siblings in visual order and find its index
-                    source_siblings = graph_drag_helpers.get_ports_in_visual_order(source_port.parent_node.output_ports)
-                    try:
-                        source_idx = source_siblings.index(source_port)
-                    except ValueError:
-                        pass
-                    else:
-                        # Build sequential pairs and check connections
-                        num_pairs = 0
-                        num_already_connected = 0
-                        for i, t_port in enumerate(target_ports):
-                            s_idx = source_idx + i
-                            if s_idx >= len(source_siblings):
-                                break
-                            num_pairs += 1
-                            s_port = source_siblings[s_idx]
-                            if (s_port.port_name, t_port.port_name) in self.scene.connections:
-                                num_already_connected += 1
-                        
-                        if num_pairs > 0 and num_already_connected < num_pairs:
-                            can_connect = True
+                    # Check if the source port is not yet connected to all target ports
+                    num_pairs = 0
+                    num_already_connected = 0
+                    for t_port in target_ports:
+                        num_pairs += 1
+                        if (source_port.port_name, t_port.port_name) in self.scene.connections:
+                            num_already_connected += 1
+    
+                    if num_pairs > 0 and num_already_connected < num_pairs:
+                        can_connect = True
         
         # Check for bulk area connections (IN/OUT bulk areas selected)
         elif (len(selected_input_bulk_areas) >= 1 and len(selected_output_bulk_areas) >= 1):
-            # Check if any ports between the bulk areas are not connected
+            # Check if any paired ports between the bulk areas are not connected
             all_connected = True
             for input_bulk in selected_input_bulk_areas:
                 for output_bulk in selected_output_bulk_areas:
@@ -771,13 +748,12 @@ class MainWindow(QMainWindow):
                     output_node = output_bulk.parent_node
                     if input_node == output_node:
                         continue
-                    input_ports = list(input_node.input_ports.values())
-                    output_ports = list(output_node.output_ports.values())
-                    input_ports.sort(key=lambda p: p.scenePos().y())
-                    output_ports.sort(key=lambda p: p.scenePos().y())
-                    for i in range(min(len(input_ports), len(output_ports))):
-                        output_port = output_ports[i]
-                        input_port = input_ports[i]
+                    # Use paired ports from each bulk area
+                    in_ports = input_bulk.paired_ports
+                    out_ports = output_bulk.paired_ports
+                    for i in range(min(len(in_ports), len(out_ports))):
+                        output_port = out_ports[i]
+                        input_port = in_ports[i]
                         if (output_port.port_name, input_port.port_name) not in self.scene.connections:
                             all_connected = False
                             break
@@ -807,57 +783,30 @@ class MainWindow(QMainWindow):
         elif len(selected_output_bulk_areas) == 1 and len(selected_input_ports) == 1:
             source_bulk = selected_output_bulk_areas[0]
             target_port = selected_input_ports[0]
-            
-            # Get source ports in visual order
-            source_ports = graph_drag_helpers.get_ports_in_visual_order(source_bulk.parent_node.output_ports)
-            source_ports = [sp for sp in source_ports if not sp.is_input and target_port.is_input]
-            
+    
+            # Use the bulk area's paired ports as sources
+            source_ports = source_bulk.paired_ports
+    
             if source_ports:
-                # Get target port's siblings in visual order and find its index
-                target_siblings = graph_drag_helpers.get_ports_in_visual_order(target_port.parent_node.input_ports)
-                try:
-                    target_idx = target_siblings.index(target_port)
-                except ValueError:
-                    pass
-                else:
-                    # Check if any sequential pairs are connected
-                    for i, s_port in enumerate(source_ports):
-                        t_idx = target_idx + i
-                        if t_idx >= len(target_siblings):
-                            break
-                        t_port = target_siblings[t_idx]
-                        if (s_port.port_name, t_port.port_name) in self.scene.connections:
-                            can_disconnect = True
-                            break
-                    if can_disconnect:
-                        pass
+                # Check if any source port is connected to the target port
+                for s_port in source_ports:
+                    if (s_port.port_name, target_port.port_name) in self.scene.connections:
+                        can_disconnect = True
+                        break
         # Check for port-to-bulk disconnections (OUT port + IN bulk)
         elif len(selected_output_ports) == 1 and len(selected_input_bulk_areas) == 1:
             source_port = selected_output_ports[0]
             target_bulk = selected_input_bulk_areas[0]
-            
-            # Get target ports in visual order
-            target_ports = graph_drag_helpers.get_ports_in_visual_order(target_bulk.parent_node.input_ports)
-            
+    
+            # Use the bulk area's paired ports as targets
+            target_ports = target_bulk.paired_ports
+    
             if target_ports:
-                # Get source port's siblings in visual order and find its index
-                source_siblings = graph_drag_helpers.get_ports_in_visual_order(source_port.parent_node.output_ports)
-                try:
-                    source_idx = source_siblings.index(source_port)
-                except ValueError:
-                    pass
-                else:
-                    # Check if any sequential pairs are connected
-                    for i, t_port in enumerate(target_ports):
-                        s_idx = source_idx + i
-                        if s_idx >= len(source_siblings):
-                            break
-                        s_port = source_siblings[s_idx]
-                        if (s_port.port_name, t_port.port_name) in self.scene.connections:
-                            can_disconnect = True
-                            break
-                    if can_disconnect:
-                        pass
+                # Check if the source port is connected to any target port
+                for t_port in target_ports:
+                    if (source_port.port_name, t_port.port_name) in self.scene.connections:
+                        can_disconnect = True
+                        break
         # Check for bulk area disconnections
         elif len(selected_input_bulk_areas) >= 1 and len(selected_output_bulk_areas) >= 1:
             # For each pair of input and output bulk areas
@@ -866,24 +815,19 @@ class MainWindow(QMainWindow):
                     # Get the parent nodes
                     input_node = input_bulk.parent_node
                     output_node = output_bulk.parent_node
-                    
+    
                     # Skip if same node
                     if input_node == output_node:
                         continue
-                    
-                    # Get all input ports from the input node
-                    input_ports = list(input_node.input_ports.values())
-                    # Get all output ports from the output node
-                    output_ports = list(output_node.output_ports.values())
-                    
-                    # Sort ports by their vertical position
-                    input_ports.sort(key=lambda p: p.scenePos().y())
-                    output_ports.sort(key=lambda p: p.scenePos().y())
-                    
-                    # Check for position-based connections (left to left, right to right)
-                    for i in range(min(len(input_ports), len(output_ports))):
-                        output_port = output_ports[i]
-                        input_port = input_ports[i]
+    
+                    # Use paired ports from each bulk area
+                    in_ports = input_bulk.paired_ports
+                    out_ports = output_bulk.paired_ports
+    
+                    # Check for connections between paired ports
+                    for i in range(min(len(in_ports), len(out_ports))):
+                        output_port = out_ports[i]
+                        input_port = in_ports[i]
                         if (output_port.port_name, input_port.port_name) in self.scene.connections:
                             can_disconnect = True
                             break
@@ -936,75 +880,44 @@ class MainWindow(QMainWindow):
                (source_bulk.parent_node.is_split_origin or source_bulk.parent_node.is_split_part):
                 logger.debug("Skipping self-connection on split node")
             else:
-                # Get source ports in visual order
-                source_ports = graph_drag_helpers.get_ports_in_visual_order(source_bulk.parent_node.output_ports)
-                source_ports = [sp for sp in source_ports if not sp.is_input and target_port.is_input]
-                
+                # Use the bulk area's paired ports as sources
+                source_ports = source_bulk.paired_ports
+        
                 if source_ports:
-                    # Get target port's siblings in visual order and find its index
-                    target_siblings = graph_drag_helpers.get_ports_in_visual_order(target_port.parent_node.input_ports)
-                    try:
-                        target_idx = target_siblings.index(target_port)
-                    except ValueError:
-                        logger.debug("Target port not found in siblings")
-                    else:
-                        # Build sequential pairs
-                        pairs = []
-                        for i, s_port in enumerate(source_ports):
-                            t_idx = target_idx + i
-                            if t_idx >= len(target_siblings):
-                                break
-                            pairs.append((s_port, target_siblings[t_idx]))
-                        
-                        if pairs:
-                            for s_port, t_port in pairs:
-                                if (s_port.port_name, t_port.port_name) not in self.scene.connections:
-                                    logger.debug(f"Attempting bulk-to-port connection: {s_port.port_name} -> {t_port.port_name}")
-                                    if s_port.is_midi:
-                                        if self.scene.jack_connection_handler.make_midi_connection(s_port.port_name, t_port.port_name):
-                                            connections_made += 1
-                                    else:
-                                        if self.scene.jack_connection_handler.make_connection(s_port.port_name, t_port.port_name):
-                                            connections_made += 1
+                    # Connect all source ports to the single target port
+                    for s_port in source_ports:
+                        if (s_port.port_name, target_port.port_name) not in self.scene.connections:
+                            logger.debug(f"Attempting bulk-to-port connection: {s_port.port_name} -> {target_port.port_name}")
+                            if s_port.is_midi:
+                                if self.scene.jack_connection_handler.make_midi_connection(s_port.port_name, target_port.port_name):
+                                    connections_made += 1
+                            else:
+                                if self.scene.jack_connection_handler.make_connection(s_port.port_name, target_port.port_name):
+                                    connections_made += 1
         
         elif is_port_to_bulk:
             # Get the first selected output port as the source
             source_port = selected_output_ports[0]
             target_bulk = selected_input_bulk_areas[0]
-            
+        
             if source_port.parent_node == target_bulk.parent_node and \
-               (source_port.parent_node.is_split_origin or source_port.parent_node.is_split_part):
+                (source_port.parent_node.is_split_origin or target_bulk.parent_node.is_split_part):
                 logger.debug("Skipping self-connection on split node")
             else:
-                # Get target ports in visual order
-                target_ports = graph_drag_helpers.get_ports_in_visual_order(target_bulk.parent_node.input_ports)
-                
+                # Use the bulk area's paired ports as targets
+                target_ports = target_bulk.paired_ports
+        
                 if target_ports:
-                    # Get source port's siblings in visual order and find its index
-                    source_siblings = graph_drag_helpers.get_ports_in_visual_order(source_port.parent_node.output_ports)
-                    try:
-                        source_idx = source_siblings.index(source_port)
-                    except ValueError:
-                        logger.debug("Source port not found in siblings")
-                    else:
-                        # Build sequential pairs
-                        pairs = []
-                        for i, t_port in enumerate(target_ports):
-                            s_idx = source_idx + i
-                            if s_idx >= len(source_siblings):
-                                break
-                            pairs.append((source_siblings[s_idx], t_port))
-                        
-                        if pairs:
-                            for s_port, t_port in pairs:
-                                if (s_port.port_name, t_port.port_name) not in self.scene.connections:
-                                    logger.debug(f"Attempting port-to-bulk connection: {s_port.port_name} -> {t_port.port_name}")
-                                    if s_port.is_midi:
-                                        if self.scene.jack_connection_handler.make_midi_connection(s_port.port_name, t_port.port_name):
-                                            connections_made += 1
-                                    else:
-                                        if self.scene.jack_connection_handler.make_connection(s_port.port_name, t_port.port_name):
-                                            connections_made += 1
+                    # Connect the single source port to all target ports
+                    for t_port in target_ports:
+                        if (source_port.port_name, t_port.port_name) not in self.scene.connections:
+                            logger.debug(f"Attempting port-to-bulk connection: {source_port.port_name} -> {t_port.port_name}")
+                            if source_port.is_midi:
+                                if self.scene.jack_connection_handler.make_midi_connection(source_port.port_name, t_port.port_name):
+                                    connections_made += 1
+                            else:
+                                if self.scene.jack_connection_handler.make_connection(source_port.port_name, t_port.port_name):
+                                    connections_made += 1
         
         # Handle port-to-port connections (only if not bulk-to-port or port-to-bulk)
         elif len(selected_output_ports) == 1 and len(selected_input_ports) >= 1:
@@ -1041,34 +954,28 @@ class MainWindow(QMainWindow):
         # Handle bulk area connections
         elif len(selected_input_bulk_areas) >= 1 and len(selected_output_bulk_areas) >= 1:
             # For each pair of input and output bulk areas
-            for input_bulk_area_item in selected_input_bulk_areas: # Renamed for clarity
-                for output_bulk_area_item in selected_output_bulk_areas: # Renamed for clarity
+            for input_bulk_area_item in selected_input_bulk_areas:
+                for output_bulk_area_item in selected_output_bulk_areas:
                     # Get the parent nodes
                     input_node = input_bulk_area_item.parent_node
                     output_node = output_bulk_area_item.parent_node
-                    
+    
                     # Skip if same node
                     if input_node == output_node:
                         continue
-                    
-                    # Get all input ports from the input node
-                    input_port_items = list(input_node.input_ports.values()) # Renamed for clarity
-                    # Get all output ports from the output node
-                    output_port_items = list(output_node.output_ports.values()) # Renamed for clarity
-                    
+    
+                    # Use paired ports from each bulk area
+                    input_port_items = input_bulk_area_item.paired_ports
+                    output_port_items = output_bulk_area_item.paired_ports
+    
                     # Convert to lists of port names for JackConnectionHandler
                     input_port_names = [p.port_name for p in input_port_items]
                     output_port_names = [p.port_name for p in output_port_items]
-
+    
                     if output_port_names and input_port_names:
                         logger.debug(f"Attempting bulk connection between {output_node.client_name} (OUT) and {input_node.client_name} (IN)")
-                        # JackConnectionHandler.make_multiple_connections determines MIDI type based on active tab.
-                        # This might need refinement if graph tab handles mixed types or has its own context.
                         self.scene.jack_connection_handler.make_multiple_connections(output_port_names, input_port_names)
-                        # We assume make_multiple_connections handles history and UI updates.
-                        # Counting 'connections_made' here might be tricky as make_multiple_connections does many.
-                        # For simplicity, we'll consider this one "attempt".
-                        connections_made += 1 # Increment for the bulk attempt
+                        connections_made += 1
                     else:
                         logger.debug(f"Skipping bulk connection between {output_node.client_name} and {input_node.client_name} due to empty port lists.")
         
@@ -1144,64 +1051,41 @@ class MainWindow(QMainWindow):
         elif len(selected_output_bulk_areas) == 1 and len(selected_input_ports) == 1:
             source_bulk = selected_output_bulk_areas[0]
             target_port = selected_input_ports[0]
-            
-            # Get source ports in visual order
-            source_ports = graph_drag_helpers.get_ports_in_visual_order(source_bulk.parent_node.output_ports)
-            source_ports = [sp for sp in source_ports if not sp.is_input and target_port.is_input]
-            
+        
+            # Use the bulk area's paired ports as sources
+            source_ports = source_bulk.paired_ports
+        
             if source_ports:
-                # Get target port's siblings in visual order and find its index
-                target_siblings = graph_drag_helpers.get_ports_in_visual_order(target_port.parent_node.input_ports)
-                try:
-                    target_idx = target_siblings.index(target_port)
-                except ValueError:
-                    logger.debug("Target port not found in siblings")
-                else:
-                    # Build sequential pairs and disconnect them
-                    for i, s_port in enumerate(source_ports):
-                        t_idx = target_idx + i
-                        if t_idx >= len(target_siblings):
-                            break
-                        t_port = target_siblings[t_idx]
-                        if (s_port.port_name, t_port.port_name) in self.scene.connections:
-                            logger.debug(f"Attempting bulk-to-port disconnection: {s_port.port_name} -> {t_port.port_name}")
-                            if s_port.is_midi:
-                                if self.scene.jack_connection_handler.break_midi_connection(s_port.port_name, t_port.port_name):
-                                    disconnections_made += 1
-                            else:
-                                if self.scene.jack_connection_handler.break_connection(s_port.port_name, t_port.port_name):
-                                    disconnections_made += 1
+                # Disconnect all source ports from the single target port
+                for s_port in source_ports:
+                    if (s_port.port_name, target_port.port_name) in self.scene.connections:
+                        logger.debug(f"Attempting bulk-to-port disconnection: {s_port.port_name} -> {target_port.port_name}")
+                        if s_port.is_midi:
+                            if self.scene.jack_connection_handler.break_midi_connection(s_port.port_name, target_port.port_name):
+                                disconnections_made += 1
+                        else:
+                            if self.scene.jack_connection_handler.break_connection(s_port.port_name, target_port.port_name):
+                                disconnections_made += 1
         
         # Handle port-to-bulk disconnections (OUT port + IN bulk)
         elif len(selected_output_ports) == 1 and len(selected_input_bulk_areas) == 1:
             source_port = selected_output_ports[0]
             target_bulk = selected_input_bulk_areas[0]
-            
-            # Get target ports in visual order
-            target_ports = graph_drag_helpers.get_ports_in_visual_order(target_bulk.parent_node.input_ports)
-            
+        
+            # Use the bulk area's paired ports as targets
+            target_ports = target_bulk.paired_ports
+        
             if target_ports:
-                # Get source port's siblings in visual order and find its index
-                source_siblings = graph_drag_helpers.get_ports_in_visual_order(source_port.parent_node.output_ports)
-                try:
-                    source_idx = source_siblings.index(source_port)
-                except ValueError:
-                    logger.debug("Source port not found in siblings")
-                else:
-                    # Build sequential pairs and disconnect them
-                    for i, t_port in enumerate(target_ports):
-                        s_idx = source_idx + i
-                        if s_idx >= len(source_siblings):
-                            break
-                        s_port = source_siblings[s_idx]
-                        if (s_port.port_name, t_port.port_name) in self.scene.connections:
-                            logger.debug(f"Attempting port-to-bulk disconnection: {s_port.port_name} -> {t_port.port_name}")
-                            if s_port.is_midi:
-                                if self.scene.jack_connection_handler.break_midi_connection(s_port.port_name, t_port.port_name):
-                                    disconnections_made += 1
-                            else:
-                                if self.scene.jack_connection_handler.break_connection(s_port.port_name, t_port.port_name):
-                                    disconnections_made += 1
+                # Disconnect the single source port from all target ports
+                for t_port in target_ports:
+                    if (source_port.port_name, t_port.port_name) in self.scene.connections:
+                        logger.debug(f"Attempting port-to-bulk disconnection: {source_port.port_name} -> {t_port.port_name}")
+                        if source_port.is_midi:
+                            if self.scene.jack_connection_handler.break_midi_connection(source_port.port_name, t_port.port_name):
+                                disconnections_made += 1
+                        else:
+                            if self.scene.jack_connection_handler.break_connection(source_port.port_name, t_port.port_name):
+                                disconnections_made += 1
         
         # Handle bulk area disconnections
         elif len(selected_input_bulk_areas) >= 1 and len(selected_output_bulk_areas) >= 1:
@@ -1211,29 +1095,23 @@ class MainWindow(QMainWindow):
                     # Get the parent nodes
                     input_node = input_bulk.parent_node
                     output_node = output_bulk.parent_node
-                    
+        
                     # Skip if same node
                     if input_node == output_node:
                         continue
-                    
-                    # Get all input ports from the input node
-                    input_ports = list(input_node.input_ports.values())
-                    # Get all output ports from the output node
-                    output_ports = list(output_node.output_ports.values())
-                    
-                    # Sort ports by their vertical position
-                    input_ports.sort(key=lambda p: p.scenePos().y())
-                    output_ports.sort(key=lambda p: p.scenePos().y())
-                    
-                    # Check for position-based connections (left to left, right to right)
-                    for i in range(min(len(input_ports), len(output_ports))):
-                        output_port = output_ports[i]
-                        input_port = input_ports[i]
+        
+                    # Use paired ports from each bulk area
+                    in_ports = input_bulk.paired_ports
+                    out_ports = output_bulk.paired_ports
+        
+                    # Check for connections between paired ports
+                    for i in range(min(len(in_ports), len(out_ports))):
+                        output_port = out_ports[i]
+                        input_port = in_ports[i]
                         connection_key = (output_port.port_name, input_port.port_name)
                         if connection_key in self.scene.connections:
-                            logger.debug(f"Attempting bulk disconnection (position-based): {output_port.port_name} -> {input_port.port_name}")
-                            # Use JackConnectionHandler
-                            if output_port.is_midi: # Assuming PortItem has is_midi
+                            logger.debug(f"Attempting bulk disconnection: {output_port.port_name} -> {input_port.port_name}")
+                            if output_port.is_midi:
                                 if self.scene.jack_connection_handler.break_midi_connection(output_port.port_name, input_port.port_name):
                                     disconnections_made += 1
                             else:

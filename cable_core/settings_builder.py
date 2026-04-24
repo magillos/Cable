@@ -67,6 +67,7 @@ class SettingsWidgetBuilder:
         self.colored_connections_checkbox: Optional[QCheckBox] = None
         self.verbose_output_checkbox: Optional[QCheckBox] = None
         self.integrate_checkbox: Optional[QCheckBox] = None
+        self.monochrome_tray_checkbox: Optional[QCheckBox] = None
         self._settings_modified: bool = False
         self._apply_button: Optional[QWidget] = None
         self._on_apply_enabled_changed: Optional[callable] = None
@@ -140,6 +141,17 @@ class SettingsWidgetBuilder:
         target_layout.addLayout(untangle_layout)
 
         # Checkboxes
+        self.monochrome_tray_checkbox = QCheckBox("Monochrome tray icon")
+        self.monochrome_tray_checkbox.setToolTip(
+            "Use monochrome tray icon that adapts to system theme\n"
+            "(Dark theme: white icon, Light theme: black icon)\n"
+            "Automatically updates when system theme changes"
+        )
+        self.monochrome_tray_checkbox.stateChanged.connect(
+            lambda _: self._mark_settings_modified()
+        )
+        target_layout.addWidget(self.monochrome_tray_checkbox)
+
         self.midi_matrix_checkbox = QCheckBox("Enable MIDI Matrix - EXPERIMENTAL")
         self.midi_matrix_checkbox.setToolTip(
             "May require Pipewire 1.5.81 (1.6 RC1) or later"
@@ -248,6 +260,7 @@ class SettingsWidgetBuilder:
         self.colored_connections_checkbox.blockSignals(True)
         self.verbose_output_checkbox.blockSignals(True)
         self.integrate_checkbox.blockSignals(True)
+        self.monochrome_tray_checkbox.blockSignals(True)
 
         try:
             for key, setting_info in SETTINGS_MAP.items():
@@ -291,6 +304,9 @@ class SettingsWidgetBuilder:
             self.integrate_checkbox.setChecked(
                 self.config_manager.get_bool(keys.INTEGRATE_CABLE_AND_CABLES, False)
             )
+            self.monochrome_tray_checkbox.setChecked(
+                self.config_manager.get_bool(keys.MONOCHROME_TRAY_ICON, False)
+            )
         finally:
             # Unblock all signals
             for slider in self.sliders.values():
@@ -306,6 +322,7 @@ class SettingsWidgetBuilder:
             self.colored_connections_checkbox.blockSignals(False)
             self.verbose_output_checkbox.blockSignals(False)
             self.integrate_checkbox.blockSignals(False)
+            self.monochrome_tray_checkbox.blockSignals(False)
 
     def save_settings(self) -> None:
         """Save all 'Other Settings' values from widgets to config."""
@@ -343,6 +360,9 @@ class SettingsWidgetBuilder:
         )
         self.config_manager.set_bool(
             keys.INTEGRATE_CABLE_AND_CABLES, self.integrate_checkbox.isChecked()
+        )
+        self.config_manager.set_bool(
+            keys.MONOCHROME_TRAY_ICON, self.monochrome_tray_checkbox.isChecked()
         )
 
     def reset_to_defaults(self, parent_widget: QWidget) -> bool:

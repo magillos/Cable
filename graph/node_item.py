@@ -88,8 +88,10 @@ class NodeItem(QGraphicsItem):
         self._bounding_rect = QRectF(
             0, 0, constants.NODE_WIDTH, self._calculated_title_height
         )
-        self.input_area_item: BulkAreaItem | None = None
-        self.output_area_item: BulkAreaItem | None = None
+        self.input_bulk_areas: list[BulkAreaItem] = []
+        self.output_bulk_areas: list[BulkAreaItem] = []
+        self._port_to_bulk_area: dict[str, BulkAreaItem] = {}
+        self._bulk_group_rects: list[QRectF] = []  # Enclosure rects computed by layout
         self.is_split_part = False  # Flag to identify nodes *created* by splitting
         self.is_split_origin = False  # Flag for the original node that *was* split
         self.split_input_node: "NodeItem" | None = (
@@ -414,6 +416,20 @@ class NodeItem(QGraphicsItem):
                 y_separator,
             )
 
+            # Draw bulk group enclosure borders
+            if self._bulk_group_rects:
+                is_light = node_body_bg_color.lightnessF() > 0.7
+                if is_light:
+                    border_color = QColor(140, 140, 140)  # Darker grey for light mode
+                else:
+                    border_color = QColor(120, 120, 120)  # Brighter grey for dark mode
+                border_color.setAlphaF(constants.NODE_BULK_GROUP_BORDER_OPACITY)
+                painter.setPen(QPen(border_color, constants.NODE_BULK_GROUP_BORDER_WIDTH))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                radius = constants.NODE_BULK_GROUP_BORDER_RADIUS
+                for group_rect in self._bulk_group_rects:
+                    painter.drawRoundedRect(group_rect, radius, radius)
+
         # Bulk Connection Areas and Ports are separate child items and will paint themselves if visible.
         # Title text is also a child item (self.title_item) and paints itself.
 
@@ -433,21 +449,18 @@ class NodeItem(QGraphicsItem):
         port_map = self.input_ports if is_input_flag else self.output_ports
 
         if port_name not in port_map:
-            # Create BulkAreaItem if this is the first port of its type
-            if is_input_flag and not self.input_area_item:
-                self.input_area_item = BulkAreaItem(self, is_input=True)
-            elif not is_input_flag and not self.output_area_item:
-                self.output_area_item = BulkAreaItem(self, is_input=False)
-
             port_item = PortItem(self, port_name, port_obj, is_input_flag)
             port_map[port_name] = port_item
-
+    
             # Automatically connect new ports to unified sink if node is unified
             self.unify_handler.handle_new_port(port_item, is_input_flag)
-
+    
+            # Rebuild per-pair bulk areas (stereo pair detection)
+            self._rebuild_bulk_areas()
+    
             # Only try to lay out ports if we're already in a scene
             if self.scene():
-                self.layout_ports()  # Recalculate layout
+                self.layout_ports() # Recalculate layout
             return True
         return False
 
@@ -480,34 +493,24 @@ class NodeItem(QGraphicsItem):
             if self.scene():
                 self.scene().removeItem(port_item)
 
-            # Check if this was the last port of its type and remove BulkAreaItem
+            # Rebuild per-pair bulk areas after port removal
+            self._rebuild_bulk_areas()
+        
+            # If input unification is active but no input ports remain, temporarily unload the sink
             if port_item.is_input and not self.input_ports:
-                if self.input_area_item:
-                    if self.scene():
-                        self.scene().removeItem(self.input_area_item)
-                    self.input_area_item = None
-
-                # If input unification is active but no input ports remain, temporarily unload the sink
                 if self.is_input_unified:
                     logger.info(
                         f"No input ports remaining for {self.client_name}, temporarily unloading unified input sink."
                     )
                     self.unify_handler._unload_unified_sink(is_input=True)
-                    # Note: We do NOT set is_input_unified to False, so it persists and will auto-recreate
-
+        
+            # If output unification is active but no output ports remain, temporarily unload the sink
             elif not port_item.is_input and not self.output_ports:
-                if self.output_area_item:
-                    if self.scene():
-                        self.scene().removeItem(self.output_area_item)
-                    self.output_area_item = None
-
-                # If output unification is active but no output ports remain, temporarily unload the sink
                 if self.is_output_unified:
                     logger.info(
                         f"No output ports remaining for {self.client_name}, temporarily unloading unified output sink."
                     )
                     self.unify_handler._unload_unified_sink(is_input=False)
-                    # Note: We do NOT set is_output_unified to False, so it persists and will auto-recreate
 
             # Only try to lay out ports if we're in a scene
             if self.scene():
@@ -566,32 +569,44 @@ class NodeItem(QGraphicsItem):
 
         self.scene().layouter._show_all_ports_and_bulk_areas(self)
 
-    def _layout_bulk_areas(
-        self,
-        current_node_width: float,
-        max_in_width: float,
-        max_out_width: float,
-        y_start_bulk: float,
-    ):
+    def _rebuild_bulk_areas(self) -> None:
+        """Re-detect stereo pairs and recreate per-pair bulk areas.
+
+        Removes all existing per-pair bulk areas, runs
+        ``detect_stereo_pairs()`` on input and output ports, and creates
+        new ``BulkAreaItem`` instances for each detected pair.
         """
-        Position the bulk area items using the scene's GraphLayouter.
+        # Remove old bulk areas: unparent from NodeItem first so they don't
+        # linger as invisible children at (0,0), then remove from scene.
+        for bulk in self.input_bulk_areas + self.output_bulk_areas:
+            bulk.setParentItem(None)
+            if bulk.scene():
+                bulk.scene().removeItem(bulk)
+        self.input_bulk_areas.clear()
+        self.output_bulk_areas.clear()
+        self._port_to_bulk_area.clear()
 
-        Args:
-            current_node_width: Current width of the node
-            max_in_width: Maximum width of input ports
-            max_out_width: Maximum width of output ports
-            y_start_bulk: Y-coordinate to start placing bulk areas
+        # Skip bulk area creation for split origins (they have no visible ports)
+        if self.is_split_origin:
+            return
 
-        Raises:
-            RuntimeError: If no layouter is available
-        """
-        scene = self.scene()
-        if not scene or not getattr(scene, "layouter", None):
-            raise RuntimeError("Cannot layout bulk areas: No GraphLayouter available")
+        from cables.utils.sort_utils import detect_stereo_pairs
 
-        self.scene().layouter._layout_bulk_areas(
-            self, current_node_width, max_in_width, max_out_width, y_start_bulk
-        )
+        # Detect pairs for input side
+        input_pairs, _ = detect_stereo_pairs(list(self.input_ports.values()))
+        for left_port, right_port in input_pairs:
+            bulk = BulkAreaItem(self, is_input=True, paired_ports=[left_port, right_port])
+            self.input_bulk_areas.append(bulk)
+            self._port_to_bulk_area[left_port.port_name] = bulk
+            self._port_to_bulk_area[right_port.port_name] = bulk
+
+        # Detect pairs for output side
+        output_pairs, _ = detect_stereo_pairs(list(self.output_ports.values()))
+        for left_port, right_port in output_pairs:
+            bulk = BulkAreaItem(self, is_input=False, paired_ports=[left_port, right_port])
+            self.output_bulk_areas.append(bulk)
+            self._port_to_bulk_area[left_port.port_name] = bulk
+            self._port_to_bulk_area[right_port.port_name] = bulk
 
     def _layout_individual_ports(
         self, current_node_width: float, y_start_ports: float
@@ -632,10 +647,11 @@ class NodeItem(QGraphicsItem):
         self.scene().layouter.layout_node_ports(self)
 
     def get_bulk_connection_point(self, is_input: bool) -> QPointF:
-        area_item = self.input_area_item if is_input else self.output_area_item
-        if area_item:
-            return area_item.get_connection_point()
-        # Fallback if bulk area item does not exist
+        """Return the connection point of the first bulk area on the requested side."""
+        bulk_areas = self.input_bulk_areas if is_input else self.output_bulk_areas
+        if bulk_areas:
+            return bulk_areas[0].get_connection_point()
+        # Fallback if no bulk area exists
         return self.mapToScene(self.boundingRect().center())
 
     # hoverMoveEvent, hoverLeaveEvent, contextMenuEvent for bulk areas are handled by BulkAreaItem
@@ -1161,10 +1177,10 @@ class NodeItem(QGraphicsItem):
         self, highlight_input: bool, highlight_output: bool
     ) -> None:
         """Externally sets the highlight state for BulkAreaItems during drag operations."""
-        if self.input_area_item:
-            self.input_area_item.set_drag_highlight(highlight_input)
-        if self.output_area_item:
-            self.output_area_item.set_drag_highlight(highlight_output)
+        for bulk in self.input_bulk_areas:
+            bulk.set_drag_highlight(highlight_input)
+        for bulk in self.output_bulk_areas:
+            bulk.set_drag_highlight(highlight_output)
 
     def _disconnect_this_part_input_ports(self) -> None:
         """Disconnects all input ports of this specific node item (assumed to be an input split part)."""

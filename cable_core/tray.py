@@ -23,7 +23,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-from cable_core.app_config import load_app_icon
+from cable_core.app_config import load_app_icon, load_tray_icon
 from cable_core import config_keys as keys
 from cable_core.other_settings_dialog import OtherSettingsDialog
 from cable_core.dialogs import AppImagePathDialog, QuickSettingsDialog
@@ -51,7 +51,11 @@ class TrayManager:
             )
             self.tray_icon = QSystemTrayIcon(self.app)  # Parent is the app
 
-            app_icon = load_app_icon()
+            # Check if monochrome tray icon is enabled
+            monochrome_enabled = self.app.config_manager.get_bool(
+                keys.MONOCHROME_TRAY_ICON, False
+            )
+            app_icon = load_tray_icon(monochrome_enabled)
             if app_icon:
                 self.tray_icon.setIcon(app_icon)
             else:
@@ -149,6 +153,18 @@ class TrayManager:
 
         # Show the tray icon
         self.tray_icon.show()
+
+    def update_tray_icon(self) -> None:
+        """Update tray icon based on monochrome setting and current theme."""
+        if not self.tray_icon:
+            return
+
+        monochrome_enabled = self.app.config_manager.get_bool(
+            keys.MONOCHROME_TRAY_ICON, False
+        )
+        app_icon = load_tray_icon(monochrome_enabled)
+        if app_icon:
+            self.tray_icon.setIcon(app_icon)
 
     def set_tray_click_target(self, opens_cables: bool) -> None:
         """Update which application opens on tray icon click"""

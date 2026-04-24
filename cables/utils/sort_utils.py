@@ -2,10 +2,14 @@
 """
 Shared sorting utilities used across cables and graph modules.
 Centralizes natural sorting logic to avoid duplication.
+Also provides stereo pair detection for per-pair bulk areas.
 """
 
 import re
+import logging
 from typing import List, Tuple, Union, Optional
+
+logger = logging.getLogger(__name__)
 
 tryint_re = re.compile(r"(\d+)")
 
@@ -240,3 +244,203 @@ def natural_sort_key_for_full_port_name(
         A tuple suitable for sorting.
     """
     return natural_sort_key(port_name, client_prefix=True, channel_aware=True)
+
+
+# ---------------------------------------------------------------------------
+# Stereo pair detection for per-pair bulk areas
+# ---------------------------------------------------------------------------
+
+# Default L/R suffix pairs for Phase 1 detection (longest first for specificity).
+# These are defined here to avoid a cross-package import from graph.constants.
+# If graph.constants.STEREO_PAIR_SUFFIXES exists, it should mirror this list.
+_DEFAULT_STEREO_PAIR_SUFFIXES: List[Tuple[str, str]] = [
+    ('_FL', '_FR'),    # Front Left/Right
+    ('_SL', '_SR'),    # Side Left/Right
+    ('_RL', '_RR'),    # Rear Left/Right
+    ('_L', '_R'),      # Generic Left/Right (underscore prefix)
+    ('left', 'right'), # Lowercase word
+    ('Left', 'Right'), # Capitalized word
+]
+
+# Regex to extract a trailing number from a port short name for Phase 2.
+# Matches names ending in digits, e.g. "out1" → ("out", 1), "audio_in 2" → ("audio_in ", 2)
+_trailing_number_re = re.compile(r'^(.*?)(\d+)$')
+
+# Regex to strip trailing dash-numeric post-fixes from port short names.
+# PipeWire/JACK appends identifiers like '-115', '-448' after the channel suffix.
+_numeric_postfix_re = re.compile(r'^(.+?)-\d+$')
+
+
+def _strip_numeric_postfix(name: str) -> str:
+    """Strip a trailing dash-numeric post-fix from a port name.
+
+    PipeWire/JACK sometimes appends numeric identifiers after the channel
+    suffix (e.g. 'output_FL-115').  This strips the '-NNN' suffix so the
+    name can be matched by Phase 1 L/R suffix detection.
+
+    Returns the original name unchanged if no dash-numeric post-fix is found.
+    """
+    m = _numeric_postfix_re.match(name)
+    return m.group(1) if m else name
+
+
+def detect_stereo_pairs(
+    ports: list,
+    pair_suffixes: List[Tuple[str, str]] | None = None,
+) -> Tuple[List[Tuple], List]:
+    """Group audio ports into stereo pairs and return unpaired ports.
+
+    Uses a two-phase approach:
+
+    **Phase 1 — Explicit L/R suffix matching:**
+    Ports whose short_name ends with a recognised left/right suffix pair
+    (e.g. ``_FL``/``_FR``, ``_L``/``_R``, ``left``/``right``) are paired
+    when they share the same base name (the part before the suffix).
+    Longer suffixes are tried first to prevent ``_L`` from greedily
+    matching a port whose name actually ends with ``_FL``.
+
+    Phase 1 also handles PipeWire/JACK numeric post-fixes: a port named
+    ``output_FL-115`` is treated as if it were ``output_FL`` for suffix
+    matching, so it pairs with ``output_FR-116``.  The post-fix is stripped
+    via :func:`_strip_numeric_postfix` before checking suffixes.
+
+    **Phase 2 — Consecutive numbered pair matching:**
+    Remaining unmatched audio ports are split into *(base, number)* using a
+    trailing-number regex.  Ports that share the same base name are grouped
+    and paired by consecutive odd/even numbers: 1+2, 3+4, 5+6, etc.
+    This handles DAW-style port naming (``out1``/``out2``,
+    ``Master/audio_out 1``/``2``).
+
+    MIDI ports are **never** paired — they are always returned as unpaired.
+
+    Args:
+        ports: List of PortItem objects (must have ``short_name`` and
+            ``is_midi`` attributes, or duck-type equivalents).
+        pair_suffixes: Optional list of ``(left_suffix, right_suffix)``
+            tuples for Phase 1.  Defaults to
+            :data:`_DEFAULT_STEREO_PAIR_SUFFIXES`.
+
+    Returns:
+        A tuple of ``(pairs, unpaired)`` where *pairs* is a list of
+        ``(left_port, right_port)`` tuples and *unpaired* is a list of
+        ports that could not be paired.
+    """
+    if pair_suffixes is None:
+        pair_suffixes = _DEFAULT_STEREO_PAIR_SUFFIXES
+
+    # Separate audio from MIDI ports — MIDI never gets bulk areas.
+    audio_ports: list = []
+    unpaired: list = []
+    for port in ports:
+        if getattr(port, 'is_midi', False):
+            unpaired.append(port)
+        else:
+            audio_ports.append(port)
+
+    # Sort audio ports by natural key for deterministic ordering.
+    audio_ports_sorted = sorted(audio_ports, key=natural_sort_key_for_port_item)
+
+    pairs: List[Tuple] = []
+    matched: set = set()  # indices into audio_ports_sorted
+
+    # ------------------------------------------------------------------
+    # Phase 1: Explicit L/R suffix matching
+    # ------------------------------------------------------------------
+    # Build a multi-valued lookup: name → list of port indices.
+    # Both the original short_name and its numeric-postfix-stripped form
+    # are registered so that ports like "output_FL-115" can be found
+    # via the key "output_FL".
+    name_to_indices: dict[str, list[int]] = {}
+    for idx, port in enumerate(audio_ports_sorted):
+        if idx in matched:
+            continue
+        for name in (port.short_name, _strip_numeric_postfix(port.short_name)):
+            name_to_indices.setdefault(name, []).append(idx)
+
+    for left_suf, right_suf in pair_suffixes:
+        for idx, port in enumerate(audio_ports_sorted):
+            if idx in matched:
+                continue
+            short = port.short_name
+            stripped = _strip_numeric_postfix(short)
+
+            # Determine which name variant matches the left suffix
+            match_name = None
+            if short.endswith(left_suf):
+                match_name = short
+            elif stripped != short and stripped.endswith(left_suf):
+                match_name = stripped
+
+            if match_name is None:
+                continue
+
+            base = match_name[: -len(left_suf)]
+            candidate_right = base + right_suf
+
+            # Find first unmatched port that resolves to candidate_right
+            right_idx = None
+            for ri in name_to_indices.get(candidate_right, []):
+                if ri not in matched and ri != idx:
+                    right_idx = ri
+                    break
+
+            if right_idx is not None:
+                pairs.append((port, audio_ports_sorted[right_idx]))
+                matched.add(idx)
+                matched.add(right_idx)
+                # Clean up lookup: remove matched indices from all lists
+                for key in list(name_to_indices.keys()):
+                    name_to_indices[key] = [
+                        i for i in name_to_indices[key] if i not in (idx, right_idx)
+                    ]
+                    if not name_to_indices[key]:
+                        del name_to_indices[key]
+
+    # ------------------------------------------------------------------
+    # Phase 2: Consecutive numbered pair matching
+    # ------------------------------------------------------------------
+    # Collect remaining unmatched audio ports and extract (base, number).
+    remaining: list = []
+    for idx, port in enumerate(audio_ports_sorted):
+        if idx not in matched:
+            remaining.append(port)
+
+    # Group by base name
+    base_groups: dict[str, list] = {}
+    for port in remaining:
+        m = _trailing_number_re.match(port.short_name)
+        if m:
+            base = m.group(1)
+            num = int(m.group(2))
+            base_groups.setdefault(base, []).append((num, port))
+
+    for base, num_port_list in base_groups.items():
+        # Sort by number within the group
+        num_port_list.sort(key=lambda x: x[0])
+        i = 0
+        while i < len(num_port_list) - 1:
+            num_a, port_a = num_port_list[i]
+            num_b, port_b = num_port_list[i + 1]
+            # Pair consecutive odd/even: lower must be odd, diff must be 1
+            if num_a % 2 == 1 and num_b - num_a == 1:
+                pairs.append((port_a, port_b))
+                i += 2
+            else:
+                # port_a cannot be paired — it stays unpaired
+                unpaired.append(port_a)
+                i += 1
+        # Handle last element if the loop ended with an unpaired port
+        if i == len(num_port_list) - 1:
+            unpaired.append(num_port_list[i][1])
+
+    # Add any remaining unmatched audio ports that weren't in numbered groups
+    numbered_ports = set()
+    for base, num_port_list in base_groups.items():
+        for _, port in num_port_list:
+            numbered_ports.add(id(port))
+
+    for port in remaining:
+        if id(port) not in numbered_ports:
+            unpaired.append(port)
+
+    return pairs, unpaired

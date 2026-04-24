@@ -216,6 +216,14 @@ class PipeWireSettingsApp(QWidget):
         )
         self._pending_splitter_pos = None
 
+        # Timer for debouncing tray icon updates on palette change (Flatpak)
+        self._palette_change_timer = QTimer(self)
+        self._palette_change_timer.setSingleShot(True)
+        self._palette_change_timer.setInterval(500)
+        self._palette_change_timer.timeout.connect(
+            self._handle_palette_change
+        )
+
     def get_integrated_mode(self) -> bool:
         """Return the effective integrated-mode state.
 
@@ -1093,6 +1101,14 @@ class PipeWireSettingsApp(QWidget):
                 self._apply_devices()
                 self._apply_nodes()
                 self.update_latency_display()
+        elif event.type() == QEvent.Type.PaletteChange:
+            # Debounce tray icon update on theme change to allow icon
+            # theme caches to settle (important inside Flatpak sandbox).
+            self._palette_change_timer.start()
+
+    def _handle_palette_change(self) -> None:
+        """Delayed handler for palette changes — updates the tray icon."""
+        self.tray_manager.update_tray_icon()
 
     def set_tray_checkbox(self, checked: bool) -> None:
         self.tray_toggle_checkbox.setChecked(checked)

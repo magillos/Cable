@@ -1069,34 +1069,62 @@ class JackConnectionManager(QMainWindow):
         self.refresh_ports(refresh_all=True)
 
     def make_connection_selected(self) -> None:
-        selected_inputs = self._get_ports_from_selected_items(self.input_tree)
-        selected_outputs = self._get_ports_from_selected_items(self.output_tree)
+        output_info = self._analyze_tree_selection(self.output_tree)
+        input_info = self._analyze_tree_selection(self.input_tree)
 
-        if not selected_inputs or not selected_outputs:
+        if not output_info["port_names"] or not input_info["port_names"]:
             logger.debug(
                 "Make Connection: Select at least one input and one output item (port or group)."
             )
             return
 
-        logger.debug(
-            f"Making connections (button): Outputs={selected_outputs}, Inputs={selected_inputs}"
+        # Try sequential mapping (group→port or port→group) like drag-and-drop
+        sequential_pairs = self._compute_sequential_pairs(
+            output_info, input_info, self.output_tree, self.input_tree
         )
-        self.jack_handler.make_multiple_connections(selected_outputs, selected_inputs)
+
+        if sequential_pairs is not None:
+            logger.debug(
+                f"Making connections (button/shortcut, sequential): {sequential_pairs}"
+            )
+            for out_p, in_p in sequential_pairs:
+                self.jack_handler.make_connection(out_p, in_p)
+        else:
+            logger.debug(
+                f"Making connections (button/shortcut): Outputs={output_info['port_names']}, Inputs={input_info['port_names']}"
+            )
+            self.jack_handler.make_multiple_connections(
+                output_info["port_names"], input_info["port_names"]
+            )
 
     def make_midi_connection_selected(self) -> None:
-        selected_inputs = self._get_ports_from_selected_items(self.midi_input_tree)
-        selected_outputs = self._get_ports_from_selected_items(self.midi_output_tree)
+        output_info = self._analyze_tree_selection(self.midi_output_tree)
+        input_info = self._analyze_tree_selection(self.midi_input_tree)
 
-        if not selected_inputs or not selected_outputs:
+        if not output_info["port_names"] or not input_info["port_names"]:
             logger.debug(
                 "Make MIDI Connection: Select at least one input and one output item (port or group)."
             )
             return
 
-        logger.debug(
-            f"Making MIDI connections (button): Outputs={selected_outputs}, Inputs={selected_inputs}"
+        # Try sequential mapping (group→port or port→group) like drag-and-drop
+        sequential_pairs = self._compute_sequential_pairs(
+            output_info, input_info, self.midi_output_tree, self.midi_input_tree
         )
-        self.jack_handler.make_multiple_connections(selected_outputs, selected_inputs)
+
+        if sequential_pairs is not None:
+            logger.debug(
+                f"Making MIDI connections (button/shortcut, sequential): {sequential_pairs}"
+            )
+            for out_p, in_p in sequential_pairs:
+                self.jack_handler.make_midi_connection(out_p, in_p)
+        else:
+            logger.debug(
+                f"Making MIDI connections (button/shortcut): Outputs={output_info['port_names']}, Inputs={input_info['port_names']}"
+            )
+            self.jack_handler.make_multiple_connections(
+                output_info["port_names"], input_info["port_names"]
+            )
 
     def break_connection_selected(self) -> None:
         selected_inputs = self._get_ports_from_selected_items(self.input_tree)
@@ -1160,6 +1188,101 @@ class JackConnectionManager(QMainWindow):
                     if port_name:
                         port_names.add(port_name)
         return list(port_names)
+
+    def _analyze_tree_selection(
+        self, tree_widget: QTreeWidget
+    ) -> Dict[str, Any]:
+        """
+        Analyze the current selection in a tree widget.
+
+        Returns a dict with:
+            - port_names: flat list of selected port names (same as _get_ports_from_selected_items)
+            - is_single_port: True if exactly one leaf port (no children) is selected
+            - single_port_name: the port name if is_single_port, else None
+            - is_group: True if exactly one group (parent item with children) is selected
+        """
+        selected_items = tree_widget.selectedItems()
+        port_names: List[str] = []
+        leaf_items = [item for item in selected_items if item.childCount() == 0]
+        group_items = [item for item in selected_items if item.childCount() > 0]
+
+        for item in selected_items:
+            if not item:
+                continue
+            if item.childCount() == 0:
+                port_name = item.data(0, Qt.ItemDataRole.UserRole)
+                if port_name:
+                    port_names.append(port_name)
+            else:
+                for i in range(item.childCount()):
+                    child = item.child(i)
+                    port_name = child.data(0, Qt.ItemDataRole.UserRole)
+                    if port_name:
+                        port_names.append(port_name)
+
+        is_single_port = len(leaf_items) == 1 and len(group_items) == 0
+        is_group = len(group_items) == 1 and len(leaf_items) == 0
+
+        return {
+            "port_names": port_names,
+            "is_single_port": is_single_port,
+            "single_port_name": port_names[0] if is_single_port else None,
+            "is_group": is_group,
+        }
+
+    def _compute_sequential_pairs(
+        self,
+        output_info: Dict[str, Any],
+        input_info: Dict[str, Any],
+        output_tree: QTreeWidget,
+        input_tree: QTreeWidget,
+    ) -> Optional[List[Tuple[str, str]]]:
+        """
+        Compute sequential port pairs for group→port or port→group connections.
+
+        Mirrors the drag-and-drop logic in PortTreeWidget.dropEvent.
+        Returns a list of (output_port, input_port) tuples, or None to
+        signal that no sequential mapping applies (fall through to standard logic).
+        """
+        out_is_single = output_info["is_single_port"]
+        out_is_group = output_info["is_group"]
+        in_is_single = input_info["is_single_port"]
+        in_is_group = input_info["is_group"]
+
+        if out_is_group and in_is_single and len(output_info["port_names"]) > 1:
+            # Group → single port: discover the input port's siblings and pair sequentially
+            input_port_name = input_info["single_port_name"]
+            if input_port_name and hasattr(input_tree, "_get_port_group_siblings"):
+                siblings = input_tree._get_port_group_siblings(input_port_name)
+                if input_port_name in siblings:
+                    target_idx = siblings.index(input_port_name)
+                    pairs: List[Tuple[str, str]] = []
+                    for i, out_p in enumerate(output_info["port_names"]):
+                        t_idx = target_idx + i
+                        if t_idx >= len(siblings):
+                            break
+                        pairs.append((out_p, siblings[t_idx]))
+                    if pairs:
+                        return pairs
+
+        elif out_is_single and in_is_group and len(input_info["port_names"]) > 1:
+            # Single port → group: discover the output port's siblings and pair sequentially
+            output_port_name = output_info["single_port_name"]
+            if output_port_name and hasattr(output_tree, "_get_port_group_siblings"):
+                siblings = output_tree._get_port_group_siblings(output_port_name)
+                if output_port_name in siblings:
+                    source_idx = siblings.index(output_port_name)
+                    pairs: List[Tuple[str, str]] = []
+                    for i, in_p in enumerate(input_info["port_names"]):
+                        s_idx = source_idx + i
+                        if s_idx >= len(siblings):
+                            break
+                        pairs.append((siblings[s_idx], in_p))
+                    if pairs:
+                        return pairs
+
+        # No sequential mapping applies
+        return None
 
     def update_connection_buttons(self) -> None:
         self._update_port_connection_buttons(

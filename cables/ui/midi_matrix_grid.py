@@ -460,16 +460,24 @@ class _MatrixGridWidget(QWidget):
                 )
 
                 # Check if this square should be highlighted due to hover (squares leading to hovered square)
-                # Only highlight when not dragging (arrow not drawn)
+                # Highlight when not dragging, or when dragging - highlight for cell at arrow end
+                highlight_row = self.hover_row
+                highlight_col = self.hover_col
+
+                # When dragging, highlight based on the cell at the arrow end (drag_end_pos)
+                if self.is_dragging and self.drag_end_pos:
+                    highlight_row, highlight_col = self._get_square_at_position(
+                        self.drag_end_pos
+                    )
+
                 is_hover_highlighted = (
-                    not self.is_dragging
-                    and self.hover_row >= 0
-                    and self.hover_col >= 0
+                    highlight_row >= 0
+                    and highlight_col >= 0
                     and (
                         (
-                            row == self.hover_row and col <= self.hover_col
+                            row == highlight_row and col <= highlight_col
                         )  # same row, left of or at hovered
-                        or (col == self.hover_col and row >= self.hover_row)
+                        or (col == highlight_col and row >= highlight_row)
                     )
                 )  # same column, below or at hovered
 
@@ -531,9 +539,13 @@ class _MatrixGridWidget(QWidget):
         if not output_ports or not input_ports:
             return
 
-        # Determine hover target: only emphasize guides for the hovered connected cell.
+        # Determine hover target: emphasize guides for hovered cell or cell at arrow end when dragging
         hover_row = self.hover_row
         hover_col = self.hover_col
+
+        # When dragging, highlight connection guides based on the cell at the arrow end
+        if self.is_dragging and self.drag_end_pos:
+            hover_row, hover_col = self._get_square_at_position(self.drag_end_pos)
 
         # Helper function to make color less vibrant
         def make_less_vibrant(color: QColor) -> QColor:
@@ -1404,7 +1416,14 @@ class _OutputLabelsWidget(QWidget):
             hasattr(self.parent_matrix, "matrix_widget")
             and self.parent_matrix.matrix_widget
         ):
-            hover_row = self.parent_matrix.matrix_widget.hover_row
+            grid_widget = self.parent_matrix.matrix_widget
+            # When dragging, use the cell at arrow end for highlighting
+            if grid_widget.is_dragging and grid_widget.drag_end_pos:
+                hover_row, _ = grid_widget._get_square_at_position(
+                    grid_widget.drag_end_pos
+                )
+            else:
+                hover_row = grid_widget.hover_row
 
         # Access grouped output clients info to draw client name once per group
         output_client_port_counts = getattr(
@@ -1679,7 +1698,14 @@ class _InputLabelsWidget(QWidget):
             hasattr(self.parent_matrix, "matrix_widget")
             and self.parent_matrix.matrix_widget
         ):
-            hover_col = self.parent_matrix.matrix_widget.hover_col
+            grid_widget = self.parent_matrix.matrix_widget
+            # When dragging, use the cell at arrow end for highlighting
+            if grid_widget.is_dragging and grid_widget.drag_end_pos:
+                _, hover_col = grid_widget._get_square_at_position(
+                    grid_widget.drag_end_pos
+                )
+            else:
+                hover_col = grid_widget.hover_col
 
         label_start_y = 5  # Start near the top of this widget
 

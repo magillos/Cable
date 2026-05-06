@@ -128,9 +128,9 @@ class GraphConfigManager:
             node_data["is_split"] = is_currently_split
                 
             # Save the manual split flag if it exists in the node's config
-            if hasattr(node, 'config') and node.config and 'manual_split' in node.config:
+            if getattr(node, 'config', None) is not None and 'manual_split' in node.config:
                 node_data[self.MANUAL_SPLIT_KEY] = node.config['manual_split']
-            elif is_currently_split and hasattr(node.scene(), 'node_configs'):
+            elif is_currently_split and getattr(node.scene(), 'node_configs', None) is not None:
                 scene_node_config = node.scene().node_configs.get(client_name, {})
                 if 'manual_split' in scene_node_config:
                     node_data[self.MANUAL_SPLIT_KEY] = scene_node_config['manual_split']
@@ -155,12 +155,12 @@ class GraphConfigManager:
                     node_data[self.OUTPUT_PART_FOLDED_KEY] = node.split_output_node.output_part_folded
 
             # 6. Save split unification state
-            if hasattr(node, 'is_input_unified') and node.is_input_unified:
+            if getattr(node, 'is_input_unified', False):
                 node_data[self.IS_INPUT_UNIFIED_KEY] = True
                 node_data[self.UNIFIED_INPUT_SINK_NAME_KEY] = node.unified_input_sink_name
                 node_data[self.UNIFIED_INPUT_MODULE_ID_KEY] = node.unified_input_module_id
             
-            if hasattr(node, 'is_output_unified') and node.is_output_unified:
+            if getattr(node, 'is_output_unified', False):
                 node_data[self.IS_OUTPUT_UNIFIED_KEY] = True
                 node_data[self.UNIFIED_OUTPUT_SINK_NAME_KEY] = node.unified_output_sink_name
                 node_data[self.UNIFIED_OUTPUT_MODULE_ID_KEY] = node.unified_output_module_id

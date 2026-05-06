@@ -4,9 +4,14 @@ PresetHandler - Handles preset loading, saving, and management
 This class manages preset operations including loading, saving, and deletion.
 It uses the PresetHandlerInterface to access the capabilities it needs from
 the main application, enabling better testability and reduced coupling.
+
+Business logic (file I/O, state comparison, layout data collection) is
+delegated to :class:`PresetOperations` in ``preset_operations.py``.
 """
 
 import os
+import json
+import subprocess
 from PyQt6.QtWidgets import (
     QMenu,
     QMessageBox,
@@ -28,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 from cables.utils.helpers import show_timed_messagebox
 from cable_core import config_keys as keys
+from cables.features.preset_operations import PresetOperations
 from typing import TYPE_CHECKING, Optional, List, Dict, Any, Union
 
 if TYPE_CHECKING:
@@ -374,96 +380,41 @@ class PresetHandler:
                 logger.error(f"Error showing confirmation dialog: {e}")
                 return
 
-        # Try a direct approach - save connections first, then layout separately
+        # Delegate to PresetOperations for the actual save
         try:
-            logger.debug("Saving connections with aj-snapshot...")
-            import subprocess
-
-            # Save connections directly with aj-snapshot
-            command = [
-                "aj-snapshot",
-                "-f",
-                preset_file,
-            ]  # Force overwrite since we confirmed
-            logger.debug(f"Executing: {' '.join(command)}")
-            result = subprocess.run(
-                command, capture_output=True, text=True, check=True, timeout=30
+            # Save connections via aj-snapshot
+            snap_ok = PresetOperations.save_snap_file(
+                preset_name, self.manager.preset_manager.presets_dir
             )
-            logger.debug(f"aj-snapshot completed successfully")
+            if not snap_ok:
+                QMessageBox.critical(
+                    self.manager,
+                    "Save Error",
+                    f"Failed to save preset '{preset_name}' via aj-snapshot.",
+                )
+                return
 
-            # Now save layout data if available
+            # Collect and save layout data
             graph_window = self.manager._get_graph_main_window()
             if graph_window:
                 try:
-                    logger.debug("Saving layout data...")
-                    node_states = None
-                    graph_zoom_level = None
-                    node_visibility_data = None
-
-                    # Get current node states from the graph scene
                     scene = self.manager._get_graph_scene()
-                    if scene:
-                        node_states = scene.get_node_states()
-
-                    # Get current zoom level from the graph view
                     view = self.manager._get_graph_view()
-                    if view:
-                        graph_zoom_level = view.get_zoom_level()
-
-                    # Get current node visibility settings
-                    if self.manager.node_visibility_manager is not None:
-                        node_visibility_data = {
-                            "audio_input": dict(
-                                self.manager.node_visibility_manager.audio_input_visibility
-                            ),
-                            "audio_output": dict(
-                                self.manager.node_visibility_manager.audio_output_visibility
-                            ),
-                            "midi_input": dict(
-                                self.manager.node_visibility_manager.midi_input_visibility
-                            ),
-                            "midi_output": dict(
-                                self.manager.node_visibility_manager.midi_output_visibility
-                            ),
-                        }
-                        logger.debug(
-                            f"Collected node visibility data: {len(node_visibility_data.get('audio_input', {}))} audio input, {len(node_visibility_data.get('audio_output', {}))} audio output, {len(node_visibility_data.get('midi_input', {}))} MIDI input, {len(node_visibility_data.get('midi_output', {}))} MIDI output settings"
-                        )
-
-                    if node_states is not None or node_visibility_data is not None:
-                        # Save layout data directly
+                    layout_data = PresetOperations.collect_layout_data(
+                        scene=scene,
+                        view=view,
+                        node_visibility_manager=self.manager.node_visibility_manager,
+                        config_manager=self.manager.config_manager,
+                    )
+                    if layout_data:
                         layout_presets_dir = os.path.join(
                             self.manager.preset_manager.config_dir, "layout_presets"
                         )
-                        os.makedirs(layout_presets_dir, exist_ok=True)
-                        layout_file = os.path.join(
-                            layout_presets_dir, f"{preset_name}.json"
+                        PresetOperations.save_layout_file(
+                            preset_name, layout_presets_dir, layout_data
                         )
-
-                        layout_data = {
-                            "node_states": node_states,
-                            "graph_zoom_level": graph_zoom_level,
-                            "node_visibility": node_visibility_data,
-                            "split_audio_midi": self.manager.config_manager.get_bool(
-                                keys.GRAPH_SPLIT_AUDIO_MIDI_CLIENTS, False
-                            ),
-                        }
-
-                        import json
-
-                        with open(layout_file, "w") as f:
-                            json.dump(
-                                layout_data,
-                                f,
-                                indent=4,
-                                default=self._json_serializer_simple,
-                            )
-
-                        logger.info(f"Layout data saved to {layout_file}")
-
                 except Exception as e:
                     logger.warning(f"Warning: Could not save layout data: {e}")
-                    # Don't fail the entire operation for layout issues
 
             logger.info(f"Preset '{preset_name}' saved successfully.")
             self.current_preset_name = preset_name
@@ -475,18 +426,6 @@ class PresetHandler:
                 f"Preset '{preset_name}' saved successfully.",
             )
 
-        except subprocess.TimeoutExpired:
-            logger.debug("aj-snapshot command timed out")
-            QMessageBox.critical(
-                self.manager,
-                "Save Error",
-                "Preset save timed out. The aj-snapshot command took too long.",
-            )
-        except subprocess.CalledProcessError as e:
-            logger.debug(f"aj-snapshot command failed: {e}")
-            QMessageBox.critical(
-                self.manager, "Save Error", f"Failed to save preset: {e}"
-            )
         except Exception as e:
             logger.debug(f"Exception during preset save: {e}")
             import traceback
@@ -500,12 +439,7 @@ class PresetHandler:
 
     def _json_serializer_simple(self, obj: Any) -> Any:
         """Simple JSON serializer for Qt objects."""
-        # Handle QPointF objects
-        if callable(getattr(obj, "x", None)) and callable(getattr(obj, "y", None)):
-            return {"x": obj.x(), "y": obj.y()}
-
-        # Handle other objects by converting to string
-        return str(obj)
+        return PresetOperations._json_serializer(obj)
 
     def _set_startup_preset(self, name: Optional[str]) -> None:
         """Sets the selected preset name as the startup preset in the config."""
@@ -790,15 +724,13 @@ class PresetHandler:
 
     def _clear_defaults_and_refresh(self) -> None:
         """Clear all default sinks/sources after WirePlumber has restarted, then refresh ports."""
-        import subprocess as _sp
-
         clear_cmd = (
             ["flatpak-spawn", "--host", "wpctl", "clear-default"]
             if self.manager.flatpak_env
             else ["wpctl", "clear-default"]
         )
         try:
-            _sp.run(clear_cmd, check=True, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+            subprocess.run(clear_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             logger.debug("Cleared all default sinks/sources via wpctl after restart.")
         except Exception as e:
             logger.error(f"Failed to clear default sinks/sources: {e}")
@@ -817,54 +749,15 @@ class PresetHandler:
             f"Saving current connections and layout to loaded preset: '{preset_name}'"
         )
 
-        # Get layout data from the graph tab if available
-        node_states = None
-        graph_zoom_level = None
-        node_visibility_data = None
-
-        graph_window = self.manager._get_graph_main_window()
-        if graph_window:
-            try:
-                # Get current node states from the graph scene
-                scene = self.manager._get_graph_scene()
-                if scene:
-                    node_states = scene.get_node_states()
-
-                # Get current zoom level from the graph view
-                view = self.manager._get_graph_view()
-                if view:
-                    graph_zoom_level = view.get_zoom_level()
-
-            except Exception as e:
-                logger.warning(
-                    f"Warning: Could not get layout data for preset save: {e}"
-                )
-
-        # Get current node visibility settings
-        node_vis_mgr = getattr(self.manager, "node_visibility_manager", None)
-        if node_vis_mgr:
-            try:
-                node_visibility_data = {
-                    "audio_input": dict(
-                        self.manager.node_visibility_manager.audio_input_visibility
-                    ),
-                    "audio_output": dict(
-                        self.manager.node_visibility_manager.audio_output_visibility
-                    ),
-                    "midi_input": dict(
-                        self.manager.node_visibility_manager.midi_input_visibility
-                    ),
-                    "midi_output": dict(
-                        self.manager.node_visibility_manager.midi_output_visibility
-                    ),
-                }
-                logger.debug(
-                    f"Collected node visibility data for save: {len(node_visibility_data.get('audio_input', {}))} audio input, {len(node_visibility_data.get('audio_output', {}))} audio output, {len(node_visibility_data.get('midi_input', {}))} MIDI input, {len(node_visibility_data.get('midi_output', {}))} MIDI output settings"
-                )
-            except Exception as e:
-                logger.warning(
-                    f"Warning: Could not get node visibility data for preset save: {e}"
-                )
+        # Collect layout data via PresetOperations
+        scene = self.manager._get_graph_scene()
+        view = self.manager._get_graph_view()
+        layout_data = PresetOperations.collect_layout_data(
+            scene=scene,
+            view=view,
+            node_visibility_manager=self.manager.node_visibility_manager,
+            config_manager=self.manager.config_manager,
+        )
 
         # Use enhanced preset manager if available, otherwise fall back to basic
         save_with_layout = getattr(
@@ -873,9 +766,9 @@ class PresetHandler:
         if save_with_layout:
             success = save_with_layout(
                 preset_name,
-                node_states=node_states,
-                graph_zoom_level=graph_zoom_level,
-                node_visibility_data=node_visibility_data,
+                node_states=layout_data.get("node_states"),
+                graph_zoom_level=layout_data.get("graph_zoom_level"),
+                node_visibility_data=layout_data.get("node_visibility"),
                 parent_widget=self.manager,
                 confirm_overwrite=False,
             )
@@ -888,11 +781,7 @@ class PresetHandler:
             logger.debug(f"Preset '{preset_name}' saved.")
             # Update the original state to reflect the current (saved) state
             self.original_preset_connections = self.manager._get_current_connections()
-            self.original_preset_layout_data = {
-                "node_states": node_states,
-                "graph_zoom_level": graph_zoom_level,
-                "node_visibility": node_visibility_data,
-            }
+            self.original_preset_layout_data = layout_data
             # Update save button state since changes have been saved
             self.update_save_button_enabled_state()
             show_timed_messagebox(
@@ -1179,25 +1068,9 @@ class PresetHandler:
 
         try:
             current_connections = self.manager._get_current_connections()
-            current_set = set()
-            original_set = set()
-
-            # Convert current connections to a comparable set
-            for conn in current_connections:
-                output = conn.get("output", "")
-                input_ = conn.get("input", "")
-                if output and input_:
-                    current_set.add((output, input_))
-
-            # Convert original connections to a comparable set
-            for conn in self.original_preset_connections:
-                output = conn.get("output", "")
-                input_ = conn.get("input", "")
-                if output and input_:
-                    original_set.add((output, input_))
-
-            return current_set != original_set
-
+            return PresetOperations.connections_have_changed(
+                current_connections, self.original_preset_connections
+            )
         except Exception as e:
             logger.error(f"Error comparing connections: {e}")
             return False
@@ -1213,54 +1086,17 @@ class PresetHandler:
             return False
 
         try:
-            layout_changed = False
-
-            # Check node states
             scene = self.manager._get_graph_scene()
-            if scene:
-                current_node_states = scene.get_node_states()
-                original_node_states = self.original_preset_layout_data.get(
-                    "node_states"
-                )
-
-                if current_node_states != original_node_states:
-                    layout_changed = True
-
-            # Check zoom level
             view = self.manager._get_graph_view()
-            if view:
-                current_zoom = view.get_zoom_level()
-                original_zoom = self.original_preset_layout_data.get("graph_zoom_level")
-
-                if current_zoom != original_zoom:
-                    layout_changed = True
-
-            # Check node visibility
-            node_vis_mgr = getattr(self.manager, "node_visibility_manager", None)
-            if node_vis_mgr:
-                current_visibility = {
-                    "audio_input": dict(
-                        self.manager.node_visibility_manager.audio_input_visibility
-                    ),
-                    "audio_output": dict(
-                        self.manager.node_visibility_manager.audio_output_visibility
-                    ),
-                    "midi_input": dict(
-                        self.manager.node_visibility_manager.midi_input_visibility
-                    ),
-                    "midi_output": dict(
-                        self.manager.node_visibility_manager.midi_output_visibility
-                    ),
-                }
-                original_visibility = self.original_preset_layout_data.get(
-                    "node_visibility"
-                )
-
-                if current_visibility != original_visibility:
-                    layout_changed = True
-
-            return layout_changed
-
+            current_layout_data = PresetOperations.collect_layout_data(
+                scene=scene,
+                view=view,
+                node_visibility_manager=self.manager.node_visibility_manager,
+                config_manager=self.manager.config_manager,
+            )
+            return PresetOperations.layout_has_changed(
+                current_layout_data, self.original_preset_layout_data
+            )
         except Exception as e:
             logger.error(f"Error comparing layout: {e}")
             return False

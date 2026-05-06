@@ -13,7 +13,7 @@ import subprocess
 import json
 import traceback
 from cable_core import config_keys as keys
-from typing import Dict, List, Optional, Any, TYPE_CHECKING
+from typing import Dict, List, Optional, Tuple, Any, TYPE_CHECKING
 if TYPE_CHECKING:
     from cables.graph.node_item import NodeItem
     from cables.graph.port_item import PortItem
@@ -306,8 +306,11 @@ class UnifiedSinkManager:
                 result['is_virtual_sink'] = True
                 result['module_id'] = module_ids[client_name]
             else:
-                # Check if client name starts with any sink name (app-created sinks)
-                for sink_name in module_ids.keys():
+                # Check if client name starts with any sink name (app-created sinks).
+                # Sort by key length descending so that "my-sink-2" is checked BEFORE
+                # "my-sink" — prevents a -2 suffix client from being falsely matched
+                # against the shorter base-name key via the auto-rename branch below.
+                for sink_name in sorted(module_ids.keys(), key=len, reverse=True):
                     if client_name.startswith(sink_name):
                         rest = client_name[len(sink_name):]
                         if rest and rest[0] == ' ':
@@ -414,9 +417,11 @@ class UnifiedSinkManager:
                     if module_ids_json:
                         module_ids = json.loads(module_ids_json)
 
-                        # Find the key that matches this client (either exact or partial match)
+                        # Find the key that matches this client (either exact or partial match).
+                        # Sort by key length descending to prefer longer (more specific) matches
+                        # before shorter (prefix) matches, preventing "-2" suffix ambiguity.
                         key_to_remove = None
-                        for stored_sink_name in module_ids.keys():
+                        for stored_sink_name in sorted(module_ids.keys(), key=len, reverse=True):
                             if client_name == stored_sink_name:
                                 key_to_remove = stored_sink_name
                                 break
@@ -530,6 +535,193 @@ class UnifiedSinkManager:
             logger.error(f"Error finding module by PipeWire node for {client_name}: {e}")
 
         return None
+
+    def recreate_sinks_if_autostart(
+        self, config_manager: Any, load_startup_preset: bool
+    ) -> None:
+        """Recreate stored virtual sinks when running in autostart mode.
+
+        Called only when ``--headless`` or ``--minimized`` flags are active
+        (i.e. ``load_startup_preset`` is True). Skips sinks that already exist.
+
+        Args:
+            config_manager: ConfigManager instance for reading sink data.
+            load_startup_preset: Whether autostart mode is active.
+        """
+        if not load_startup_preset:
+            return
+
+        import json
+
+        try:
+            data = json.loads(
+                config_manager.get_str(
+                    keys.VIRTUAL_SINKS_RECREATE_AT_AUTOSTART, "{}"
+                )
+                or "{}"
+            )
+        except (json.JSONDecodeError, Exception):
+            return
+
+        if not data:
+            return
+
+        logger.info(f"Recreating {len(data)} virtual sink(s) for autostart...")
+
+        for _client_key, sink_info in data.items():
+            sink_name = sink_info.get("sink_name", "")
+            channel_map = sink_info.get("channel_map", "front-left,front-right")
+            if not sink_name:
+                logger.warning(
+                    f"Skipping autostart sink entry with no sink_name: {_client_key}"
+                )
+                continue
+            try:
+                # Check if sink already exists
+                existing = subprocess.run(
+                    ["pactl", "list", "short", "sinks"],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                already_exists = False
+                for line in existing.stdout.splitlines():
+                    parts = line.split("\t")
+                    if len(parts) >= 2 and parts[1].strip() == sink_name:
+                        already_exists = True
+                        break
+
+                if already_exists:
+                    logger.info(
+                        f"Virtual sink '{sink_name}' already exists, skipping creation."
+                    )
+                    # Update module ID in config for unload tracking
+                    module_id = self.find_module_id_for_external_sink(sink_name)
+                    if module_id:
+                        self.update_module_id(sink_name, str(module_id), config_manager)
+                    continue
+
+                # Create the sink
+                result = subprocess.run(
+                    [
+                        "pactl",
+                        "load-module",
+                        "module-null-sink",
+                        f"sink_name={sink_name}",
+                        f"channel_map={channel_map}",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                module_id = result.stdout.strip()
+                self.update_module_id(sink_name, module_id, config_manager)
+                logger.info(
+                    f"Recreated virtual sink '{sink_name}' (module {module_id})"
+                )
+
+            except Exception as e:
+                logger.error(f"Error recreating virtual sink '{sink_name}': {e}")
+
+    def create_null_sink(self, sink_name: str, channel_map: str = "stereo") -> Optional[Tuple[str, str]]:
+        """Create a PulseAudio null sink via pactl.
+
+        This is used for user-requested virtual sink/source creation from the
+        graph context menu (not for unified sinks). Registers the module ID
+        in VIRTUAL_SINK_MODULE_IDS for unload tracking.
+
+        If a sink with the requested name already exists, a numeric suffix
+        (``-1``, ``-2``, ``-3``, …) is auto-appended to make the name unique. This
+        ensures each virtual sink has a distinct PipeWire ``node.name``,
+        preventing ambiguity when resolving the PipeWire node ID for
+        default-sink operations.
+
+        Args:
+            sink_name: Requested name for the new sink.
+            channel_map: Channel map string (e.g. 'stereo', 'front-left,front-right').
+
+        Returns:
+            ``(module_id, actual_sink_name)`` tuple if successful, ``None`` otherwise.
+            ``actual_sink_name`` may differ from ``sink_name`` when dedup
+            was necessary (e.g. ``my-sink-1``).
+        """
+        flatpak_env = getattr(self, '_flatpak_env', False)
+
+        # --- Deduplicate sink name ---
+        existing_sinks: set[str] = set()
+        try:
+            _pactl_list_cmd = ["pactl", "list", "short", "sinks"]
+            if flatpak_env:
+                _pactl_list_cmd = ["flatpak-spawn", "--host"] + _pactl_list_cmd
+            existing_result = subprocess.run(
+                _pactl_list_cmd, capture_output=True, text=True, check=True
+            )
+            for line in existing_result.stdout.splitlines():
+                parts = line.split("\t")
+                if len(parts) >= 2:
+                    existing_sinks.add(parts[1].strip())
+        except Exception as e:
+            logger.warning(f"Could not list existing sinks for dedup: {e}")
+
+        actual_sink_name = sink_name
+        if actual_sink_name in existing_sinks:
+            suffix = 1
+            while f"{sink_name}-{suffix}" in existing_sinks:
+                suffix += 1
+            actual_sink_name = f"{sink_name}-{suffix}"
+            logger.info(
+                f"Sink name '{sink_name}' already exists — using '{actual_sink_name}'"
+            )
+        # ---------------------------
+
+        cmd = ["pactl", "load-module", "module-null-sink",
+               f"sink_name={actual_sink_name}", f"channel_map={channel_map}"]
+        if flatpak_env:
+            cmd = ["flatpak-spawn", "--host"] + cmd
+
+        try:
+            result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+            module_id = result.stdout.strip()
+
+            # Register in VIRTUAL_SINK_MODULE_IDS for unload tracking
+            if self.config_manager:
+                try:
+                    module_ids = json.loads(
+                        self.config_manager.get_str(keys.VIRTUAL_SINK_MODULE_IDS, "{}") or "{}"
+                    )
+                    module_ids[actual_sink_name] = module_id
+                    self.config_manager.set_str(
+                        keys.VIRTUAL_SINK_MODULE_IDS, json.dumps(module_ids)
+                    )
+                except Exception as e:
+                    logger.error(f"Error saving module ID for {actual_sink_name}: {e}")
+
+            logger.info(f"Created null sink: {actual_sink_name} (module {module_id})")
+            return (module_id, actual_sink_name)
+        except Exception as e:
+            logger.error(f"Error creating null sink '{actual_sink_name}': {e}")
+            return None
+
+    def update_module_id(self, sink_name: str, module_id: str, config_manager: Any) -> None:
+        """Update the module ID in VIRTUAL_SINK_MODULE_IDS config.
+
+        Args:
+            sink_name: Name of the sink.
+            module_id: Module ID string.
+            config_manager: ConfigManager instance for persistence.
+        """
+        import json
+
+        try:
+            module_ids = json.loads(
+                config_manager.get_str(keys.VIRTUAL_SINK_MODULE_IDS, "{}") or "{}"
+            )
+            module_ids[sink_name] = module_id
+            config_manager.set_str(
+                keys.VIRTUAL_SINK_MODULE_IDS, json.dumps(module_ids)
+            )
+        except Exception as e:
+            logger.error(f"Error updating module ID for {sink_name}: {e}")
 
     def find_module_id_for_external_sink(self, sink_name: str) -> Optional[str]:
         """Find module ID for an external virtual sink using pactl list sinks.

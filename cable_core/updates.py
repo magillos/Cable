@@ -41,7 +41,7 @@ class UpdateManager:
             logger.debug("No tags found on GitHub.")
             self.update_available = False
             self.latest_version = None
-            if hasattr(self.app, 'update_version_display'):
+            if getattr(self.app, 'update_version_display', None) is not None:
                 self.app.update_version_display()
             if manual_check:
                 show_timed_messagebox(self.app, QMessageBox.Icon.Information, "Update Check", "No new version found (no tags).", duration=1000)
@@ -80,7 +80,7 @@ class UpdateManager:
             if manual_check:
                 show_timed_messagebox(self.app, QMessageBox.Icon.Warning, "Update Check", "Could not determine the latest version.", duration=1000)
 
-        if hasattr(self.app, 'update_version_display'):
+        if getattr(self.app, 'update_version_display', None) is not None:
             self.app.update_version_display()
 
     def _on_fetch_error(self, err: Any, manual_check: bool) -> None:

@@ -69,8 +69,9 @@ class ConnectionItem(QGraphicsPathItem):
     def _get_line_thickness(self) -> float:
         """Get connection line thickness from config, falling back to constants."""
         scene = self.scene()
-        if scene and hasattr(scene, 'main_config_manager') and scene.main_config_manager:
-            return scene.main_config_manager.get_int_setting(
+        config_mgr = getattr(scene, 'main_config_manager', None) if scene else None
+        if config_mgr is not None:
+            return config_mgr.get_int_setting(
                 keys.CONNECTION_LINE_THICKNESS, constants.CONNECTION_WIDTH)
         return constants.CONNECTION_WIDTH
 

@@ -136,7 +136,41 @@ class PipeWireSettingsApp(QWidget):
         self.config_manager.show_migration_dialog_if_needed(parent_widget=self)
 
         self.system_manager = SystemManager(self)  # Instantiate SystemManager
-        self.tray_manager = TrayManager(self)  # Instantiate TrayManager
+        self.tray_manager = TrayManager(
+            self,
+            config_manager=self.config_manager,
+            is_tray_checked_cb=lambda: self.tray_toggle_checkbox.isChecked(),
+            set_tray_checkbox_cb=lambda checked: (
+                self.tray_toggle_checkbox.blockSignals(True),
+                self.tray_toggle_checkbox.setChecked(checked),
+                self.tray_toggle_checkbox.blockSignals(False),
+            )[-1],
+            revert_tray_checkbox_cb=lambda: (
+                self.tray_toggle_checkbox.blockSignals(True),
+                self.tray_toggle_checkbox.setChecked(True),
+                self.tray_toggle_checkbox.blockSignals(False),
+            )[-1],
+            set_tray_checkbox_enabled_cb=lambda enabled: self.tray_toggle_checkbox.setEnabled(enabled),
+            set_apply_immediately_cb=lambda checked: (
+                setattr(self, 'apply_immediately', checked),
+                self.apply_immediately_checkbox.blockSignals(True),
+                self.apply_immediately_checkbox.setChecked(checked),
+                self.apply_immediately_checkbox.blockSignals(False),
+                self.config_manager.set_bool_setting(
+                    keys.APPLY_QUANTUM_SAMPLE_RATE_INSTANTANEOUSLY, checked
+                ),
+                self._update_apply_buttons_state(),
+            )[-1],
+            set_show_confirmation_cb=lambda checked: (
+                setattr(self, 'show_confirmation', checked),
+                self.show_confirmation_checkbox.blockSignals(True),
+                self.show_confirmation_checkbox.setChecked(checked),
+                self.show_confirmation_checkbox.blockSignals(False),
+                self.config_manager.set_bool_setting(
+                    keys.SHOW_QUANTUM_SAMPLE_RATE_CONFIRMATION, checked
+                ),
+            )[-1],
+        )  # Instantiate TrayManager
         self.process_manager = ProcessManager(self)  # Instantiate ProcessManager
         self.update_manager = UpdateManager(
             self, APP_VERSION
@@ -160,6 +194,12 @@ class PipeWireSettingsApp(QWidget):
         )
         self.values_initialized = False  # Flag to track if values have been initialized
         self.autostart_version_action = None  # Action for version menu autostart toggle
+
+        # Embeded-mode attributes (only set when embedded=True; None otherwise)
+        self.embedded_settings_panel: Optional[EmbeddedSettingsPanel] = None
+        self.embedded_splitter: Optional[QSplitter] = None
+        self.embedded_spacer: Optional[QWidget] = None
+        self._embedded_splitter_restored: Optional[bool] = None
 
         # Placeholder for focused managers (initialized after UI)
         self.dsp_monitor: Optional[DSPMonitor] = None
@@ -472,7 +512,7 @@ class PipeWireSettingsApp(QWidget):
             self.settings_button.clicked.connect(self._toggle_embedded_settings)
         else:
             self.settings_button.clicked.connect(
-                lambda: self.tray_manager.show_version_context_menu(
+                lambda: self.tray_manager.show_settings_menu(
                     self.settings_button.rect().bottomLeft()
                 )
             )
@@ -549,9 +589,7 @@ class PipeWireSettingsApp(QWidget):
     def _toggle_embedded_settings(self) -> None:
         """Toggle visibility of the embedded settings panel."""
         # embedded_settings_panel and embedded_splitter only exist in embedded mode
-        if hasattr(self, "embedded_settings_panel") and hasattr(
-            self, "embedded_splitter"
-        ):
+        if self.embedded_settings_panel is not None and self.embedded_splitter is not None:
             is_visible = self.embedded_settings_panel.isVisible()
 
             # Preserve the left column width
@@ -581,7 +619,7 @@ class PipeWireSettingsApp(QWidget):
     def _save_embedded_splitter_position(self, pos: int, index: int) -> None:
         """Save the embedded splitter position to config with debounce."""
         # embedded_splitter only exists in embedded mode
-        if hasattr(self, "embedded_splitter"):
+        if self.embedded_splitter is not None:
             sizes = self.embedded_splitter.sizes()
             if sizes[0] > 0:
                 self._pending_splitter_pos = sizes[0]
@@ -600,7 +638,7 @@ class PipeWireSettingsApp(QWidget):
         super().showEvent(event)
         if (
             self.embedded
-            and hasattr(self, "_embedded_splitter_restored")
+            and self._embedded_splitter_restored is not None
             and not self._embedded_splitter_restored
         ):
             self._embedded_splitter_restored = True
@@ -608,7 +646,7 @@ class PipeWireSettingsApp(QWidget):
 
     def _restore_embedded_splitter_size(self) -> None:
         """Restore the embedded splitter size and settings panel visibility from config."""
-        if hasattr(self, "embedded_splitter"):
+        if self.embedded_splitter is not None:
             saved_width = self.config_manager.get_int_setting(
                 keys.EMBEDDED_COLUMN_WIDTH, 350
             )
@@ -673,7 +711,7 @@ class PipeWireSettingsApp(QWidget):
         else:
             self.settings_button.setStyleSheet("")
             self.settings_button.setToolTip("Click to access Settings")
-        if hasattr(self, "embedded_settings_panel"):
+        if self.embedded_settings_panel is not None:
             self.embedded_settings_panel._update_version_label()
 
     def update_latency_display(self) -> None:
@@ -1110,57 +1148,6 @@ class PipeWireSettingsApp(QWidget):
         """Delayed handler for palette changes — updates the tray icon."""
         self.tray_manager.update_tray_icon()
 
-    def set_tray_checkbox(self, checked: bool) -> None:
-        self.tray_toggle_checkbox.setChecked(checked)
-
-    def revert_tray_checkbox(self) -> None:
-        self.tray_toggle_checkbox.blockSignals(True)
-        self.tray_toggle_checkbox.setChecked(True)
-        self.tray_toggle_checkbox.blockSignals(False)
-
-    def set_tray_checkbox_enabled(self, enabled: bool) -> None:
-        self.tray_toggle_checkbox.setEnabled(enabled)
-
-    def is_tray_checked(self) -> bool:
-        return self.tray_toggle_checkbox.isChecked()
-
-    def is_remember_settings_checked(self) -> bool:
-        return self.remember_settings_checkbox.isChecked()
-
-    def set_remember_settings_checked(self, checked: bool) -> None:
-        self.remember_settings_checkbox.setChecked(checked)
-
-    def is_restore_only_minimized_checked(self) -> bool:
-        return self.restore_only_minimized_checkbox.isChecked()
-
-    def set_restore_only_minimized_checked(self, checked: bool) -> None:
-        self.restore_only_minimized_checkbox.setChecked(checked)
-
-    def is_apply_immediately_checked(self) -> bool:
-        return self.apply_immediately_checkbox.isChecked()
-
-    def set_apply_immediately_checked(self, checked: bool) -> None:
-        self.apply_immediately = checked
-        self.apply_immediately_checkbox.blockSignals(True)
-        self.apply_immediately_checkbox.setChecked(checked)
-        self.apply_immediately_checkbox.blockSignals(False)
-        self.config_manager.set_bool_setting(
-            keys.APPLY_QUANTUM_SAMPLE_RATE_INSTANTANEOUSLY, self.apply_immediately
-        )
-        self._update_apply_buttons_state()
-
-    def is_show_confirmation_checked(self) -> bool:
-        return self.show_confirmation_checkbox.isChecked()
-
-    def set_show_confirmation_checked(self, checked: bool) -> None:
-        self.show_confirmation = checked
-        self.show_confirmation_checkbox.blockSignals(True)
-        self.show_confirmation_checkbox.setChecked(checked)
-        self.show_confirmation_checkbox.blockSignals(False)
-        self.config_manager.set_bool_setting(
-            keys.SHOW_QUANTUM_SAMPLE_RATE_CONFIRMATION, self.show_confirmation
-        )
-
     def get_settings_button_global_pos(self, local_pos: Any) -> Any:
         return self.settings_button.mapToGlobal(local_pos)
 
@@ -1168,7 +1155,7 @@ class PipeWireSettingsApp(QWidget):
         """Clean up resources before quitting."""
         logger.debug("Performing cleanup before quitting...")
         # First, shutdown async workers to prevent signals on deleted QObjects
-        if hasattr(self, "async_runner") and self.async_runner:
+        if self.async_runner is not None:
             self.async_runner.shutdown(wait_ms=500)
         # Clean up DSPMonitor
         if self.dsp_monitor is not None:
@@ -1182,7 +1169,7 @@ class PipeWireSettingsApp(QWidget):
         preset_manager = PresetManager()
         preset_manager.stop_daemon_mode()
         # Flush config to disk
-        if hasattr(self, "config_manager") and self.config_manager:
+        if self.config_manager is not None:
             self.config_manager.flush()
 
 

@@ -89,7 +89,7 @@ def main() -> int:
         window = JackConnectionManager(load_startup_preset=True, integrated_override=integrated_override)
         window.start_startup_refresh()
         # Start minimized - enable tray if Cable tab exists and has tray functionality
-        if hasattr(window, 'cable_widget') and window.cable_widget:
+        if getattr(window, 'cable_widget', None) is not None:
             cable = window.cable_widget
             # Enable tray if not already enabled
             if not cable.tray_enabled:

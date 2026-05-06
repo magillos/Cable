@@ -614,7 +614,7 @@ class AlsMixerApp(QWidget):
         event.accept()
 
     def _setup_mixer_notifiers(self, mixer_name: str, mixer_obj: Any) -> bool:
-        if not hasattr(mixer_obj, 'polldescriptors'):
+        if getattr(mixer_obj, 'polldescriptors', None) is None:
             logger.debug(f"polldescriptors not available for {mixer_name}")
             return False
  

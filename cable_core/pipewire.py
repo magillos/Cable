@@ -392,6 +392,111 @@ class PipewireManager:
         logger.debug("Finished attempting to reset latency for all nodes.")
         return {"ok": True, "data": {"results": results}}
 
+    @property
+    def is_flatpak(self) -> bool:
+        """Whether this PipewireManager is running inside a Flatpak sandbox."""
+        return self.flatpak_env
+
+    # ── Sink/node operations (used by NodeSinkHandler) ──────────────
+
+    def get_pw_dump(self) -> Optional[List[Dict[str, Any]]]:
+        """Run ``pw-dump`` and return the parsed JSON output.
+
+        Returns:
+            List of dict nodes from pw-dump, or None on failure.
+        """
+        try:
+            output = self.run_command(["pw-dump"])
+            if not output:
+                return None
+            return json.loads(output)
+        except Exception as e:
+            logger.error(f"Error running pw-dump: {e}")
+            return None
+
+    def inspect_default_sink(self) -> Optional[str]:
+        """Run ``wpctl inspect @DEFAULT_AUDIO_SINK@`` and return the output.
+
+        Returns:
+            Raw command output string, or None on failure.
+        """
+        try:
+            output = self.run_command(["wpctl", "inspect", "@DEFAULT_AUDIO_SINK@"])
+            return output if output else None
+        except Exception as e:
+            logger.error(f"Error inspecting default sink: {e}")
+            return None
+
+    def set_default_node(self, node_id: int) -> bool:
+        """Set the default PipeWire audio sink to the given node ID.
+
+        Args:
+            node_id: PipeWire node ID to set as default.
+
+        Returns:
+            True on success.
+        """
+        cmd = ["wpctl", "set-default", str(node_id)]
+        return bool(self.run_command(cmd, check_output=False))
+
+    def clear_default_node(self) -> bool:
+        """Clear the default PipeWire audio sink.
+
+        Returns:
+            True on success.
+        """
+        cmd = ["wpctl", "clear-default", "0"]
+        return bool(self.run_command(cmd, check_output=False))
+
+    def list_sinks(self, short: bool = True) -> Optional[str]:
+        """Run ``pactl list sinks`` (or ``pactl list short sinks``).
+
+        Args:
+            short: If True, run ``pactl list short sinks`` for a compact listing.
+
+        Returns:
+            Command output string, or None on failure.
+        """
+        try:
+            cmd = ["pactl", "list", "short" if short else "", "sinks"]
+            # Remove empty strings
+            cmd = [c for c in cmd if c]
+            output = self.run_command(cmd)
+            return output if output else None
+        except Exception as e:
+            logger.error(f"Error listing sinks: {e}")
+            return None
+
+    def detect_channel_map(self, sink_name: str) -> str:
+        """Detect the channel map of a running sink via ``pactl list sinks``.
+
+        Args:
+            sink_name: Name of the sink to inspect.
+
+        Returns:
+            Channel map string (e.g. ``"front-left,front-right"``) or default.
+        """
+        try:
+            output = self.list_sinks(short=False)
+            if not output:
+                return "front-left,front-right"
+
+            in_target_sink = False
+            for line in output.splitlines():
+                stripped = line.strip()
+                if (
+                    stripped.startswith("Name:")
+                    and stripped.split(":", 1)[1].strip() == sink_name
+                ):
+                    in_target_sink = True
+                elif stripped.startswith("Name:"):
+                    in_target_sink = False
+                elif in_target_sink and stripped.startswith("Channel Map:"):
+                    return stripped.split(":", 1)[1].strip().replace(" ", "")
+        except Exception as e:
+            logger.warning(f"Could not detect channel map for {sink_name}: {e}")
+        return "front-left,front-right"
+
     def run_command(self, command_args: List[str], check_output: bool = True) -> Union[str, bool, None]:
         """Generic command runner with Flatpak support"""
         if self.flatpak_env:

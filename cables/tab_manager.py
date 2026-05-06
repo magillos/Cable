@@ -208,12 +208,12 @@ class TabManager(QObject):
                 self.connection_manager.toggle_fullscreen
             )
             
-        if hasattr(self.connection_manager, 'midi_matrix_widget') and self.connection_manager.midi_matrix_widget:
+        if getattr(self.connection_manager, 'midi_matrix_widget', None) is not None:
             self.connection_manager.midi_matrix_widget.fullscreen_request_signal.connect(
                 self.connection_manager.toggle_fullscreen
             )
 
-        if hasattr(self.connection_manager, 'audio_matrix_widget') and self.connection_manager.audio_matrix_widget:
+        if getattr(self.connection_manager, 'audio_matrix_widget', None) is not None:
             self.connection_manager.audio_matrix_widget.fullscreen_request_signal.connect(
                 self.connection_manager.toggle_fullscreen
             )
@@ -519,7 +519,7 @@ class TabManager(QObject):
         # Graph tab - zoom the graph view
         if current_tab_text == "Graph":
             graph_window = self.connection_manager._get_graph_main_window()
-            if graph_window and hasattr(graph_window, "view") and graph_window.view:
+            if graph_window and getattr(graph_window, "view", None) is not None:
                 if direction > 0:
                     graph_window.view.zoom_in()
                 else:

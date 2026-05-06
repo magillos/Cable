@@ -404,101 +404,22 @@ class JackConnectionManager(QMainWindow):
             save_preset_action.setEnabled(bool(self.preset_handler.current_preset_name))
 
     def _recreate_virtual_sinks_if_autostart(self) -> None:
-        """Recreate stored virtual sinks when running in autostart mode (--headless/--minimized)."""
-        if not self._load_startup_preset:
-            return
+        """Recreate stored virtual sinks when running in autostart mode (--headless/--minimized).
 
-        import json
-        import subprocess
-
-        try:
-            data = json.loads(
-                self.config_manager.get_str(
-                    keys.VIRTUAL_SINKS_RECREATE_AT_AUTOSTART, "{}"
-                )
-                or "{}"
-            )
-        except (json.JSONDecodeError, Exception):
-            return
-
-        if not data:
-            return
-
-        logger.info(f"Recreating {len(data)} virtual sink(s) for autostart...")
-
-        for _client_key, sink_info in data.items():
-            sink_name = sink_info.get("sink_name", "")
-            channel_map = sink_info.get("channel_map", "front-left,front-right")
-            if not sink_name:
-                logger.warning(
-                    f"Skipping autostart sink entry with no sink_name: {_client_key}"
-                )
-                continue
-            try:
-                # Check if sink already exists
-                existing = subprocess.run(
-                    ["pactl", "list", "short", "sinks"],
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                )
-                already_exists = False
-                for line in existing.stdout.splitlines():
-                    parts = line.split("\t")
-                    if len(parts) >= 2 and parts[1].strip() == sink_name:
-                        already_exists = True
-                        break
-
-                if already_exists:
-                    logger.info(
-                        f"Virtual sink '{sink_name}' already exists, skipping creation."
-                    )
-                    # Update module ID in config for unload tracking
-                    module_id = (
-                        self.unified_sink_manager.find_module_id_for_external_sink(
-                            sink_name
-                        )
-                    )
-                    if module_id:
-                        self._update_virtual_sink_module_id(sink_name, str(module_id))
-                    continue
-
-                # Create the sink
-                result = subprocess.run(
-                    [
-                        "pactl",
-                        "load-module",
-                        "module-null-sink",
-                        f"sink_name={sink_name}",
-                        f"channel_map={channel_map}",
-                    ],
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                )
-                module_id = result.stdout.strip()
-                self._update_virtual_sink_module_id(sink_name, module_id)
-                logger.info(
-                    f"Recreated virtual sink '{sink_name}' (module {module_id})"
-                )
-
-            except Exception as e:
-                logger.error(f"Error recreating virtual sink '{sink_name}': {e}")
+        Delegates to ``UnifiedSinkManager.recreate_sinks_if_autostart()``.
+        """
+        self.unified_sink_manager.recreate_sinks_if_autostart(
+            self.config_manager, self._load_startup_preset
+        )
 
     def _update_virtual_sink_module_id(self, sink_name: str, module_id: str) -> None:
-        """Update the module ID in VIRTUAL_SINK_MODULE_IDS config."""
-        import json
+        """Update the module ID in VIRTUAL_SINK_MODULE_IDS config.
 
-        try:
-            module_ids = json.loads(
-                self.config_manager.get_str(keys.VIRTUAL_SINK_MODULE_IDS, "{}") or "{}"
-            )
-            module_ids[sink_name] = module_id
-            self.config_manager.set_str(
-                keys.VIRTUAL_SINK_MODULE_IDS, json.dumps(module_ids)
-            )
-        except Exception as e:
-            logger.error(f"Error updating module ID for {sink_name}: {e}")
+        Delegates to ``UnifiedSinkManager.update_module_id()``.
+        """
+        self.unified_sink_manager.update_module_id(
+            sink_name, module_id, self.config_manager
+        )
 
     def _load_startup_preset_if_configured(self) -> None:
         """Load startup preset if configured and requested."""
@@ -1252,7 +1173,7 @@ class JackConnectionManager(QMainWindow):
         if out_is_group and in_is_single and len(output_info["port_names"]) > 1:
             # Group → single port: discover the input port's siblings and pair sequentially
             input_port_name = input_info["single_port_name"]
-            if input_port_name and hasattr(input_tree, "_get_port_group_siblings"):
+            if input_port_name and getattr(input_tree, "_get_port_group_siblings", None) is not None:
                 siblings = input_tree._get_port_group_siblings(input_port_name)
                 if input_port_name in siblings:
                     target_idx = siblings.index(input_port_name)
@@ -1268,7 +1189,7 @@ class JackConnectionManager(QMainWindow):
         elif out_is_single and in_is_group and len(input_info["port_names"]) > 1:
             # Single port → group: discover the output port's siblings and pair sequentially
             output_port_name = output_info["single_port_name"]
-            if output_port_name and hasattr(output_tree, "_get_port_group_siblings"):
+            if output_port_name and getattr(output_tree, "_get_port_group_siblings", None) is not None:
                 siblings = output_tree._get_port_group_siblings(output_port_name)
                 if output_port_name in siblings:
                     source_idx = siblings.index(output_port_name)

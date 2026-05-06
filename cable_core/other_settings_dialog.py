@@ -50,7 +50,7 @@ class OtherSettingsDialog(QDialog):
         update_available = False
         latest_version = None
 
-        if self.parent() and hasattr(self.parent(), 'update_manager'):
+        if self.parent() and getattr(self.parent(), 'update_manager', None) is not None:
             update_manager = self.parent().update_manager
             update_available = update_manager.update_available
             latest_version = update_manager.latest_version

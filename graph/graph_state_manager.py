@@ -215,7 +215,7 @@ class GraphStateManager(QObject):
             ports = client_info['ports']
             if ports:
                 for port_obj in ports.values():
-                    if hasattr(port_obj, 'is_midi') and port_obj.is_midi:
+                    if getattr(port_obj, 'is_midi', False):
                         is_midi = True
                         break
 

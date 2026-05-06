@@ -441,22 +441,22 @@ class ActionManager(QObject):
 
     def _handle_graph_connect(self) -> None:
         graph_mw = self._get_graph_main_window()
-        if graph_mw and hasattr(graph_mw, 'handle_connect_action'):
+        if graph_mw and getattr(graph_mw, 'handle_connect_action', None) is not None:
             graph_mw.handle_connect_action()
 
     def _handle_graph_disconnect(self) -> None:
         graph_mw = self._get_graph_main_window()
-        if graph_mw and hasattr(graph_mw, 'handle_disconnect_action'):
+        if graph_mw and getattr(graph_mw, 'handle_disconnect_action', None) is not None:
             graph_mw.handle_disconnect_action()
 
     def _handle_graph_undo(self) -> None:
         graph_mw = self._get_graph_main_window()
-        if graph_mw and hasattr(graph_mw, '_handle_graph_undo'):
+        if graph_mw and getattr(graph_mw, '_handle_graph_undo', None) is not None:
             graph_mw._handle_graph_undo()
 
     def _handle_graph_redo(self) -> None:
         graph_mw = self._get_graph_main_window()
-        if graph_mw and hasattr(graph_mw, '_handle_graph_redo'):
+        if graph_mw and getattr(graph_mw, '_handle_graph_redo', None) is not None:
             graph_mw._handle_graph_redo()
 
     def _handle_global_untangle_shortcut(self) -> None:
@@ -466,8 +466,8 @@ class ActionManager(QObject):
                 self.state_manager._handle_untangle_shortcut()
         elif self._is_graph_tab_active():
             graph_mw = self._get_graph_main_window()
-            if graph_mw and hasattr(graph_mw, '_handle_untangle'):
-                if hasattr(graph_mw, 'untangle_button'):
+            if graph_mw and getattr(graph_mw, '_handle_untangle', None) is not None:
+                if getattr(graph_mw, 'untangle_button', None) is not None:
                     self._animate_button_press(graph_mw.untangle_button)
                 graph_mw._handle_untangle()
 
@@ -487,7 +487,7 @@ class ActionManager(QObject):
         
         # Find the focused tree widget by walking up the parent chain
         while focused_widget is not None:
-            if hasattr(focused_widget, 'port_items'):  # PortTreeWidget has this attribute
+            if getattr(focused_widget, 'port_items', None) is not None:  # PortTreeWidget has this attribute
                 focused_tree = focused_widget
                 break
             focused_widget = focused_widget.parent()

@@ -180,6 +180,14 @@ class MatrixWidget(QWidget):
         self.node_visibility_manager: Optional["NodeVisibilityManager"] = None
         self._config_keys = _MATRIX_CONFIG_KEYS[port_type]
 
+        # Widget attributes initialized in _setup_ui(); pre-declared None to
+        # avoid hasattr() guards when events fire before _setup_ui() completes.
+        self.matrix_widget: Any = None
+        self.main_scroll_area: Any = None
+        self.main_splitter: Any = None
+        self.output_labels_widget: Any = None
+        self.input_labels_widget: Any = None
+
         # Data model for ports, connections, and colors
         self.model = MatrixModel(self._jack_service, port_type=port_type)
 
@@ -344,7 +352,7 @@ class MatrixWidget(QWidget):
         """Handle resize event to ensure proper layout."""
         super().resizeEvent(event)
         # Force the matrix widget to recalculate its size
-        if hasattr(self, "matrix_widget"):
+        if self.matrix_widget is not None:
             self.matrix_widget.update_matrix()
             # Defer the call to prevent potential resize loops
             QTimer.singleShot(0, self._update_scroll_behavior)
@@ -563,11 +571,11 @@ class MatrixWidget(QWidget):
 
     def _update_scroll_behavior(self) -> None:
         """Update scroll area behavior based on content size vs viewport size."""
-        if not hasattr(self, "main_scroll_area") or not hasattr(self, "main_splitter"):
+        if self.main_scroll_area is None or self.main_splitter is None:
             return
 
         # Ensure input labels are synced with the evaluated splitter sizes
-        if hasattr(self, "input_labels_widget"):
+        if self.input_labels_widget is not None:
             self.input_labels_widget.sync_with_grid()
             self.input_labels_widget.update()
 
@@ -590,9 +598,9 @@ class MatrixWidget(QWidget):
     def _calculate_proper_minimum_size(self) -> "QSize":
         """Calculate the proper minimum size for the splitter accounting for angled input labels."""
         if (
-            not hasattr(self, "main_splitter")
-            or not hasattr(self, "output_labels_widget")
-            or not hasattr(self, "matrix_widget")
+            self.main_splitter is None
+            or self.output_labels_widget is None
+            or self.matrix_widget is None
         ):
             return QSize(200, 200)
 

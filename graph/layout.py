@@ -46,7 +46,7 @@ class GraphLayouter:
         Raises:
             TypeError: If scene is not a valid JackGraphScene instance
         """
-        if not hasattr(scene, 'nodes') or not hasattr(scene, 'connections'):
+        if getattr(scene, 'nodes', None) is None or getattr(scene, 'connections', None) is None:
             raise TypeError("Scene must be a JackGraphScene with 'nodes' and 'connections' attributes")
             
         self.scene = scene
@@ -90,8 +90,9 @@ class GraphLayouter:
                 'NODE_CONTENT_PADDING',
                 'PORT_HEIGHT', 'PORT_WIDTH_MIN'
             ]:
-                if hasattr(scene_constants, const_name):
-                    setattr(self, const_name, getattr(scene_constants, const_name))
+                value = getattr(scene_constants, const_name, None)
+                if value is not None:
+                    setattr(self, const_name, value)
                     
             logger.debug("Initialized layout constants from scene")
             
@@ -687,9 +688,10 @@ class GraphLayouter:
             origin = current_node.split_origin_node
             
             # Determine if current node is the input or output part
+            current_client_name = getattr(current_node, 'client_name', '')
             is_current_input = (origin.split_input_node == current_node) or \
-                             (hasattr(current_node, 'client_name') and 
-                              constants.SPLIT_INPUT_SUFFIX in current_node.client_name)
+                             (current_client_name and
+                              constants.SPLIT_INPUT_SUFFIX in current_client_name)
             
             # Find the sibling that should be placed next
             sibling_to_place = None
@@ -706,8 +708,7 @@ class GraphLayouter:
                 # Check if sibling is already in the queue to be placed
                 is_sibling_pending = any(
                     node == sibling_to_place or 
-                    (hasattr(node, 'client_name') and 
-                     node.client_name == sibling_to_place.client_name)
+                    (getattr(node, 'client_name', '') == sibling_to_place.client_name)
                     for node in next_nodes
                 )
                 
@@ -781,7 +782,7 @@ class GraphLayouter:
             List of tuples: (node, (x1, y1, x2, y2))
         """
         positions = []
-        if not self.scene or not hasattr(self.scene, 'nodes'):
+        if not self.scene or getattr(self.scene, 'nodes', None) is None:
             return positions
             
         # We need to import NodeItem here to avoid circular imports if possible, 
@@ -953,7 +954,7 @@ class GraphLayouter:
             List of NodeItem instances that are connected to current_node and not yet placed
         """
         try:
-            if not current_node or not hasattr(self.scene, 'connections'):
+            if not current_node or getattr(self.scene, 'connections', None) is None:
                 return []
                 
             next_nodes = []
@@ -988,9 +989,10 @@ class GraphLayouter:
             # Handle split node siblings
             if current_node.is_split_part and current_node.split_origin_node:
                 origin = current_node.split_origin_node
+                current_client_name = getattr(current_node, 'client_name', '')
                 is_input_part = (current_node == origin.split_input_node) or \
-                              (hasattr(current_node, 'client_name') and 
-                               constants.SPLIT_INPUT_SUFFIX in current_node.client_name)
+                              (current_client_name and
+                               constants.SPLIT_INPUT_SUFFIX in current_client_name)
                 
                 if is_input_part and origin.split_output_node:
                     output_sibling = origin.split_output_node
@@ -1025,30 +1027,30 @@ class GraphLayouter:
             origin = current_node.split_origin_node
             
             # Determine if current node is the input or output part
+            current_client_name = getattr(current_node, 'client_name', '')
             is_current_input = (origin.split_input_node == current_node) or \
-                             (hasattr(current_node, 'client_name') and 
-                              constants.SPLIT_INPUT_SUFFIX in current_node.client_name)
-            
+                             (current_client_name and
+                              constants.SPLIT_INPUT_SUFFIX in current_client_name)
+
             # Find the sibling that should be placed next
             sibling_to_place = None
             if is_current_input and origin.split_output_node:
                 sibling_to_place = origin.split_output_node
             elif not is_current_input and origin.split_input_node:
                 sibling_to_place = origin.split_input_node
-                
+
             # Add sibling to next_nodes if it hasn't been placed yet
-            if (sibling_to_place and 
+            if (sibling_to_place and
                 sibling_to_place.client_name not in placed_nodes and
                 sibling_to_place not in next_nodes):
-                
+
                 # Check if sibling is already in the queue to be placed
                 is_sibling_pending = any(
-                    node == sibling_to_place or 
-                    (hasattr(node, 'client_name') and 
-                     node.client_name == sibling_to_place.client_name)
+                    node == sibling_to_place or
+                    (getattr(node, 'client_name', '') == sibling_to_place.client_name)
                     for node in next_nodes
                 )
-                
+
                 if not is_sibling_pending:
                     # Insert at beginning to prioritize placing the sibling next
                     next_nodes.insert(0, sibling_to_place)

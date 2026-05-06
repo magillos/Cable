@@ -123,7 +123,7 @@ class BulkAreaItem(QGraphicsItem):
                     if other_port not in items_to_select: # Avoid duplicates
                         items_to_select.append(other_port)
 
-            if self.scene() and hasattr(self.scene(), 'interaction_handler'):
+            if self.scene() and getattr(self.scene(), 'interaction_handler', None) is not None:
                 self.scene().clearSelection()
                 self.scene().interaction_handler._select_items(items_to_select)
                 self.scene().interaction_handler._is_double_click = True
@@ -149,7 +149,7 @@ class BulkAreaItem(QGraphicsItem):
 
         def handle_bulk_disconnect() -> None:
             current_scene = self.scene()
-            if not current_scene or not hasattr(current_scene, 'jack_connection_handler'):
+            if not current_scene or getattr(current_scene, 'jack_connection_handler', None) is None:
                 logger.error(f"Scene or JackConnectionHandler not available for bulk disconnect from {self.parent_node.client_name}")
                 return
 
@@ -207,7 +207,7 @@ class BulkAreaItem(QGraphicsItem):
                 def make_disconnect_handler(connections: list[tuple[str, str, bool]]) -> None:
                     def handler() -> None:
                         current_scene = self.scene()
-                        if not current_scene or not hasattr(current_scene, 'jack_connection_handler'):
+                        if not current_scene or getattr(current_scene, 'jack_connection_handler', None) is None:
                             logger.error(f"Scene or JackConnectionHandler not available for per-client bulk disconnect")
                             return
                         connection_handler = current_scene.jack_connection_handler
@@ -266,7 +266,7 @@ class BulkAreaItem(QGraphicsItem):
         if change == QGraphicsItem.GraphicsItemChange.ItemSelectedHasChanged:
             from .node_item import NodeItem # Local import for isinstance and logic
 
-            if self.scene() and hasattr(self.scene(), 'interaction_handler') and self.parent_node:
+            if self.scene() and getattr(self.scene(), 'interaction_handler', None) is not None and self.parent_node:
                 handler = self.scene().interaction_handler
 
                 # If GraphInteractionHandler is doing a batch selection, only do basic child port sync.

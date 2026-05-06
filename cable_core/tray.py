@@ -30,8 +30,25 @@ from cable_core.dialogs import AppImagePathDialog, QuickSettingsDialog
 
 
 class TrayManager:
-    def __init__(self, app: QWidget) -> None:
+    def __init__(
+        self,
+        app: QWidget,
+        config_manager: Any = None,
+        is_tray_checked_cb=None,
+        set_tray_checkbox_cb=None,
+        revert_tray_checkbox_cb=None,
+        set_tray_checkbox_enabled_cb=None,
+        set_apply_immediately_cb=None,
+        set_show_confirmation_cb=None,
+    ) -> None:
         self.app = app
+        self._config_manager = config_manager
+        self._is_tray_checked_cb = is_tray_checked_cb
+        self._set_tray_checkbox_cb = set_tray_checkbox_cb
+        self._revert_tray_checkbox_cb = revert_tray_checkbox_cb
+        self._set_tray_checkbox_enabled_cb = set_tray_checkbox_enabled_cb
+        self._set_apply_immediately_cb = set_apply_immediately_cb
+        self._set_show_confirmation_cb = set_show_confirmation_cb
         self.tray_icon: Optional[QSystemTrayIcon] = None
         self.tray_menu: Optional[QMenu] = None
         self.autostart_action: Optional[QAction] = None
@@ -188,7 +205,8 @@ class TrayManager:
             if self.app.autostart_enabled:
                 logger.info("Cannot disable tray icon while autostart is enabled.")
                 # Block signals to prevent recursion, revert the checkbox, then unblock
-                self.app.revert_tray_checkbox()
+                if self._revert_tray_checkbox_cb:
+                    self._revert_tray_checkbox_cb()
                 return  # Stop processing
 
             # Proceed with disabling if autostart is off
@@ -244,9 +262,9 @@ class TrayManager:
 
             if self.app.tray_click_opens_cables:  # Check the app's toggle
                 if self.app.process_manager.connection_manager_process is None or (
-                    hasattr(
-                        self.app.process_manager.connection_manager_process, "state"
-                    )
+                    getattr(
+                        self.app.process_manager.connection_manager_process, "state", None
+                    ) is not None
                     and self.app.process_manager.connection_manager_process.state()
                     == QProcess.ProcessState.NotRunning
                 ):
@@ -276,17 +294,20 @@ class TrayManager:
         # This method should just quit the application.
         QApplication.instance().quit()
 
-    def show_version_context_menu(self, pos: QPoint) -> None:
-        """Shows the context menu for the version label."""
+    def show_settings_menu(self, pos: QPoint) -> None:
+        """Shows the settings context menu triggered by the Settings button."""
         context_menu = QMenu(self.app)  # Parent is the app
 
         # Add tray icon toggle at the top
         tray_action = QAction("Enable tray icon", self.app)
         tray_action.setCheckable(True)
-        tray_action.setChecked(self.app.is_tray_checked())
+        tray_action.setChecked(
+            self._is_tray_checked_cb() if self._is_tray_checked_cb else False
+        )
         # Disable the tray action if autostart is enabled
         tray_action.setEnabled(not self.app.autostart_enabled)
-        tray_action.toggled.connect(self.app.set_tray_checkbox)
+        if self._set_tray_checkbox_cb:
+            tray_action.toggled.connect(self._set_tray_checkbox_cb)
         context_menu.addAction(tray_action)
 
         # Add Autostart toggle (below tray icon toggle)
@@ -308,11 +329,17 @@ class TrayManager:
         )  # Check app state
         context_menu.addAction(self.autostart_version_action)
 
-        # Add remember settings toggle
+        # Add remember settings toggle (reads/writes config directly)
         remember_action = QAction("Save quantum and sample rate", self.app)
         remember_action.setCheckable(True)
-        remember_action.setChecked(self.app.is_remember_settings_checked())
-        remember_action.toggled.connect(self.app.set_remember_settings_checked)
+        remember_action.setChecked(
+            self._config_manager.get_bool(keys.REMEMBER_SETTINGS, False)
+            if self._config_manager else False
+        )
+        remember_action.toggled.connect(
+            lambda checked: self._config_manager.set_bool(keys.REMEMBER_SETTINGS, checked)
+            if self._config_manager else None
+        )
         context_menu.addAction(remember_action)
 
         # Add restore only minimized toggle
@@ -321,11 +348,16 @@ class TrayManager:
         )
         restore_minimized_action.setCheckable(True)
         restore_minimized_action.setChecked(
-            self.app.is_restore_only_minimized_checked()
+            self._config_manager.get_bool(keys.RESTORE_ONLY_MINIMIZED, False)
+            if self._config_manager else False
         )
-        restore_minimized_action.setEnabled(self.app.is_remember_settings_checked())
+        restore_minimized_action.setEnabled(
+            self._config_manager.get_bool(keys.REMEMBER_SETTINGS, False)
+            if self._config_manager else False
+        )
         restore_minimized_action.toggled.connect(
-            self.app.set_restore_only_minimized_checked
+            lambda checked: self._config_manager.set_bool(keys.RESTORE_ONLY_MINIMIZED, checked)
+            if self._config_manager else None
         )
         context_menu.addAction(restore_minimized_action)
 
@@ -334,8 +366,17 @@ class TrayManager:
             "Apply Quantum and Sample Rate instantaneously", self.app
         )
         apply_immediately_action.setCheckable(True)
-        apply_immediately_action.setChecked(self.app.is_apply_immediately_checked())
-        apply_immediately_action.toggled.connect(self.app.set_apply_immediately_checked)
+        apply_immediately_action.setChecked(
+            self._config_manager.get_bool(keys.APPLY_QUANTUM_SAMPLE_RATE_INSTANTANEOUSLY, False)
+            if self._config_manager else False
+        )
+        apply_immediately_action.toggled.connect(
+            lambda checked: (
+                self._set_apply_immediately_cb(checked)
+                if self._set_apply_immediately_cb
+                else None
+            )
+        )
         context_menu.addAction(apply_immediately_action)
 
         # Add show confirmation toggle
@@ -343,8 +384,17 @@ class TrayManager:
             "Show confirmation after applying Quantum and Sample Rate", self.app
         )
         show_confirmation_action.setCheckable(True)
-        show_confirmation_action.setChecked(self.app.is_show_confirmation_checked())
-        show_confirmation_action.toggled.connect(self.app.set_show_confirmation_checked)
+        show_confirmation_action.setChecked(
+            self._config_manager.get_bool(keys.SHOW_QUANTUM_SAMPLE_RATE_CONFIRMATION, False)
+            if self._config_manager else False
+        )
+        show_confirmation_action.toggled.connect(
+            lambda checked: (
+                self._set_show_confirmation_cb(checked)
+                if self._set_show_confirmation_cb
+                else None
+            )
+        )
         context_menu.addAction(show_confirmation_action)
 
         # Add separator between restore settings and update options
@@ -476,7 +526,8 @@ class TrayManager:
                 if self.app.autostart_manager.enable_autostart():
                     self.app.autostart_enabled = True  # Update app state
                     # Also enable the tray icon when enabling autostart
-                    self.app.set_tray_checkbox(True)
+                    if self._set_tray_checkbox_cb:
+                        self._set_tray_checkbox_cb(True)
                     self.toggle_tray_icon(Qt.CheckState.Checked)
                     logger.info("Autostart enabled (and tray icon)")
                 else:
@@ -512,7 +563,8 @@ class TrayManager:
             self.app.config_manager.save_settings(self.app._get_settings_dict())
 
             # Update the enabled state of the main checkbox based on autostart state
-            self.app.set_tray_checkbox_enabled(not self.app.autostart_enabled)
+            if self._set_tray_checkbox_enabled_cb:
+                self._set_tray_checkbox_enabled_cb(not self.app.autostart_enabled)
 
         except Exception as e:
             QMessageBox.critical(

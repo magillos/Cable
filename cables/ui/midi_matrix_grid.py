@@ -101,7 +101,7 @@ class _MatrixGridWidget(QWidget):
         # Calculate total dimensions
         total_height = (
             sum(self.row_heights)
-            if hasattr(self, "row_heights")
+            if getattr(self, "row_heights", None) is not None
             else (output_count * self.cell_height)
         )
         total_width = getattr(self, "total_width", 0)
@@ -1375,7 +1375,7 @@ class _OutputLabelsWidget(QWidget):
     def _sync_with_main_grid(self) -> None:
         """Sync dimensions and positions with the main grid widget."""
         if (
-            hasattr(self.parent_matrix, "matrix_widget")
+            getattr(self.parent_matrix, "matrix_widget", None) is not None
             and self.parent_matrix.matrix_widget
         ):
             grid_widget = self.parent_matrix.matrix_widget
@@ -1392,7 +1392,7 @@ class _OutputLabelsWidget(QWidget):
 
     def paintEvent(self, event: Optional["QEvent"]) -> None:
         """Paint the output labels aligned with the main grid."""
-        if not hasattr(self, "row_heights") or not self.row_heights:
+        if not getattr(self, "row_heights", None) is not None or not self.row_heights:
             self._sync_with_main_grid()
 
         painter = QPainter(self)
@@ -1413,7 +1413,7 @@ class _OutputLabelsWidget(QWidget):
 
         hover_row = -1
         if (
-            hasattr(self.parent_matrix, "matrix_widget")
+            getattr(self.parent_matrix, "matrix_widget", None) is not None
             and self.parent_matrix.matrix_widget
         ):
             grid_widget = self.parent_matrix.matrix_widget
@@ -1544,7 +1544,7 @@ class _OutputLabelsWidget(QWidget):
     def _draw_client_separators(self, painter: QPainter) -> None:
         """Draw dashed line separators around each output port entry."""
         data = self.parent_matrix.model.output_ports
-        if not data or not hasattr(self, "row_positions") or not self.row_positions:
+        if not data or not getattr(self, "row_positions", None) is not None or not self.row_positions:
             return
 
         painter.save()
@@ -1639,7 +1639,7 @@ class _InputLabelsWidget(QWidget):
     def sync_with_grid(self) -> None:
         """Sync column positions and other data from the grid widget."""
         if (
-            hasattr(self.parent_matrix, "matrix_widget")
+            getattr(self.parent_matrix, "matrix_widget", None) is not None
             and self.parent_matrix.matrix_widget
         ):
             grid = self.parent_matrix.matrix_widget
@@ -1650,7 +1650,7 @@ class _InputLabelsWidget(QWidget):
             )
 
         # Get output labels width from the h_splitter
-        if hasattr(self.parent_matrix, "main_splitter"):
+        if getattr(self.parent_matrix, "main_splitter", None) is not None:
             sizes = self.parent_matrix.main_splitter.sizes()
             if sizes:
                 self.output_labels_width = sizes[0]
@@ -1695,7 +1695,7 @@ class _InputLabelsWidget(QWidget):
         # Determine hover col from grid widget only (not from hovering labels directly)
         hover_col = -1
         if (
-            hasattr(self.parent_matrix, "matrix_widget")
+            getattr(self.parent_matrix, "matrix_widget", None) is not None
             and self.parent_matrix.matrix_widget
         ):
             grid_widget = self.parent_matrix.matrix_widget

@@ -662,7 +662,7 @@ class NodeVisibilityManager:
         if scene:
             # Make sure the scene has a reference to this node visibility manager
             if (
-                not hasattr(scene, "node_visibility_manager")
+                getattr(scene, "node_visibility_manager", None) is None
                 or scene.node_visibility_manager is None
             ):
                 scene.set_node_visibility_manager(self)
@@ -751,7 +751,7 @@ class NodeVisibilityManager:
                 continue
 
             # Check if the node has a split_handler
-            if not hasattr(node, "split_handler"):
+            if getattr(node, "split_handler", None) is None:
                 logger.warning(
                     f"Node {client_name} has no split_handler, cannot auto-split"
                 )
@@ -787,12 +787,12 @@ class NodeVisibilityManager:
         input_selection = None
         output_selection = None
 
-        if input_tree and hasattr(self.connection_manager, "_get_selected_item_info"):
+        if input_tree and getattr(self.connection_manager, "_get_selected_item_info", None) is not None:
             input_selection = self.connection_manager._get_selected_item_info(
                 input_tree
             )
 
-        if output_tree and hasattr(self.connection_manager, "_get_selected_item_info"):
+        if output_tree and getattr(self.connection_manager, "_get_selected_item_info", None) is not None:
             output_selection = self.connection_manager._get_selected_item_info(
                 output_tree
             )
@@ -805,14 +805,14 @@ class NodeVisibilityManager:
         if (
             input_tree
             and input_selection
-            and hasattr(self.connection_manager, "_restore_selection")
+            and getattr(self.connection_manager, "_restore_selection", None) is not None
         ):
             self.connection_manager._restore_selection(input_tree, input_selection)
 
         if (
             output_tree
             and output_selection
-            and hasattr(self.connection_manager, "_restore_selection")
+            and getattr(self.connection_manager, "_restore_selection", None) is not None
         ):
             self.connection_manager._restore_selection(output_tree, output_selection)
 

@@ -10,7 +10,7 @@ from typing import Optional
 from PyQt6.QtGui import QIcon
 
 # --- Application Version ---
-APP_VERSION = "0.10.6"
+APP_VERSION = "0.10.7"
 
 # --- Shared Constants ---
 EDIT_LIST_TEXT = "Edit List..."
@@ -38,7 +38,7 @@ def load_app_icon(
     """Load the application icon, checking frozen/script dir then theme."""
     app_icon = None
 
-    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+    if getattr(sys, "frozen", False) and getattr(sys, "_MEIPASS", None) is not None:
         base_path = sys._MEIPASS
     else:
         base_path = os.path.dirname(os.path.abspath(sys.argv[0]))
@@ -142,7 +142,7 @@ def load_tray_icon(monochrome: bool = False) -> Optional[QIcon]:
     icon_theme_name = "jack-plug-dark" if is_dark_mode else "jack-plug-light"
     app_icon = None
 
-    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+    if getattr(sys, "frozen", False) and getattr(sys, "_MEIPASS", None) is not None:
         base_path = sys._MEIPASS
     else:
         base_path = os.path.dirname(os.path.abspath(sys.argv[0]))

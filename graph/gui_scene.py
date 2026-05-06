@@ -935,74 +935,28 @@ class JackGraphScene(QGraphicsScene):
         )
 
     def _update_config_for_moved_node(self, node_item: "NodeItem") -> None:
-        """Helper to update the scene's node_configs dict after a node moves.
-        Ensures configuration is saved under the original client name for split parts."""
+        """Update the scene's node_configs dict after a node moves.
+
+        Uses ``node_item.get_state_dict()`` to extract the current state
+        and merges it into ``self.node_configs`` under the correct key
+        (origin client name for split parts, own name for normal nodes).
+        """
         if not isinstance(node_item, NodeItem):
             return
 
-        new_pos = node_item.scenePos()  # Get the final position after the move
-        original_client_name = None
-        config_key_to_update = None
+        state = node_item.get_state_dict()
+        if not state:
+            # Split parts return {} — delegate position to the origin node
+            if node_item.is_split_part and node_item.split_origin_node:
+                origin = node_item.split_origin_node
+                # Ask the origin for its full state (which includes part positions)
+                origin_state = origin.get_state_dict()
+                if origin_state:
+                    self.node_configs[origin.client_name] = origin_state
+            return
 
-        if node_item.is_split_part:
-            # This item is a split part (e.g., "client_name (Inputs)" or "client_name (Outputs)")
-            if node_item.split_origin_node:
-                original_client_name = node_item.split_origin_node.client_name
-                # Determine if it's the input or output part.
-                # A more robust way might be to check its actual name or a property.
-                # For now, using port presence:
-                has_inputs_only = bool(node_item.input_ports) and not bool(
-                    node_item.output_ports
-                )
-                has_outputs_only = bool(node_item.output_ports) and not bool(
-                    node_item.input_ports
-                )
-
-                if node_item.client_name.endswith(constants.SPLIT_INPUT_SUFFIX):
-                    config_key_to_update = "split_input_pos"
-                elif node_item.client_name.endswith(constants.SPLIT_OUTPUT_SUFFIX):
-                    config_key_to_update = "split_output_pos"
-                elif (
-                    has_inputs_only
-                ):  # Fallback if suffix naming isn't strictly followed by client_name
-                    config_key_to_update = "split_input_pos"
-                    logger.warning(
-                        f"Warning: Split part '{node_item.client_name}' identified as input by ports, not suffix."
-                    )
-                elif has_outputs_only:  # Fallback
-                    config_key_to_update = "split_output_pos"
-                    logger.warning(
-                        f"Warning: Split part '{node_item.client_name}' identified as output by ports, not suffix."
-                    )
-                else:
-                    logger.warning(
-                        f"Warning: Moved split part '{node_item.client_name}' for original '{original_client_name}'"
-                        f" could not be identified as input or output part for config saving."
-                    )
-                    return  # Don't save if we can't determine the key
-            else:
-                logger.warning(
-                    f"Warning: Moved split part '{node_item.client_name}' has no reference to its origin. Cannot save position."
-                )
-                return  # Don't save if no origin
-
-        elif not node_item.is_split_origin and not node_item.is_split_part:
-            # This is an original, non-split, visible node.
-            original_client_name = node_item.client_name
-            config_key_to_update = "pos"
-        # else: It's a hidden split origin node (node_item.is_split_origin is True).
-        # Its position is not saved directly; its split parts' positions are.
-        # Or it's an unhandled case.
-
-        # Update the dictionary if we identified what to update
-        if original_client_name and config_key_to_update:
-            if original_client_name not in self.node_configs:
-                self.node_configs[
-                    original_client_name
-                ] = {}  # Ensure entry exists for the original client
-
-            # Store the new position
-            self.node_configs[original_client_name][config_key_to_update] = new_pos
+        # Normal node or split origin — merge its full state dict
+        self.node_configs[node_item.client_name] = state
 
     def get_node_item_by_name(self, node_name: str) -> "NodeItem | None":
         """
@@ -1302,100 +1256,17 @@ class JackGraphScene(QGraphicsScene):
         Gets the current node states (positions, split states, fold states) for all nodes.
         Returns a deep copy of the node_configs dictionary.
 
+        Delegates state extraction to each node's :meth:`~.NodeItem.get_state_dict` method.
+
         Returns:
             dict: A dictionary of node configurations
         """
-        # Ensure the node_configs dictionary is up to date
         current_configs = {}
 
-        # For each node, get its current configuration
         for client_name, node in self.nodes.items():
-            if node.is_split_origin:
-                # For split nodes, store configuration for all parts
-                current_configs[client_name] = {
-                    "is_split": True,
-                    "pos": node.scenePos(),  # Store the original node position too
-                    "manual_split": getattr(
-                        node, "manual_split", True
-                    ),  # Get actual manual_split flag
-                }
-
-                # Store positions for input and output parts if they exist
-                if node.split_input_node:
-                    current_configs[client_name]["split_input_pos"] = (
-                        node.split_input_node.scenePos()
-                    )
-                    # Store fold state of input part
-                if getattr(node.split_input_node, "input_part_folded", False):
-                    current_configs[client_name]["input_part_folded"] = (
-                        node.split_input_node.input_part_folded
-                    )
-
-                if node.split_output_node:
-                    current_configs[client_name]["split_output_pos"] = (
-                        node.split_output_node.scenePos()
-                    )
-                    # Store fold state of output part
-                    if getattr(node.split_output_node, "output_part_folded", False):
-                        current_configs[client_name]["output_part_folded"] = (
-                            node.split_output_node.output_part_folded
-                        )
-            else:
-                # For non-split nodes, store position and other attributes
-                current_configs[client_name] = {
-                    "pos": node.scenePos(),
-                    "is_split": False,
-                }
-
-                # Store fold state if available
-                if getattr(node, "is_folded", False):
-                    current_configs[client_name]["is_folded"] = node.is_folded
-
-                # Store split position history if available (for nodes that were split before)
-                split_input_node = getattr(node, "split_input_node", None)
-                if split_input_node:
-                    current_configs[client_name]["split_input_pos"] = (
-                        split_input_node.scenePos()
-                    )
-                elif (
-                    getattr(node, "config", None)
-                    and node.config
-                    and "split_input_pos" in node.config
-                ):
-                    current_configs[client_name]["split_input_pos"] = node.config[
-                        "split_input_pos"
-                    ]
-
-                split_output_node = getattr(node, "split_output_node", None)
-                if split_output_node:
-                    current_configs[client_name]["split_output_pos"] = (
-                        split_output_node.scenePos()
-                    )
-                elif (
-                    getattr(node, "config", None)
-                    and node.config
-                    and "split_output_pos" in node.config
-                ):
-                    current_configs[client_name]["split_output_pos"] = node.config[
-                        "split_output_pos"
-                    ]
-
-                # Store part fold states if available (for nodes that were split before)
-                if getattr(node, "input_part_folded", False):
-                    current_configs[client_name]["input_part_folded"] = (
-                        node.input_part_folded
-                    )
-                if getattr(node, "output_part_folded", False):
-                    current_configs[client_name]["output_part_folded"] = (
-                        node.output_part_folded
-                    )
-
-                # Store manual split flag if available
-                node_config = getattr(node, "config", None)
-                if node_config and "manual_split" in node_config:
-                    current_configs[client_name]["manual_split"] = node_config[
-                        "manual_split"
-                    ]
+            state = node.get_state_dict()
+            if state:  # Only store non-empty states (split parts return {})
+                current_configs[client_name] = state
 
         return copy.deepcopy(current_configs)
 
@@ -1418,95 +1289,37 @@ class JackGraphScene(QGraphicsScene):
         """
         Restores node positions and states from the provided configuration.
 
+        Delegates state restoration to each node's
+        :meth:`~.NodeItem.apply_configuration` method, which handles split
+        state, positions, fold states, and unified state.
+
         Args:
             node_states (dict): A dictionary of node configurations
         """
         if not node_states:
             return
 
+        # Build animation targets by applying each node's config
         targets: Dict[NodeItem, QPointF] = {}
 
-        # For each node in the configuration
         for client_name, config in node_states.items():
             node = self.get_node_item_by_name(client_name)
             if not node:
                 continue
 
-            # If the node should be split
-            if config.get("is_split", False):
-                # If the node is not already split, split it
-                if not node.is_split_origin:
-                    node.split_handler.split_node(save_state=False)
+            node.apply_configuration(config)
 
-                # Set the original node position if available
+            # Collect positions for animation
+            if node.is_split_origin:
                 if "pos" in config:
                     targets[node] = config["pos"]
-
-                # Set manual_split flag if available
-                if "manual_split" in config:
-                    if not getattr(node, "config", None):
-                        node.config = {}
-                    node.config["manual_split"] = config["manual_split"]
-
-                # Set positions for input and output parts
                 if "split_input_pos" in config and node.split_input_node:
                     targets[node.split_input_node] = config["split_input_pos"]
-
                 if "split_output_pos" in config and node.split_output_node:
                     targets[node.split_output_node] = config["split_output_pos"]
-
-                # Set fold states for split parts
-                if "input_part_folded" in config and node.split_input_node:
-                    # Set fold state for input part
-                    if (
-                        getattr(node.split_input_node, "input_part_folded", False)
-                        != config["input_part_folded"]
-                    ):
-                        node.split_input_node.fold_handler.toggle_input_part_fold(
-                            fold_state=config["input_part_folded"]
-                        )
-
-                if "output_part_folded" in config and node.split_output_node:
-                    # Set fold state for output part
-                    if (
-                        getattr(node.split_output_node, "output_part_folded", False)
-                        != config["output_part_folded"]
-                    ):
-                        node.split_output_node.fold_handler.toggle_output_part_fold(
-                            fold_state=config["output_part_folded"]
-                        )
             else:
-                # If the node is split but shouldn't be, unsplit it
-                if node.is_split_origin:
-                    node.split_handler.unsplit_node(save_state=False)
-
-                # Set position for non-split node
                 if "pos" in config:
                     targets[node] = config["pos"]
-
-                # Preserve split position history for potential future splits
-                if not getattr(node, "config", None):
-                    node.config = {}
-                if "split_input_pos" in config:
-                    node.config["split_input_pos"] = config["split_input_pos"]
-                if "split_output_pos" in config:
-                    node.config["split_output_pos"] = config["split_output_pos"]
-                if "manual_split" in config:
-                    node.config["manual_split"] = config["manual_split"]
-
-                # Preserve part fold states for potential future splits
-                if "input_part_folded" in config:
-                    node.input_part_folded = config["input_part_folded"]
-                if "output_part_folded" in config:
-                    node.output_part_folded = config["output_part_folded"]
-
-                # Set fold state if available - using the correct methods
-                if (
-                    "is_folded" in config
-                    and getattr(node, "is_folded", False) != config["is_folded"]
-                ):
-                    # Toggle the state directly or use toggle_main_fold_state
-                    node.fold_handler.toggle_main_fold_state()
 
         self._animate_nodes_to_targets(targets)
 
@@ -1525,7 +1338,7 @@ class JackGraphScene(QGraphicsScene):
         if selected_nodes:
             if key == Qt.Key.Key_H:  # Hide selected nodes
                 for node in selected_nodes:
-                    node._hide_node()
+                    node.visibility_handler.hide_node()
                 event.accept()
                 return
             elif key == Qt.Key.Key_S:  # Split selected nodes

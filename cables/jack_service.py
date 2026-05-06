@@ -127,7 +127,7 @@ class JackService(QObject):
             if port is None:
                 return
             
-            if not hasattr(port, 'name') or not hasattr(port, 'is_input'):
+            if getattr(port, 'name', None) is None or getattr(port, 'is_input', None) is None:
                 return
             
             port_name = port.name
@@ -144,9 +144,9 @@ class JackService(QObject):
             try:
                 port_type = port.type
             except AttributeError:
-                if hasattr(port, 'is_midi') and port.is_midi:
+                if getattr(port, 'is_midi', False):
                     port_type = "midi"
-                elif hasattr(port, 'is_audio') and port.is_audio:
+                elif getattr(port, 'is_audio', False):
                     port_type = "audio"
                 else:
                     port_type = "unknown"
@@ -190,9 +190,9 @@ class JackService(QObject):
         try:
             if not port_a or not port_b:
                 return
-            if not hasattr(port_a, 'name') or not hasattr(port_b, 'name'):
+            if getattr(port_a, 'name', None) is None or getattr(port_b, 'name', None) is None:
                 return
-            if not hasattr(port_a, 'is_output') or not hasattr(port_b, 'is_input'):
+            if getattr(port_a, 'is_output', None) is None or getattr(port_b, 'is_input', None) is None:
                 return
             
             port_a_name = port_a.name

@@ -88,26 +88,22 @@ class LatencyTester:
         self.latency_process.finished.connect(self.handle_latency_finished)
         self.latency_process.errorOccurred.connect(self.handle_latency_error)
         
-        # Determine command based on environment
-        if self.manager.flatpak_env:
-            program = "flatpak-spawn"
-            arguments = ["--host", "jack_delay"]
-        else:
-            # Try jack_delay first, then jack_iodelay as fallback
-            program = shutil.which("jack_delay")
-            if program is None:
-                program = shutil.which("jack_iodelay")
-            
-            # If neither is found, show error and exit
-            if program is None:
-                self.manager.latency_results_text.setText("Error: Neither 'jack_delay' nor 'jack_iodelay' found.\n"
-                                                  "Depending on your distribution, install jack-delay, jack_delay or jack-example-tools (jack_iodelay).")
-                self.manager.latency_run_button.setEnabled(True)  # Re-enable run button
-                self.manager.latency_stop_button.setEnabled(False)  # Ensure stop is disabled
-                self.latency_process = None  # Clear the process object
-                return  # Stop execution
-            
-            arguments = []
+        # Determine command: use bundled jack_delay in Flatpak, or search PATH otherwise.
+        # NOTE: In Flatpak, /app/bin is on PATH inside the sandbox, so the bundled
+        # jack_delay is found directly — no flatpak-spawn --host needed.
+        arguments = []
+        program = shutil.which("jack_delay")
+        if program is None:
+            program = shutil.which("jack_iodelay")
+        
+        # If neither is found, show error and exit
+        if program is None:
+            self.manager.latency_results_text.setText("Error: Neither 'jack_delay' nor 'jack_iodelay' found.\n"
+                                              "Depending on your distribution, install jack-delay, jack_delay or jack-example-tools (jack_iodelay).")
+            self.manager.latency_run_button.setEnabled(True)  # Re-enable run button
+            self.manager.latency_stop_button.setEnabled(False)  # Ensure stop is disabled
+            self.latency_process = None  # Clear the process object
+            return  # Stop execution
         
         self.latency_process.setProgram(program)  # Use the found program path
         self.latency_process.setArguments(arguments)

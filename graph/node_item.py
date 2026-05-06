@@ -3,6 +3,7 @@
 QGraphicsItem representing a JACK client node with ports, folding, splitting, and context menus.
 """
 
+import json
 import logging
 import traceback  # For error reporting in _split_node
 import os
@@ -56,6 +57,8 @@ if TYPE_CHECKING:
 from .node_fold_handler import NodeFoldHandler
 from .node_split_handler import NodeSplitHandler
 from .node_unify_handler import NodeUnifyHandler
+from .node_sink_handler import NodeSinkHandler
+from .node_visibility_handler import NodeVisibilityHandler
 
 # Import shared sorting utility
 from cables.utils.sort_utils import natural_sort_key_for_port_item as natural_sort_key
@@ -140,6 +143,8 @@ class NodeItem(QGraphicsItem):
         self.fold_handler = NodeFoldHandler(self)
         self.split_handler = NodeSplitHandler(self)
         self.unify_handler = NodeUnifyHandler(self)
+        self.sink_handler = NodeSinkHandler(self)
+        self.visibility_handler = NodeVisibilityHandler(self)
 
         # Split unification state
         self.is_input_unified = False
@@ -178,8 +183,6 @@ class NodeItem(QGraphicsItem):
         # Initialize unified state from config manager if needed
         if config_manager and getattr(config_manager, "node_positions_file", None):
             try:
-                import json
-
                 if config_manager.node_positions_file.exists():
                     with open(config_manager.node_positions_file, "r") as f:
                         saved_data = json.load(f)
@@ -325,7 +328,7 @@ class NodeItem(QGraphicsItem):
             not is_unified_sink
             and not is_selected
             and getattr(self, "is_virtual_sink", False)
-            and self._is_recreate_at_autostart()
+            and self.sink_handler.is_recreate_at_autostart()
         ):
             border_color = QColor(180, 70, 70) if is_light_mode else QColor(200, 80, 80)
 
@@ -886,7 +889,7 @@ class NodeItem(QGraphicsItem):
         if not is_unified:
             hide_action = menu.addAction("Hide")
             hide_action.setShortcut(Qt.Key.Key_H)
-            hide_action.triggered.connect(self._hide_node)
+            hide_action.triggered.connect(self.visibility_handler.hide_node)
 
     def _build_context_menu_for_split_origin(
         self, menu: QMenu, disconnect_is_enabled: bool
@@ -909,7 +912,7 @@ class NodeItem(QGraphicsItem):
         if not is_unified:
             hide_action = menu.addAction("Hide")
             hide_action.setShortcut(Qt.Key.Key_H)
-            hide_action.triggered.connect(self._hide_node)
+            hide_action.triggered.connect(self.visibility_handler.hide_node)
 
     def ensure_unified_sink_exists(self) -> None:
         self.unify_handler.ensure_sink_exists()
@@ -940,18 +943,18 @@ class NodeItem(QGraphicsItem):
             # Set as default node
             default_action = QAction("Set as default node", menu)
             default_action.setCheckable(True)
-            default_action.setChecked(self._is_default_sink())
+            default_action.setChecked(self.sink_handler.is_default_sink())
             default_action.triggered.connect(
-                lambda checked: self._toggle_default_sink(checked)
+                lambda checked: self.sink_handler.toggle_default_sink(checked)
             )
             menu.addAction(default_action)
 
             # Recreate at auto-start
             recreate_action = QAction("Recreate at auto-start", menu)
             recreate_action.setCheckable(True)
-            recreate_action.setChecked(self._is_recreate_at_autostart())
+            recreate_action.setChecked(self.sink_handler.is_recreate_at_autostart())
             recreate_action.triggered.connect(
-                lambda checked: self._toggle_recreate_at_autostart(checked)
+                lambda checked: self.sink_handler.toggle_recreate_at_autostart(checked)
             )
             menu.addAction(recreate_action)
 
@@ -975,7 +978,7 @@ class NodeItem(QGraphicsItem):
         if not is_unified:
             hide_action = menu.addAction("Hide")
             hide_action.setShortcut(Qt.Key.Key_H)
-            hide_action.triggered.connect(self._hide_node)
+            hide_action.triggered.connect(self.visibility_handler.hide_node)
 
         # Add unify menu items
         self.unify_handler.build_context_menu(menu)
@@ -1042,6 +1045,97 @@ class NodeItem(QGraphicsItem):
             if event.isAccepted():
                 return
         super().mouseDoubleClickEvent(event)
+
+    def get_state_dict(self) -> Dict[str, Any]:
+        """Return a dictionary of the node's current state for serialization.
+
+        The returned dict is compatible with :meth:`apply_configuration`,
+        enabling round-trip ``node.apply_configuration(node.get_state_dict())``.
+
+        Split origins include their parts' data; split parts return an empty
+        dict (their state is attributed to the origin).
+
+        Returns:
+            A dict with keys: ``pos``, ``is_split``, ``is_folded``,
+            ``manual_split``, split part positions/fold states, and
+            unified state fields.
+        """
+        if self.is_split_part:
+            # Split parts don't own their own state — the origin does
+            return {}
+
+        state: Dict[str, Any] = {}
+        state["pos"] = self.scenePos()
+        state["is_split"] = self.is_split_origin
+
+        if self.is_split_origin:
+            state["manual_split"] = getattr(self, "manual_split", True)
+
+            if self.split_input_node:
+                state["split_input_pos"] = self.split_input_node.scenePos()
+                if getattr(self.split_input_node, "input_part_folded", False):
+                    state["input_part_folded"] = (
+                        self.split_input_node.input_part_folded
+                    )
+
+            if self.split_output_node:
+                state["split_output_pos"] = self.split_output_node.scenePos()
+                if getattr(self.split_output_node, "output_part_folded", False):
+                    state["output_part_folded"] = (
+                        self.split_output_node.output_part_folded
+                    )
+        else:
+            # Non-split node
+            if getattr(self, "is_folded", False):
+                state["is_folded"] = self.is_folded
+
+            # Preserve split position history (for nodes that were split before)
+            split_input_node = getattr(self, "split_input_node", None)
+            if split_input_node:
+                state["split_input_pos"] = split_input_node.scenePos()
+            elif (
+                getattr(self, "config", None)
+                and self.config
+                and "split_input_pos" in self.config
+            ):
+                state["split_input_pos"] = self.config["split_input_pos"]
+
+            split_output_node = getattr(self, "split_output_node", None)
+            if split_output_node:
+                state["split_output_pos"] = split_output_node.scenePos()
+            elif (
+                getattr(self, "config", None)
+                and self.config
+                and "split_output_pos" in self.config
+            ):
+                state["split_output_pos"] = self.config["split_output_pos"]
+
+            # Preserve part fold states for future splits
+            if getattr(self, "input_part_folded", False):
+                state["input_part_folded"] = self.input_part_folded
+            if getattr(self, "output_part_folded", False):
+                state["output_part_folded"] = self.output_part_folded
+
+            # Preserve manual_split from config
+            node_config = getattr(self, "config", None)
+            if node_config and "manual_split" in node_config:
+                state["manual_split"] = node_config["manual_split"]
+
+        # Unified state fields
+        if getattr(self, "is_input_unified", False):
+            state["is_input_unified"] = True
+        if getattr(self, "is_output_unified", False):
+            state["is_output_unified"] = True
+        if getattr(self, "unified_input_sink_name", None):
+            state["unified_input_sink_name"] = self.unified_input_sink_name
+        if getattr(self, "unified_output_sink_name", None):
+            state["unified_output_sink_name"] = self.unified_output_sink_name
+        if getattr(self, "unified_input_module_id", None):
+            state["unified_input_module_id"] = self.unified_input_module_id
+        if getattr(self, "unified_output_module_id", None):
+            state["unified_output_module_id"] = self.unified_output_module_id
+
+        return state
 
     def apply_configuration(self, config: dict) -> None:
         """Applies visual state (split, position, fold states) from a configuration dictionary."""
@@ -1236,195 +1330,3 @@ class NodeItem(QGraphicsItem):
 
     def check_if_virtual_sink(self, client_name: str) -> None:
         self.unify_handler.classify_node(client_name)
-
-    def _get_sink_base_name(self) -> str:
-        """Get the base sink name (without JACK suffix) for config lookups."""
-        from cables.unified_sink_manager import _strip_sink_suffix
-
-        return _strip_sink_suffix(self.client_name)
-
-    def _get_config_manager(self):
-        """Get ConfigManager from the scene's connection_manager."""
-        scene = self.scene()
-        if not scene:
-            return None
-        cm = getattr(scene, "connection_manager", None)
-        return getattr(cm, "config_manager", None) if cm else None
-
-    def _is_recreate_at_autostart(self) -> bool:
-        """Check if this virtual sink is marked for recreation at auto-start."""
-        import json
-
-        config = self._get_config_manager()
-        if not config:
-            return False
-        try:
-            data = json.loads(
-                config.get_str(keys.VIRTUAL_SINKS_RECREATE_AT_AUTOSTART, "{}") or "{}"
-            )
-            return self.client_name in data
-        except (json.JSONDecodeError, Exception):
-            return False
-
-    def _toggle_recreate_at_autostart(self, checked: bool) -> None:
-        """Toggle the 'recreate at auto-start' setting for this virtual sink."""
-        import json
-
-        config = self._get_config_manager()
-        if not config:
-            return
-        try:
-            data = json.loads(
-                config.get_str(keys.VIRTUAL_SINKS_RECREATE_AT_AUTOSTART, "{}") or "{}"
-            )
-            if checked:
-                sink_name = self._get_sink_base_name()
-                channel_map = self._detect_channel_map(sink_name)
-                data[self.client_name] = {
-                    "sink_name": sink_name,
-                    "channel_map": channel_map,
-                }
-            else:
-                data.pop(self.client_name, None)
-            config.set_str(keys.VIRTUAL_SINKS_RECREATE_AT_AUTOSTART, json.dumps(data))
-            self.update()
-        except Exception as e:
-            logger.error(
-                f"Error toggling recreate-at-autostart for {self.client_name}: {e}"
-            )
-
-    def _detect_channel_map(self, sink_name: str) -> str:
-        """Detect the channel map of a running sink via pactl."""
-        import subprocess
-
-        try:
-            result = subprocess.run(
-                ["pactl", "list", "sinks"], capture_output=True, text=True, check=True
-            )
-            in_target_sink = False
-            for line in result.stdout.splitlines():
-                stripped = line.strip()
-                if (
-                    stripped.startswith("Name:")
-                    and stripped.split(":", 1)[1].strip() == sink_name
-                ):
-                    in_target_sink = True
-                elif stripped.startswith("Name:"):
-                    in_target_sink = False
-                elif in_target_sink and stripped.startswith("Channel Map:"):
-                    return stripped.split(":", 1)[1].strip().replace(" ", "")
-        except Exception as e:
-            logger.warning(f"Could not detect channel map for {sink_name}: {e}")
-        return "front-left,front-right"
-
-    def _get_pw_node_id(self) -> Optional[int]:
-        """Resolve the PipeWire node ID for this virtual sink via pw-dump."""
-        import subprocess as _sp
-        import re
-
-        # Extract PipeWire node ID from JACK client name suffix
-        m = re.search(r"-(\d+)$", self.client_name)
-        target_node_id = int(m.group(1)) if m else None
-
-        sink_base_name = self._get_sink_base_name()
-
-        # Check for Flatpak environment
-        flatpak_env = os.path.exists("/.flatpak-info")
-        cmd = ["pw-dump"]
-        if flatpak_env:
-            cmd = ["flatpak-spawn", "--host"] + cmd
-
-        try:
-            result = _sp.run(cmd, capture_output=True, text=True, check=True)
-            import json as _json
-
-            data = _json.loads(result.stdout)
-
-            matching_nodes = []
-
-            for node in data:
-                if node.get("type") != "PipeWire:Interface:Node":
-                    continue
-
-                node_id = int(node["id"])
-                props = node.get("info", {}).get("props", {})
-
-                # If we have a target node ID from suffix, use it to exactly match the node
-                if target_node_id is not None and node_id == target_node_id:
-                    return node_id
-
-                # Original fallback exact match
-                if props.get("node.description") == self.client_name:
-                    return node_id
-
-                # Match by base sink name
-                if props.get("node.name") == sink_base_name:
-                    serial = int(props.get("object.serial", 0))
-                    matching_nodes.append((serial, node_id))
-
-            if target_node_id is None and matching_nodes:
-                # No suffix -> we want the primary node. PipeWire assigns the lowest serial
-                # to the first-created node. Pick the node with the lowest serial.
-                matching_nodes.sort(key=lambda x: x[0])
-                return matching_nodes[0][1]
-
-        except Exception as e:
-            logger.error(
-                f"Error resolving PipeWire node ID for '{self.client_name}': {e}"
-            )
-        return None
-
-    def _is_default_sink(self) -> bool:
-        """Check if this virtual sink is currently the default audio sink."""
-        import subprocess as _sp
-
-        node_id = self._get_pw_node_id()
-        if node_id is None:
-            return False
-
-        # Check for Flatpak environment
-        flatpak_env = os.path.exists("/.flatpak-info")
-        cmd = ["wpctl", "inspect", "@DEFAULT_AUDIO_SINK@"]
-        if flatpak_env:
-            cmd = ["flatpak-spawn", "--host"] + cmd
-
-        try:
-            result = _sp.run(cmd, capture_output=True, text=True, check=True)
-            for line in result.stdout.splitlines():
-                stripped = line.strip()
-                if stripped.startswith("id "):
-                    current_id = stripped.split(",")[0].split()[-1].strip()
-                    return str(node_id) == current_id
-        except Exception as e:
-            logger.error(f"Error checking default sink status: {e}")
-        return False
-
-    def _toggle_default_sink(self, checked: bool) -> None:
-        """Set or clear this virtual sink as the default audio sink."""
-        import subprocess as _sp
-
-        node_id = self._get_pw_node_id()
-        if node_id is None:
-            logger.error(
-                f"Cannot toggle default: failed to resolve PipeWire ID for '{self.client_name}'"
-            )
-            return
-
-        # Check for Flatpak environment
-        flatpak_env = os.path.exists("/.flatpak-info")
-
-        try:
-            if checked:
-                cmd = ["wpctl", "set-default", str(node_id)]
-                if flatpak_env:
-                    cmd = ["flatpak-spawn", "--host"] + cmd
-                _sp.run(cmd, check=True, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
-                logger.info(f"Set default sink to '{self.client_name}' (ID {node_id})")
-            else:
-                cmd = ["wpctl", "clear-default", "0"]
-                if flatpak_env:
-                    cmd = ["flatpak-spawn", "--host"] + cmd
-                _sp.run(cmd, check=True, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
-                logger.info(f"Cleared default audio sink (was '{self.client_name}')")
-        except Exception as e:
-            logger.error(f"Error toggling default sink for '{self.client_name}': {e}")

@@ -89,7 +89,7 @@ class ProcessManager:
     def _ensure_connection_manager_visible(self) -> None:
         """Launches connection manager if not running, otherwise terminates and relaunches to bring to front."""
         if self.connection_manager_process is None or (
-            hasattr(self.connection_manager_process, 'state') and
+            getattr(self.connection_manager_process, 'state', None) is not None and
             self.connection_manager_process.state() == QProcess.ProcessState.NotRunning
         ):
             # If Cables app is not running, launch it

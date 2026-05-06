@@ -313,7 +313,7 @@ def show_hide_node_confirmation_dialog(
     result = dialog.exec() == QDialog.DialogCode.Accepted
 
     if result and checkbox.isChecked() and config_manager is not None:
-        if hasattr(config_manager, 'set_bool'):
+        if getattr(config_manager, 'set_bool', None) is not None:
             config_manager.set_bool(keys.SHOW_HIDE_NODE_CONFIRMATION, False)
 
     return result

@@ -182,7 +182,7 @@ class PortTreeWidget(QTreeWidget):
 
         # Access main window and client through self.window()
         main_window = self.window()
-        if not main_window or not hasattr(main_window, "client"):
+        if not main_window or not getattr(main_window, "client", None) is not None:
             logger.error(
                 "Error: Cannot access main window or JACK client from PortTreeWidget."
             )
@@ -256,7 +256,7 @@ class PortTreeWidget(QTreeWidget):
 
         all_primary_group_names = set()
         for port in all_system_primary_ports:
-            if port and hasattr(port, "name") and port.name:  # Basic validation
+            if port and getattr(port, "name", None) is not None:  # Basic validation
                 group_name = (
                     port.name.split(":", 1)[0] if ":" in port.name else port.name
                 )
@@ -403,7 +403,7 @@ class PortTreeWidget(QTreeWidget):
         untangle_mode = 0  # Default if not found
         if (
             main_window
-            and hasattr(main_window, "ui_state_manager")
+            and getattr(main_window, "ui_state_manager", None) is not None
             and main_window.ui_state_manager
         ):
             untangle_mode = main_window.ui_state_manager.get_untangle_mode()
@@ -594,7 +594,7 @@ class PortTreeWidget(QTreeWidget):
 
         # Check if the main window has a node_visibility_manager
         if (
-            hasattr(main_window, "node_visibility_manager")
+            getattr(main_window, "node_visibility_manager", None) is not None
             and main_window.node_visibility_manager
         ):
             # Determine if this is a MIDI or audio node based on which tree this is
@@ -612,7 +612,7 @@ class PortTreeWidget(QTreeWidget):
             show_dialog = True
 
             # Try to get the config from the config_manager
-            if hasattr(main_window, "config_manager") and main_window.config_manager:
+            if getattr(main_window, "config_manager", None) is not None:
                 show_dialog = main_window.config_manager.get_bool(
                     keys.SHOW_HIDE_NODE_CONFIRMATION, default=True
                 )
@@ -634,7 +634,7 @@ class PortTreeWidget(QTreeWidget):
                     node_name=group_name,
                     message_type=message_type,
                     config_manager=main_window.config_manager
-                    if hasattr(main_window, "config_manager")
+                    if getattr(main_window, "config_manager", None) is not None
                     else None,
                     custom_message=message,
                 )

@@ -74,7 +74,7 @@ class GraphInteractionHandler:
             return
 
         for item in self.scene.items():
-            if hasattr(item, 'set_connection_highlighted'):
+            if getattr(item, 'set_connection_highlighted', None) is not None:
                 item.set_connection_highlighted(False)
 
     def _select_items(self, items_to_select: List[QGraphicsItem]) -> None:

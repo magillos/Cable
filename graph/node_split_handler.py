@@ -155,7 +155,7 @@ class NodeSplitHandler:
         
         # Defer push-away check until after nodes are fully laid out
         # This is important for complex nodes with many ports
-        if hasattr(scene, '_apply_push_away_for_node'):
+        if getattr(scene, "_apply_push_away_for_node", None) is not None:
             from PyQt6.QtCore import QTimer
             QTimer.singleShot(0, lambda: scene._apply_push_away_for_node(input_node))
             QTimer.singleShot(0, lambda: scene._apply_push_away_for_node(output_node))
@@ -227,7 +227,7 @@ class NodeSplitHandler:
         ni.layout_ports() # Recalculate original node size (title bar)
         ni.update()
 
-        if hasattr(scene, 'node_configs'):
+        if getattr(scene, "node_configs", None) is not None:
             if original_client_name not in scene.node_configs:
                 scene.node_configs[original_client_name] = {}
             scene.node_configs[original_client_name]['is_split'] = True
@@ -237,7 +237,7 @@ class NodeSplitHandler:
                 scene.node_configs[original_client_name]['manual_split'] = True
                 
                 # Also update the node's own config
-                if hasattr(ni, 'config'):
+                if getattr(ni, "config", None) is not None:
                     ni.config['manual_split'] = True
         
         ni.layout_ports()
@@ -246,10 +246,10 @@ class NodeSplitHandler:
         if ni.split_output_node: ni.split_output_node.layout_ports(); ni.split_output_node.update()
 
         ni._internal_state_change_in_progress = False
-        if save_state and scene and hasattr(scene, 'request_specific_node_save'):
+        if save_state and scene and getattr(scene, "request_specific_node_save", None) is not None:
             scene.request_specific_node_save(ni) # Save state of the original node
         # Notify listeners that node states changed
-        if save_state and scene and hasattr(scene, 'node_states_changed'):
+        if save_state and scene and getattr(scene, "node_states_changed", None) is not None:
             scene.node_states_changed.emit()
 
     def unsplit_node(self, save_state: bool = True) -> None:
@@ -280,12 +280,12 @@ class NodeSplitHandler:
 
         # IMPORTANT: When unsplitting, we need to make both parts visible in the node_visibility_manager
         # Check if scene has node_visibility_manager
-        if hasattr(scene, 'node_visibility_manager') and scene.node_visibility_manager:
+        if getattr(scene, "node_visibility_manager", None) is not None and scene.node_visibility_manager:
             # Determine if this is a MIDI client
             is_midi = False
             for port_name in list(ni.input_ports.keys()) + list(ni.output_ports.keys()):
                 port_obj = ni.jack_handler.get_port_by_name(port_name)
-                if port_obj and hasattr(port_obj, 'is_midi') and port_obj.is_midi:
+                if port_obj and getattr(port_obj, "is_midi", False) and port_obj.is_midi:
                     is_midi = True
                     break
             
@@ -372,7 +372,7 @@ class NodeSplitHandler:
         ni.update()
 
         # Update node configs
-        if hasattr(scene, 'node_configs') and ni.client_name in scene.node_configs:
+        if getattr(scene, "node_configs", None) is not None and ni.client_name in scene.node_configs:
             scene.node_configs[ni.client_name]['is_split'] = False
             
             # If this is a manual unsplit (save_state=True), clear the manual_split flag
@@ -380,7 +380,7 @@ class NodeSplitHandler:
                 scene.node_configs[ni.client_name]['manual_split'] = False
                 
                 # Also update the node's own config
-                if hasattr(ni, 'config'):
+                if getattr(ni, "config", None) is not None:
                     ni.config['manual_split'] = False
         
         # Clean up and restore node state
@@ -388,10 +388,10 @@ class NodeSplitHandler:
         ni.update()
         
         ni._internal_state_change_in_progress = False
-        if save_state and scene and hasattr(scene, 'request_specific_node_save'):
+        if save_state and scene and getattr(scene, "request_specific_node_save", None) is not None:
             scene.request_specific_node_save(ni)
         # Notify listeners that node states changed
-        if save_state and scene and hasattr(scene, 'node_states_changed'):
+        if save_state and scene and getattr(scene, "node_states_changed", None) is not None:
             scene.node_states_changed.emit()
 
     def apply_split_config(self, config: Dict[str, Any]) -> None:

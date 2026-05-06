@@ -131,7 +131,7 @@ class NodeUnifyHandler:
     def _disconnect_sink_self_connections(self, sink_client_name: str, all_ports: List[Any]) -> None:
         """Disconnect any connections between the sink's own ports (monitor -> playback)."""
         ni = self.node_item
-        if not ni.scene() or not hasattr(ni.scene(), 'jack_connection_handler'):
+        if not ni.scene() or not getattr(ni.scene(), 'jack_connection_handler', None) is not None:
             return
         
         connection_handler = ni.scene().jack_connection_handler
@@ -246,7 +246,7 @@ class NodeUnifyHandler:
         ni = self.node_item
         sink_name = ni.unified_input_sink_name if is_input else ni.unified_output_sink_name
         
-        if not sink_name or not ni.scene() or not hasattr(ni.scene(), 'jack_connection_handler'):
+        if not sink_name or not ni.scene() or not getattr(ni.scene(), 'jack_connection_handler', None) is not None:
             return
 
         usm = self._get_unified_sink_manager()
@@ -272,7 +272,7 @@ class NodeUnifyHandler:
         if not usm:
             return
 
-        if not ni.scene() or not hasattr(ni.scene(), 'jack_connection_handler'):
+        if not ni.scene() or not getattr(ni.scene(), 'jack_connection_handler', None) is not None:
             return
 
         jack_handler = ni.jack_handler
@@ -400,7 +400,7 @@ class NodeUnifyHandler:
         Uses GraphConfigManager's cache to avoid overwriting data on flush.
         """
         ni = self.node_item
-        if hasattr(ni, 'config_manager') and ni.config_manager:
+        if getattr(ni, 'config_manager', None) is not None:
             if getattr(ni, 'is_virtual_sink', False):
                 return
             try:
@@ -590,11 +590,11 @@ class NodeUnifyHandler:
             if not ni.unified_input_module_id:
                 self._create_unified_sink(is_input=True)
                 self._wait_for_sink_and_connect(is_input=True)
-            elif ni.scene() and hasattr(ni.scene(), 'jack_connection_handler'):
+            elif ni.scene() and getattr(ni.scene(), 'jack_connection_handler', None) is not None:
                 self.connect_new_port(port_item, is_input=True)
         elif not is_input and ni.is_output_unified and ni.unified_output_sink_name:
             if not ni.unified_output_module_id:
                 self._create_unified_sink(is_input=False)
                 self._wait_for_sink_and_connect(is_input=False)
-            elif ni.scene() and hasattr(ni.scene(), 'jack_connection_handler'):
+            elif ni.scene() and getattr(ni.scene(), 'jack_connection_handler', None) is not None:
                 self.connect_new_port(port_item, is_input=False)

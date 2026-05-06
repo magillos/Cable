@@ -614,18 +614,18 @@ class TabUIManager:
 
             # Add zoom actions directly to the view widget - this is crucial for shortcuts
             if (
-                hasattr(manager.graph_main_window, "zoom_in_action")
+                getattr(manager.graph_main_window, "zoom_in_action", None) is not None
                 and manager.graph_main_window.zoom_in_action
             ):
                 graph_view_widget.addAction(manager.graph_main_window.zoom_in_action)
             if (
-                hasattr(manager.graph_main_window, "zoom_out_action")
+                getattr(manager.graph_main_window, "zoom_out_action", None) is not None
                 and manager.graph_main_window.zoom_out_action
             ):
                 graph_view_widget.addAction(manager.graph_main_window.zoom_out_action)
             # Add untangle shortcut action to the view widget
             if (
-                hasattr(manager.graph_main_window, "untangle_shortcut_action")
+                getattr(manager.graph_main_window, "untangle_shortcut_action", None) is not None
                 and manager.graph_main_window.untangle_shortcut_action
             ):
                 graph_view_widget.addAction(
@@ -634,7 +634,7 @@ class TabUIManager:
 
             # Create Node Visibility button and add it to the main window's top toolbar layout
             if (
-                hasattr(manager.graph_main_window, "preset_button")
+                getattr(manager.graph_main_window, "preset_button", None) is not None
                 and manager.graph_main_window.preset_button
             ):
                 # Create the Node Visibility button
@@ -652,7 +652,7 @@ class TabUIManager:
 
                 # Try to get the bottom toolbar layout (Presets are in the bottom toolbar)
                 bottom_toolbar_layout = None
-                if hasattr(manager.graph_main_window, "get_bottom_toolbar_layout"):
+                if getattr(manager.graph_main_window, "get_bottom_toolbar_layout", None) is not None:
                     bottom_toolbar_layout = (
                         manager.graph_main_window.get_bottom_toolbar_layout()
                     )
@@ -697,7 +697,7 @@ class TabUIManager:
                 manager.graph_node_visibility_button = graph_node_visibility_button
 
                 # Add to the internal controls to handle fullscreen mode
-                if hasattr(manager.graph_main_window, "_internal_controls"):
+                if getattr(manager.graph_main_window, "_internal_controls", None) is not None:
                     manager.graph_main_window._internal_controls.append(
                         graph_node_visibility_button
                     )
@@ -709,25 +709,25 @@ class TabUIManager:
 
         # Add zoom actions to the tab_widget as well for shortcuts to work when tab is active
         if (
-            hasattr(manager.graph_main_window, "zoom_in_action")
+            getattr(manager.graph_main_window, "zoom_in_action", None) is not None
             and manager.graph_main_window.zoom_in_action
         ):
             tab_widget.addAction(manager.graph_main_window.zoom_in_action)
         if (
-            hasattr(manager.graph_main_window, "zoom_out_action")
+            getattr(manager.graph_main_window, "zoom_out_action", None) is not None
             and manager.graph_main_window.zoom_out_action
         ):
             tab_widget.addAction(manager.graph_main_window.zoom_out_action)
         # Add untangle shortcut action to the tab_widget
         if (
-            hasattr(manager.graph_main_window, "untangle_shortcut_action")
+            getattr(manager.graph_main_window, "untangle_shortcut_action", None) is not None
             and manager.graph_main_window.untangle_shortcut_action
         ):
             tab_widget.addAction(manager.graph_main_window.untangle_shortcut_action)
 
         # Store a reference to the graph tab's preset button on the connection manager
         # so PresetHandler can find it.
-        if hasattr(manager.graph_main_window, "preset_button"):
+        if getattr(manager.graph_main_window, "preset_button", None) is not None:
             manager.graph_tab_presets_button = manager.graph_main_window.preset_button
         else:
             manager.graph_tab_presets_button = None
@@ -739,9 +739,9 @@ class TabUIManager:
         # This is still useful as the JACK client might take a moment to be fully ready
         # or for initial events to propagate.
         if (
-            hasattr(manager, "graph_main_window")
+            getattr(manager, "graph_main_window", None) is not None
             and manager.graph_main_window
-            and hasattr(manager.graph_main_window, "scene")
+            and getattr(manager.graph_main_window, "scene", None) is not None
             and manager.graph_main_window.scene
         ):
             # Define a slot for the refresh
@@ -762,9 +762,9 @@ class TabUIManager:
 
             # Pass node visibility manager to the graph scene
             if (
-                hasattr(manager, "node_visibility_manager")
+                getattr(manager, "node_visibility_manager", None) is not None
                 and manager.node_visibility_manager
-                and hasattr(manager.graph_main_window, "scene")
+                and getattr(manager.graph_main_window, "scene", None) is not None
                 and manager.graph_main_window.scene
             ):
                 manager.graph_main_window.scene.set_node_visibility_manager(

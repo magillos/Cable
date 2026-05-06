@@ -289,7 +289,7 @@ class HighlightManager:
         Args:
             tree_widget: The tree widget (PortTreeWidget).
         """
-        if not hasattr(tree_widget, 'topLevelItemCount'):
+        if getattr(tree_widget, 'topLevelItemCount', None) is None:
             return  # Safety check
 
         for i in range(tree_widget.topLevelItemCount()):

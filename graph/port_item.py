@@ -49,12 +49,12 @@ class PortItem(QGraphicsItem):
         self._connection_highlighted = False # Flag for connection highlighting
         self._mouse_press_pos = None # Store initial press position for drag threshold
         self._is_handling_selection_change = False # Flag to prevent re-entry during selection cascade
-        self.is_midi = hasattr(port_obj, 'is_midi') and port_obj.is_midi # Store is_midi
+        self.is_midi = getattr(port_obj, 'is_midi', False) # Store is_midi
 
         # Determine type for color coding
         if self.is_midi:
             self.port_color = constants.PORT_MIDI_COLOR
-        elif hasattr(port_obj, 'is_audio') and port_obj.is_audio: # Check for audio if not MIDI
+        elif getattr(port_obj, 'is_audio', False): # Check for audio if not MIDI
             self.port_color = constants.PORT_AUDIO_COLOR
         else:
             # Fallback for ports that are neither explicitly audio nor MIDI
@@ -215,7 +215,7 @@ class PortItem(QGraphicsItem):
             for conn_item in self.connections:
                 conn_item.update() # Trigger repaint of the connection
 
-            if self.scene() and hasattr(self.scene(), 'interaction_handler') and self.parent_node:
+            if self.scene() and getattr(self.scene(), 'interaction_handler', None) is not None and self.parent_node:
                 handler = self.scene().interaction_handler
 
                 # If GraphInteractionHandler is doing a batch selection, only do basic selection.
@@ -291,7 +291,7 @@ class PortItem(QGraphicsItem):
                 other_port = conn.source_port if conn.dest_port == self else conn.dest_port
                 items_to_select.append(other_port)
             
-            if self.scene() and hasattr(self.scene(), 'interaction_handler'):
+            if self.scene() and getattr(self.scene(), 'interaction_handler', None) is not None:
                 self.scene().clearSelection()
                 self.scene().interaction_handler._select_items(items_to_select)
                 self.scene().interaction_handler._is_double_click = True
@@ -315,9 +315,9 @@ class PortItem(QGraphicsItem):
         # Access self.parent_node.scene().jack_connection_handler
         current_scene = self.parent_node.scene()
         if not self.parent_node or not current_scene or \
-           not hasattr(current_scene, 'jack_connection_handler') or \
+           getattr(current_scene, 'jack_connection_handler', None) is None or \
            not current_scene.jack_connection_handler or \
-           not hasattr(current_scene, 'graph_jack_handler') or \
+           getattr(current_scene, 'graph_jack_handler', None) is None or \
            not current_scene.graph_jack_handler: # Also keep graph_jack_handler for get_all_connections
             action = menu.addAction("Error: Cannot access JACK handlers")
             action.setEnabled(False)

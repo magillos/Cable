@@ -80,6 +80,17 @@ class MainWindow(QMainWindow):
         self.keep_untangled = False
         self.initial_node_positions = None
 
+        # Widget/action references created later in _create_toolbar;
+        # pre-declared to None so hasattr() guards are unnecessary.
+        self.graph_connect_action: Any = None
+        self.graph_disconnect_action: Any = None
+        self.graph_undo_action: Any = None
+        self.graph_redo_action: Any = None
+        self.presets_graph_action: Any = None
+        self.preset_button: Any = None
+        self._top_toolbar_layout: Any = None
+        self._bottom_toolbar_layout: Any = None
+
         self.setWindowTitle("PyQt JACK Graph")
         self.setGeometry(100, 100, 1000, 700)
 
@@ -99,7 +110,7 @@ class MainWindow(QMainWindow):
         self.view = JackGraphView(self.scene)
         
         # Load the saved untangle setting from the scene if available
-        if hasattr(self.scene, 'initial_untangle_setting') and self.scene.initial_untangle_setting is not None:
+        if getattr(self.scene, 'initial_untangle_setting', None) is not None:
             if self.scene.initial_untangle_setting in self.untangle_values:
                 self.current_untangle_setting = self.scene.initial_untangle_setting
                 self.untangle_button_clicked = True
@@ -112,7 +123,7 @@ class MainWindow(QMainWindow):
             self.scene.scene_fully_loaded.connect(self._deferred_apply_auto_layout)
         
         # Load the keep_untangled setting from the scene's config manager
-        if hasattr(self.scene, 'node_config_manager'):
+        if getattr(self.scene, 'node_config_manager', None) is not None:
             self.keep_untangled = self.scene.node_config_manager.load_keep_untangled()
 
     def _create_toolbar(self) -> None:
@@ -339,7 +350,7 @@ class MainWindow(QMainWindow):
     
     def _reapply_layout_if_needed(self) -> None:
         """Reapply the current layout after graph refresh for I/O or persistent layout mode."""
-        if hasattr(self.scene, '_in_full_refresh') and self.scene._in_full_refresh:
+        if getattr(self.scene, '_in_full_refresh', False):
             return
         if not self.untangle_button_clicked:
             return
@@ -358,7 +369,7 @@ class MainWindow(QMainWindow):
 
     def _get_auto_split_setting(self) -> bool:
         """Read the 'Split nodes in Auto layout' setting from config."""
-        if hasattr(self.scene, 'main_config_manager') and self.scene.main_config_manager:
+        if getattr(self.scene, 'main_config_manager', None) is not None:
             return self.scene.main_config_manager.get_bool(keys.GRAPH_AUTO_LAYOUT_SPLIT, False)
         return False
 
@@ -377,7 +388,7 @@ class MainWindow(QMainWindow):
             return  # Don't reapply layout when persistent_layout is OFF
         if self._get_auto_split_setting():
             return  # auto-split is ON — the algorithm manages splits itself
-        if hasattr(self.scene, '_in_full_refresh') and self.scene._in_full_refresh:
+        if getattr(self.scene, '_in_full_refresh', False):
             return
         logger.debug("Reapplying Auto layout after user split/unsplit change (persistent layout is ON)")
         self.scene.untangle_graph_auto(auto_split=False)
@@ -396,54 +407,27 @@ class MainWindow(QMainWindow):
     @pyqtSlot()
     def _update_graph_undo_redo_buttons_state(self) -> None:
         """Updates the enabled state of Undo and Redo buttons for the graph tab."""
-        if self.connection_history and hasattr(self, 'graph_undo_action') and hasattr(self, 'graph_redo_action'):
+        if self.connection_history and self.graph_undo_action is not None and self.graph_redo_action is not None:
             self.graph_undo_action.setEnabled(self.connection_history.can_undo())
             self.graph_redo_action.setEnabled(self.connection_history.can_redo())
         else:
-            if hasattr(self, 'graph_undo_action'): self.graph_undo_action.setEnabled(False)
-            if hasattr(self, 'graph_redo_action'): self.graph_redo_action.setEnabled(False)
+            if self.graph_undo_action is not None: self.graph_undo_action.setEnabled(False)
+            if self.graph_redo_action is not None: self.graph_redo_action.setEnabled(False)
 
     @pyqtSlot()
     def _handle_graph_undo(self) -> None:
-        if self.connection_history and self.connection_history.can_undo():
-            action = self.connection_history.undo()
-            if action:
-                action_type, output_name, input_name, is_midi_op = action # Unpack is_midi_op
-                logger.debug(f"Graph Undo: {action_type} {output_name} -> {input_name} (MIDI: {is_midi_op})")
-
-                # action_type is the INVERSE action.
-                # If action_type is 'disconnect', it means the original action was 'connect', so we need to break the connection.
-                # If action_type is 'connect', it means the original action was 'disconnect', so we need to make the connection.
-                if action_type == 'disconnect':
-                    if is_midi_op:
-                        self.scene.jack_connection_handler.break_midi_connection(output_name, input_name, is_undo_redo=True)
-                    else:
-                        self.scene.jack_connection_handler.break_connection(output_name, input_name, is_undo_redo=True)
-                elif action_type == 'connect':
-                    if is_midi_op:
-                        self.scene.jack_connection_handler.make_midi_connection(output_name, input_name, is_undo_redo=True)
-                    else:
-                        self.scene.jack_connection_handler.make_connection(output_name, input_name, is_undo_redo=True)
+        """Undo the last connection action via ConnectionHistory."""
+        if self.connection_history:
+            if self.connection_history.undo_and_execute(self.scene.jack_connection_handler):
+                logger.debug("Graph Undo: executed inverse connection")
             self._update_graph_undo_redo_buttons_state()
 
     @pyqtSlot()
     def _handle_graph_redo(self) -> None:
-        if self.connection_history and self.connection_history.can_redo():
-            action = self.connection_history.redo()
-            if action:
-                action_type, output_name, input_name, is_midi_op = action # Unpack is_midi_op
-                logger.debug(f"Graph Redo: {action_type} {output_name} -> {input_name} (MIDI: {is_midi_op})")
-                
-                if action_type == 'connect': # Redoing a connect means making a connection
-                    if is_midi_op:
-                        self.scene.jack_connection_handler.make_midi_connection(output_name, input_name, is_undo_redo=True)
-                    else:
-                        self.scene.jack_connection_handler.make_connection(output_name, input_name, is_undo_redo=True)
-                elif action_type == 'disconnect': # Redoing a disconnect means breaking a connection
-                    if is_midi_op:
-                        self.scene.jack_connection_handler.break_midi_connection(output_name, input_name, is_undo_redo=True)
-                    else:
-                        self.scene.jack_connection_handler.break_connection(output_name, input_name, is_undo_redo=True)
+        """Redo the next connection action via ConnectionHistory."""
+        if self.connection_history:
+            if self.connection_history.redo_and_execute(self.scene.jack_connection_handler):
+                logger.debug("Graph Redo: executed connection")
             self._update_graph_undo_redo_buttons_state()
 
     @pyqtSlot()
@@ -522,7 +506,7 @@ class MainWindow(QMainWindow):
         self.keep_untangled = checked
         
         # Save the setting to config
-        if hasattr(self.scene, 'node_config_manager'):
+        if getattr(self.scene, 'node_config_manager', None) is not None:
             self.scene.node_config_manager.save_keep_untangled(checked)
         
         # Reapply the current layout when turning ON
@@ -532,22 +516,22 @@ class MainWindow(QMainWindow):
                 logger.debug("Reapplying I/O layout on 'Persistent layout' enable")
                 self.scene.unsplit_all_nodes(save_state=False)
                 self.scene.untangle_graph_by_io()
-                if hasattr(self, 'statusBar') and self.statusBar():
+                if self.statusBar() is not None:
                     self.statusBar().showMessage("Persistent layout enabled - I/O layout reapplied.", 3000)
             elif self.current_untangle_setting == AUTO_LAYOUT:
                 # Auto layout
                 logger.debug("Reapplying Auto layout on 'Persistent layout' enable")
                 self.scene.untangle_graph_auto(auto_split=self._get_auto_split_setting())
-                if hasattr(self, 'statusBar') and self.statusBar():
+                if self.statusBar() is not None:
                     self.statusBar().showMessage("Persistent layout enabled - Auto layout reapplied.", 3000)
             else:
                 # Nodes per row layout
                 logger.debug(f"Reapplying {self.current_untangle_setting} nodes per row layout on 'Persistent layout' enable")
                 self.scene.unsplit_all_nodes(save_state=False)
                 self.scene.untangle_graph(max_nodes_per_row=self.current_untangle_setting)
-                if hasattr(self, 'statusBar') and self.statusBar():
+                if self.statusBar() is not None:
                     self.statusBar().showMessage(f"Persistent layout enabled - {self.current_untangle_setting} nodes per row layout reapplied.", 3000)
-        elif hasattr(self, 'statusBar') and self.statusBar():
+        elif self.statusBar() is not None:
             if checked:
                 self.statusBar().showMessage("Persistent layout enabled - layout will be reapplied when nodes change.", 3000)
             else:
@@ -572,33 +556,33 @@ class MainWindow(QMainWindow):
         if layout_value == ORIGINAL_LAYOUT:
             if self.initial_node_positions:
                 self.scene.restore_node_states(self.initial_node_positions)
-                if hasattr(self, 'statusBar') and self.statusBar():
+                if self.statusBar() is not None:
                     self.statusBar().showMessage("Restored original layout.", 3000)
             else:
                 self.scene.untangle_graph(max_nodes_per_row=6)
-                if hasattr(self, 'statusBar') and self.statusBar():
+                if self.statusBar() is not None:
                     self.statusBar().showMessage("Original layout not available, using default untangle.", 3000)
         elif layout_value == AUTO_LAYOUT:
             success = self.scene.untangle_graph_auto(auto_split=self._get_auto_split_setting())
             if success:
-                if hasattr(self, 'statusBar') and self.statusBar():
+                if self.statusBar() is not None:
                     self.statusBar().showMessage("Auto layout applied.", 3000)
             else:
-                if hasattr(self, 'statusBar') and self.statusBar():
+                if self.statusBar() is not None:
                     self.statusBar().showMessage("Auto layout failed. Is python-graphviz installed?", 5000)
         elif layout_value == 0:
             # I/O layout will handle splitting nodes itself
             self.scene.untangle_graph_by_io()
-            if hasattr(self, 'statusBar') and self.statusBar():
+            if self.statusBar() is not None:
                 self.statusBar().showMessage("Graph untangled by I/O.", 3000)
         else:
             self.scene.unsplit_all_nodes(save_state=False)
             self.scene.untangle_graph(max_nodes_per_row=layout_value)
-            if hasattr(self, 'statusBar') and self.statusBar():
+            if self.statusBar() is not None:
                 self.statusBar().showMessage(f"Graph untangled with {layout_value} nodes per row.", 3000)
         
         # Save the current untangle setting after applying the layout
-        current_zoom_level = self.view.get_zoom_level() if hasattr(self.view, 'get_zoom_level') else None
+        current_zoom_level = self.view.get_zoom_level() if getattr(self.view, 'get_zoom_level', None) is not None else None
         self.scene.save_node_states(graph_zoom_level=current_zoom_level, current_untangle_setting=self.current_untangle_setting)
         
         # Mark that untangle has been used
@@ -645,7 +629,7 @@ class MainWindow(QMainWindow):
             elif isinstance(item, ConnectionItem):
                 selected_connection_items.append(item)
             # Check for BulkAreaItem selections
-            elif hasattr(item, 'is_input') and hasattr(item, 'parent_node'):
+            elif getattr(item, 'is_input', None) is not None and getattr(item, 'parent_node', None) is not None:
                 # This is likely a BulkAreaItem
                 if item.is_input:
                     selected_input_bulk_areas.append(item)
@@ -763,7 +747,7 @@ class MainWindow(QMainWindow):
                     break
             can_connect = not all_connected # Enable if any potential connections are missing
 
-        if hasattr(self, 'graph_connect_action'):
+        if self.graph_connect_action is not None:
             self.graph_connect_action.setEnabled(can_connect)
 
         # Disconnect button state
@@ -836,7 +820,7 @@ class MainWindow(QMainWindow):
                 if can_disconnect:
                     break
         
-        if hasattr(self, 'graph_disconnect_action'):
+        if self.graph_disconnect_action is not None:
             self.graph_disconnect_action.setEnabled(can_disconnect)
 
 
@@ -856,7 +840,7 @@ class MainWindow(QMainWindow):
                 else:
                     selected_output_ports.append(item)
             # Check for BulkAreaItem selections
-            elif hasattr(item, 'is_input') and hasattr(item, 'parent_node'):
+            elif getattr(item, 'is_input', None) is not None and getattr(item, 'parent_node', None) is not None:
                 # This is likely a BulkAreaItem
                 if item.is_input:
                     selected_input_bulk_areas.append(item)
@@ -980,12 +964,12 @@ class MainWindow(QMainWindow):
                         logger.debug(f"Skipping bulk connection between {output_node.client_name} and {input_node.client_name} due to empty port lists.")
         
         if connections_made > 0:
-            if hasattr(self, 'statusBar') and self.statusBar():
+            if self.statusBar() is not None:
                 self.statusBar().showMessage(f"{connections_made} connection(s) attempted.", 3000)
         else:
             # Only show this if an attempt was actually possible (action was enabled)
-            if hasattr(self, 'graph_connect_action') and self.graph_connect_action.isEnabled(): # Check if action was enabled
-                 if hasattr(self, 'statusBar') and self.statusBar():
+            if self.graph_connect_action is not None and self.graph_connect_action.isEnabled(): # Check if action was enabled
+                 if self.statusBar() is not None:
                      self.statusBar().showMessage("No new connections were made (possibly already connected or error).", 3000)
         # self.update_graph_connection_buttons_state() # No longer needed here, scene signal will trigger it
         self._update_graph_undo_redo_buttons_state() # Update undo/redo buttons
@@ -1003,7 +987,7 @@ class MainWindow(QMainWindow):
 
         # Check for BulkAreaItem selections
         for item in selected_items:
-            if hasattr(item, 'is_input') and hasattr(item, 'parent_node'):
+            if getattr(item, 'is_input', None) is not None and getattr(item, 'parent_node', None) is not None:
                 # This is likely a BulkAreaItem
                 if item.is_input:
                     selected_input_bulk_areas.append(item)
@@ -1119,12 +1103,12 @@ class MainWindow(QMainWindow):
                                     disconnections_made += 1
 
         if disconnections_made > 0:
-            if hasattr(self, 'statusBar') and self.statusBar():
+            if self.statusBar() is not None:
                 self.statusBar().showMessage(f"{disconnections_made} disconnection(s) attempted.", 3000)
         else:
             # Only show this if an attempt was actually possible (action was enabled)
-            if hasattr(self, 'graph_disconnect_action') and self.graph_disconnect_action.isEnabled(): # Check if action was enabled
-                if hasattr(self, 'statusBar') and self.statusBar():
+            if self.graph_disconnect_action is not None and self.graph_disconnect_action.isEnabled(): # Check if action was enabled
+                if self.statusBar() is not None:
                     self.statusBar().showMessage("No connections were broken (possibly not connected or error).", 3000)
         # self.update_graph_connection_buttons_state() # No longer needed here, scene signal will trigger it
         self._update_graph_undo_redo_buttons_state() # Update undo/redo buttons
@@ -1142,7 +1126,7 @@ class MainWindow(QMainWindow):
         self.scene.clear_graph()
         self.view.setEnabled(False)
         # Check if statusBar exists before using it
-        if hasattr(self, 'statusBar') and self.statusBar():
+        if self.statusBar() is not None:
              self.statusBar().showMessage("JACK connection lost.", 5000)
         # Optionally try to reconnect or close the app
 
@@ -1169,7 +1153,7 @@ class MainWindow(QMainWindow):
             QHBoxLayout: The top toolbar layout containing Connect, Disconnect, Undo, and Redo buttons
         """
         # Store a reference to the top_toolbar_layout as a class member
-        if hasattr(self, '_top_toolbar_layout'):
+        if self._top_toolbar_layout is not None:
             return self._top_toolbar_layout
             
         if self.centralWidget() and isinstance(self.centralWidget().layout(), QVBoxLayout):
@@ -1190,7 +1174,7 @@ class MainWindow(QMainWindow):
         Returns:
             QHBoxLayout: The bottom toolbar layout containing Presets, Untangle, and other controls
         """
-        if hasattr(self, '_bottom_toolbar_layout'):
+        if self._bottom_toolbar_layout is not None:
             return self._bottom_toolbar_layout
         return None
 
@@ -1210,5 +1194,5 @@ class MainWindow(QMainWindow):
         self.initial_node_positions = copy.deepcopy(current_states)
         
         # Show a status message
-        if hasattr(self, 'statusBar') and self.statusBar():
+        if self.statusBar() is not None:
             self.statusBar().showMessage("Current layout saved as default and will be used as 'Original layout' in Untangle menu", 5000)

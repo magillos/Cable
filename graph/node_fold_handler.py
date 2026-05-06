@@ -120,14 +120,13 @@ class NodeFoldHandler:
         if is_part and node.split_origin_node:
             node_to_trigger_save_on = node.split_origin_node
         
-        if node_to_trigger_save_on.scene() and \
-           hasattr(node_to_trigger_save_on.scene(), 'request_specific_node_save'):
+        scene = node_to_trigger_save_on.scene()
+        if scene is not None and getattr(scene, 'request_specific_node_save', None) is not None:
             # The scene's method will get all relevant state from node_to_trigger_save_on
-            node_to_trigger_save_on.scene().request_specific_node_save(node_to_trigger_save_on)
+            scene.request_specific_node_save(node_to_trigger_save_on)
         # Emit node state change for baseline updates
-        if node_to_trigger_save_on.scene() and \
-           hasattr(node_to_trigger_save_on.scene(), 'node_states_changed'):
-            node_to_trigger_save_on.scene().node_states_changed.emit()
+        if scene is not None and getattr(scene, 'node_states_changed', None) is not None:
+            scene.node_states_changed.emit()
 
     def apply_fold_config(self, config: Dict[str, Any], is_currently_split_origin: bool, is_currently_split_part: bool) -> None:
         """

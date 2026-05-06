@@ -191,7 +191,7 @@ class UIStateManager(QObject):
         action = 'collapse_all_groups' if collapse else 'expand_all_groups'
         trees = [self.input_tree, self.output_tree, self.midi_input_tree, self.midi_output_tree]
         for tree in trees:
-            if tree and hasattr(tree, action):
+            if tree and getattr(tree, action, None) is not None:
                 getattr(tree, action)()
             elif tree:
                  logger.warning(f"Tree widget missing method: {action}")
@@ -226,7 +226,7 @@ class UIStateManager(QObject):
             trees_to_modify = []
 
         for tree in trees_to_modify:
-            if tree and hasattr(tree, action):
+            if tree and getattr(tree, action, None) is not None:
                 getattr(tree, action)()
             elif tree:
                  logger.warning(f"Tree widget missing method: {action}")

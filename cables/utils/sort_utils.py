@@ -307,9 +307,13 @@ def detect_stereo_pairs(
     **Phase 2 — Consecutive numbered pair matching:**
     Remaining unmatched audio ports are split into *(base, number)* using a
     trailing-number regex.  Ports that share the same base name are grouped
-    and paired by consecutive odd/even numbers: 1+2, 3+4, 5+6, etc.
+    and paired by consecutive even/odd numbers starting from the lowest
+    number in the group: e.g. 1+2, 3+4 (1-based) or 0+1, 2+3 (0-based).
+    Both conventions are supported so devices that number channels from 0
+    are handled correctly.
     This handles DAW-style port naming (``out1``/``out2``,
-    ``Master/audio_out 1``/``2``).
+    ``Master/audio_out 1``/``2``) as well as hardware interfaces that
+    start channel numbering at 0 (e.g. ``L[0]``/``R[1]``).
 
     MIDI ports are **never** paired — they are always returned as unpaired.
 
@@ -417,12 +421,17 @@ def detect_stereo_pairs(
     for base, num_port_list in base_groups.items():
         # Sort by number within the group
         num_port_list.sort(key=lambda x: x[0])
+        # Derive the expected parity of the first port from the minimum
+        # channel number so both 0-based (0+1, 2+3 …) and 1-based
+        # (1+2, 3+4 …) numbering schemes are handled correctly.
+        base_parity = num_port_list[0][0] % 2
         i = 0
         while i < len(num_port_list) - 1:
             num_a, port_a = num_port_list[i]
             num_b, port_b = num_port_list[i + 1]
-            # Pair consecutive odd/even: lower must be odd, diff must be 1
-            if num_a % 2 == 1 and num_b - num_a == 1:
+            # Pair consecutive ports: first must have the group's base parity,
+            # second must immediately follow (diff == 1).
+            if num_a % 2 == base_parity and num_b - num_a == 1:
                 pairs.append((port_a, port_b))
                 i += 2
             else:

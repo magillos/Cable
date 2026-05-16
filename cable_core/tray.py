@@ -307,7 +307,12 @@ class TrayManager:
         # Disable the tray action if autostart is enabled
         tray_action.setEnabled(not self.app.autostart_enabled)
         if self._set_tray_checkbox_cb:
-            tray_action.toggled.connect(self._set_tray_checkbox_cb)
+            def _on_tray_action_toggled(checked: bool) -> None:
+                self._set_tray_checkbox_cb(checked)
+                self.toggle_tray_icon(
+                    Qt.CheckState.Checked.value if checked else Qt.CheckState.Unchecked.value
+                )
+            tray_action.toggled.connect(_on_tray_action_toggled)
         context_menu.addAction(tray_action)
 
         # Add Autostart toggle (below tray icon toggle)

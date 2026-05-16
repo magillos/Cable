@@ -16,7 +16,6 @@ from PyQt6.QtGui import (
     QPalette,
     QPainterPath,
     QLinearGradient,
-    QFontMetrics,
 )
 
 from typing import TYPE_CHECKING, Optional, Any, Union, List, Tuple, Dict
@@ -118,7 +117,7 @@ class _MatrixGridWidget(QWidget):
         if min_width < 50:  # A small threshold to detect when there's no content
             min_width = 0
 
-        self.setMinimumSize(int(min_width), int(min_height))
+        self.setMinimumSize(min_width, min_height)
         self.updateGeometry()
 
         # Set size policy to allow expansion
@@ -128,6 +127,18 @@ class _MatrixGridWidget(QWidget):
     def _calculate_sizes_from_text(self) -> None:
         """Calculate label positions, sizes, and grid dimensions for perfect alignment."""
         from collections import defaultdict
+        import math
+
+        # Create font objects for measurements
+        client_font = QFont()
+        client_font.setPointSize(self.client_name_font_size)
+        client_font.setBold(True)
+
+        port_font = QFont()
+        port_font.setPointSize(self.font_size)
+
+        # Create a temporary painter for text measurements
+        painter = QPainter(self)
 
         # Group ports by client and count ports to support grouped labels
         input_client_groups = defaultdict(list)
@@ -137,9 +148,10 @@ class _MatrixGridWidget(QWidget):
             input_client_groups[client_name].append((i, port_name, display_name))
 
         # Also precompute how many ports each input client has
-        self.input_client_port_counts = {
+        input_client_port_counts = {
             client: len(ports) for client, ports in input_client_groups.items()
         }
+        self.input_client_port_counts = input_client_port_counts
 
         output_client_groups = defaultdict(list)
         for i, (client_name, port_name, display_name) in enumerate(
@@ -148,40 +160,136 @@ class _MatrixGridWidget(QWidget):
             output_client_groups[client_name].append((i, port_name, display_name))
 
         # Also precompute how many ports each output client has
-        self.output_client_port_counts = {
+        output_client_port_counts = {
             client: len(ports) for client, ports in output_client_groups.items()
         }
+        self.output_client_port_counts = output_client_port_counts
 
-        # Force uniform square cells for the matrix grid.
-        # This matches the intended classic matrix look (as it appeared previously
-        # when text measurement implicitly failed) and prevents wide rectangles.
-        cell_size = int(35 * self.grid_cell_scaling)
-
-        # Calculate row heights and positions
+        # Calculate row heights and positions based on output labels (left side)
         self.row_heights = []
-        self.row_positions = []
+        self.row_positions = []  # Y positions for each row
         current_y = self.top_margin
 
-        for _ in self.parent_matrix.model.output_ports:
-            self.row_heights.append(cell_size)
-            self.row_positions.append(int(current_y))
-            current_y += cell_size
+        # Pre-calculate client heights
+        client_heights = {}
+        painter.setFont(client_font)
+        for client_name in output_client_groups.keys():
+            client_rect = painter.boundingRect(
+                0,
+                0,
+                1000,
+                100,
+                Qt.AlignmentFlag.AlignLeft,
+                _truncate_text(client_name, 20),
+            )
+            client_heights[client_name] = client_rect.height() + 4  # Padding
 
-        # Calculate column widths and positions
+        # Calculate port heights and combined heights
+        painter.setFont(port_font)
+        for i, (client_name, port_name, display_name) in enumerate(
+            self.parent_matrix.model.output_ports
+        ):
+            port_rect = painter.boundingRect(
+                0,
+                0,
+                1000,
+                100,
+                Qt.AlignmentFlag.AlignLeft,
+                _truncate_text(display_name, 20),
+            )
+            port_height = port_rect.height() + 4  # Padding
+
+            client_height = client_heights[client_name]
+
+            # Row height to accommodate both client and port
+            min_row_height = int(
+                35 * self.grid_cell_scaling
+            )  # Scale minimum row height with zoom
+            row_height = max(
+                client_height + port_height + 8, min_row_height
+            )  # Minimum scaled for clickability
+
+            self.row_heights.append(row_height)
+            self.row_positions.append(current_y)
+            current_y += row_height
+
+        # Calculate column widths and positions based on rotated input labels (bottom)
         self.column_widths = []
-        self.column_positions = []
+        self.column_positions = []  # X positions for each column
         current_x = self.left_margin
 
-        for _ in self.parent_matrix.model.input_ports:
-            self.column_widths.append(cell_size)
-            self.column_positions.append(int(current_x))
-            current_x += cell_size
+        # Pre-calculate client rects
+        client_rects = {}
+        painter.setFont(client_font)
+        for client_name in input_client_groups.keys():
+            client_rects[client_name] = painter.boundingRect(
+                0,
+                0,
+                1000,
+                100,
+                Qt.AlignmentFlag.AlignLeft,
+                _truncate_text(client_name, 25),
+            )
+
+        # Calculate port widths and combined widths
+        painter.setFont(port_font)
+        for i, (client_name, port_name, display_name) in enumerate(
+            self.parent_matrix.model.input_ports
+        ):
+            port_rect = painter.boundingRect(
+                0,
+                0,
+                1000,
+                100,
+                Qt.AlignmentFlag.AlignLeft,
+                _truncate_text(display_name, 25),
+            )
+            client_rect = client_rects[client_name]
+
+            # Labels are vertical, so width is max, and height is sum
+            unrotated_width = max(client_rect.width(), port_rect.width())
+            unrotated_height = client_rect.height() + port_rect.height() - 4
+
+            # Approximate width for 45-degree rotation
+            rotated_width = (unrotated_width + unrotated_height) * 0.707 + 15  # Padding
+
+            min_column_width = int(
+                35 * self.grid_cell_scaling
+            )  # Scale minimum column width with zoom
+            column_width = max(
+                rotated_width, min_column_width
+            )  # Minimum scaled for clickability
+
+            self.column_widths.append(column_width)
+            self.column_positions.append(current_x)
+            current_x += column_width
+
+        painter.end()
 
         # Calculate grid dimensions
         self.grid_width = sum(self.column_widths) if self.column_widths else 0
         self.grid_height = sum(self.row_heights) if self.row_heights else 0
         self.total_width = self.left_margin + self.grid_width + self.right_margin
         self.total_height = self.top_margin + self.grid_height + self.bottom_margin
+
+        # Fallback if calculations failed - use scaled minimum sizes
+        min_scaled_size = int(35 * self.grid_cell_scaling)
+        if not self.column_widths:
+            self.column_widths = [min_scaled_size] * len(
+                self.parent_matrix.model.input_ports
+            )
+            self.column_positions = [
+                self.left_margin + i * min_scaled_size
+                for i in range(len(self.parent_matrix.model.input_ports))
+            ]
+        if not self.row_heights:
+            self.row_heights = [min_scaled_size] * len(
+                self.parent_matrix.model.output_ports
+            )
+            self.row_positions = [
+                self.top_margin + i * min_scaled_size
+                for i in range(len(self.parent_matrix.model.output_ports))
+            ]
 
     @property
     def cell_height(self) -> int:
@@ -213,7 +321,7 @@ class _MatrixGridWidget(QWidget):
         grid_rect = QRect(
             self.left_margin,
             self.top_margin,
-            int(max(available_width, grid_width)),
+            max(available_width, grid_width),
             height - self.top_margin - self.bottom_margin,
         )
 
@@ -248,7 +356,7 @@ class _MatrixGridWidget(QWidget):
         )
 
         # Calculate the bottom y-coordinate for the grid content
-        grid_bottom_y = int(
+        grid_bottom_y = (
             self.row_positions[-1] + self.row_heights[-1]
             if self.row_positions and self.row_heights
             else grid_rect.bottom()
@@ -257,7 +365,7 @@ class _MatrixGridWidget(QWidget):
         # Calculate the right x-coordinate for the grid content
         grid_right_x = self.left_margin
         if self.column_positions and self.column_widths:
-            grid_right_x = int(self.column_positions[-1] + self.column_widths[-1])
+            grid_right_x = self.column_positions[-1] + self.column_widths[-1]
 
         # Vertical lines (columns) - using pre-calculated column positions
         for col_x in self.column_positions:
@@ -337,10 +445,10 @@ class _MatrixGridWidget(QWidget):
                 row_height = self.row_heights[row]
 
                 # Ensure square fits within available grid width
-                square_width = int(min(
+                square_width = min(
                     column_width - 2, grid_rect.width() - col_x + grid_rect.left() - 2
-                ))
-                rect = QRect(int(col_x + 1), int(row_y + 1), square_width, int(row_height - 2))
+                )
+                rect = QRect(col_x + 1, row_y + 1, square_width, row_height - 2)
 
                 is_connected = self.parent_matrix.model.is_connected(
                     output_port, input_port
@@ -1216,13 +1324,14 @@ class _OutputLabelsWidget(QWidget):
         if self.width() <= 0:
             return
 
+        painter = QPainter(self)
         available_width = self.width() - 10  # padding
 
         # Client names
         client_font = QFont()
         client_font.setPointSize(self.client_name_font_size)
         client_font.setBold(True)
-        client_fm = QFontMetrics(client_font)
+        painter.setFont(client_font)
 
         low = 0
         high = 100
@@ -1232,7 +1341,7 @@ class _OutputLabelsWidget(QWidget):
             if mid == 0:
                 low = 1
                 continue
-            rect = client_fm.boundingRect("A" * mid)
+            rect = painter.boundingRect(0, 0, 1000, 100, 0, "A" * mid)
             if rect.width() <= available_width:
                 max_chars = mid
                 low = mid + 1
@@ -1243,7 +1352,7 @@ class _OutputLabelsWidget(QWidget):
         # Port names
         port_font = QFont()
         port_font.setPointSize(self.font_size)
-        port_fm = QFontMetrics(port_font)
+        painter.setFont(port_font)
 
         low = 0
         high = 100
@@ -1253,13 +1362,15 @@ class _OutputLabelsWidget(QWidget):
             if mid == 0:
                 low = 1
                 continue
-            rect = port_fm.boundingRect("A" * mid)
+            rect = painter.boundingRect(0, 0, 1000, 100, 0, "A" * mid)
             if rect.width() <= available_width:
                 max_chars = mid
                 low = mid + 1
             else:
                 high = mid - 1
         self.max_port_chars = max_chars
+
+        painter.end()
 
     def _sync_with_main_grid(self) -> None:
         """Sync dimensions and positions with the main grid widget."""
@@ -1276,7 +1387,7 @@ class _OutputLabelsWidget(QWidget):
             # Calculate our required height (same as grid height)
             total_height = getattr(grid_widget, "total_height", 200)
 
-            self.setMinimumHeight(int(total_height))
+            self.setMinimumHeight(total_height)
             # Don't set minimum width since we're in a splitter that handles sizing
 
     def paintEvent(self, event: Optional["QEvent"]) -> None:

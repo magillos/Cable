@@ -148,6 +148,15 @@ class TabUIManager:
         input_label.setStyleSheet(f"color: {manager.text_color.name()};")
         output_label.setStyleSheet(f"color: {manager.text_color.name()};")
 
+        # Store label references on the manager so _refresh_tab_stylesheets can
+        # re-apply colours on system theme change.
+        if port_type == "audio":
+            manager.audio_input_label = input_label
+            manager.audio_output_label = output_label
+        elif port_type == "midi":
+            manager.midi_input_label = input_label
+            manager.midi_output_label = output_label
+
         # Create tree widgets with appropriate roles, passing the highlight manager
         input_tree = DropPortTreeWidget(
             highlight_manager=manager.highlight_manager, parent=tab_widget
@@ -465,6 +474,9 @@ class TabUIManager:
             f"color: {manager.text_color.name()}; font-size: 11pt;"
         )
         layout.addWidget(instructions_label)
+
+        # Store so _refresh_tab_stylesheets can update the color on theme change
+        manager.latency_instructions_label = instructions_label
 
         # Combo Boxes for Port Selection
         manager.latency_input_combo = QComboBox()

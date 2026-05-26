@@ -9,7 +9,7 @@ with signals for thread-safe UI updates from JACK callbacks.
 import jack
 import threading
 from typing import List, Optional, Tuple
-from PyQt6.QtCore import QObject, pyqtSignal
+from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
 import logging
 logger = logging.getLogger(__name__)
@@ -31,6 +31,7 @@ class JackService(QObject):
     connection_broken = pyqtSignal(str, str)           # out_port, in_port
     xrun_occurred = pyqtSignal(int)                    # xrun count
     shutdown = pyqtSignal()                            # JACK server shutdown
+    reconnected = pyqtSignal()                          # JACK client reconnected after server restart
     
     # Legacy signals for backward compatibility
     port_registered = pyqtSignal(str, bool)            # port name, is_input
@@ -44,7 +45,11 @@ class JackService(QObject):
         self._active = False
         self._xrun_count = 0
         self._closing = False  # Flag to prevent callbacks during shutdown
+        self._server_dead = False  # Flag set when JACK server shuts down
         self._close_lock = threading.Lock()  # Thread-safe close flag access
+        self._reconnect_timer: Optional[QTimer] = None
+        self._reconnect_attempts = 0
+        self._max_reconnect_attempts = 20  # 20 * 500ms = 10s max wait
     
     @classmethod
     def instance(cls) -> 'JackService':
@@ -216,12 +221,20 @@ class JackService(QObject):
             logger.debug(f"JackService port connect callback error: {e}")
     
     def _on_shutdown(self, status: int, reason: str) -> None:
-        """JACK callback for server shutdown."""
+        """JACK callback for server shutdown.
+
+        Marks the server as dead so that ``reconnect()`` knows the client
+        needs to be replaced.  Does NOT close the client here because
+        python-jack-client forbids calling ``close()`` from within a
+        callback.
+        """
         # Early exit if we're shutting down to prevent signal emission on deleted QObject
         if self._is_closing():
             return
         try:
             logger.debug(f"JACK server shutdown: status={status}, reason='{reason}'")
+            self._server_dead = True
+            self._active = False
             self.shutdown.emit()
         except Exception as e:
             logger.debug(f"JackService shutdown callback error: {e}")
@@ -610,6 +623,72 @@ class JackService(QObject):
         """Reset the xrun counter to zero."""
         self._xrun_count = 0
     
+    # === Reconnection ===
+
+    def reconnect(self) -> None:
+        """Initiate JACK client reconnection after a server restart.
+
+        Closes the dead client, then tries to create a new one.  If the
+        server isn't ready yet, retries are scheduled via QTimer (500 ms
+        intervals, up to ``_max_reconnect_attempts``).
+        """
+        if not self._server_dead:
+            logger.debug("JackService.reconnect() called but server is not dead, skipping.")
+            return
+
+        logger.info("JackService: Starting JACK client reconnection...")
+
+        # Close the dead client safely
+        self._close_dead_client()
+
+        # Reset state for reconnection
+        self._reconnect_attempts = 0
+        with self._close_lock:
+            self._closing = False  # Allow callbacks on the new client
+
+        # Start attempting to reconnect
+        self._attempt_reconnect()
+
+    def _close_dead_client(self) -> None:
+        """Safely close the dead JACK client."""
+        if self._client is not None:
+            try:
+                self._client.close()
+            except Exception as e:
+                logger.debug(f"Error closing dead JACK client (expected): {e}")
+            self._client = None
+            self._active = False
+
+    def _attempt_reconnect(self) -> None:
+        """Try to create a new JACK client.  Schedules a retry on failure."""
+        self._reconnect_attempts += 1
+        logger.debug(
+            f"JackService: Reconnection attempt {self._reconnect_attempts}/{self._max_reconnect_attempts}"
+        )
+
+        try:
+            self._client = jack.Client('Cable')
+            self._setup_callbacks()
+            self._client.activate()
+            self._active = True
+            self._server_dead = False
+            self._xrun_count = 0
+            logger.info("JackService: JACK client reconnected successfully.")
+            self.reconnected.emit()
+        except jack.JackError as e:
+            logger.debug(f"JackService: Reconnection attempt failed: {e}")
+            if self._reconnect_attempts < self._max_reconnect_attempts:
+                # Schedule a retry after 500 ms
+                self._reconnect_timer = QTimer()
+                self._reconnect_timer.setSingleShot(True)
+                self._reconnect_timer.timeout.connect(self._attempt_reconnect)
+                self._reconnect_timer.start(500)
+            else:
+                logger.error(
+                    f"JackService: Failed to reconnect after {self._max_reconnect_attempts} attempts. "
+                    "Application restart required."
+                )
+
     # === Lifecycle ===
     
     def activate(self) -> None:

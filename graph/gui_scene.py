@@ -25,6 +25,7 @@ from PyQt6.QtCore import (
     QTimer,
     QEasingCurve,
 )
+from PyQt6.QtGui import QPalette
 
 from . import constants
 from .animations import NodeAnimator, GraphAnimationController
@@ -146,6 +147,37 @@ class JackGraphScene(QGraphicsScene):
         jack_service.connection_broken.connect(
             self.connection_mgr.handle_connection_broken
         )
+
+        # Connect to theme manager for automatic theme switching
+        from cable_core.theme import get_theme_manager
+        get_theme_manager().theme_changed.connect(self._on_theme_changed)
+
+    def _on_theme_changed(self) -> None:
+        """Repaint scene when the system theme switches, and update text colors."""
+        from PyQt6.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app is not None:
+            # Propagate the new application palette to this scene.
+            # QGraphicsScene caches its own palette independently from QApplication,
+            # so QApplication.setPalette() does NOT automatically propagate here.
+            # Without this, option.palette in QGraphicsItem.paint() returns stale colors.
+            new_palette = app.palette()
+            self.setPalette(new_palette)
+
+            # Update title text and port labels on *all* NodeItems in the scene.
+            # self.nodes only contains "real" JACK client nodes; split-part nodes
+            # (created by NodeSplitHandler) are added via addItem but never registered
+            # in self.nodes, so we must discover them via scene.items().
+            text_color = new_palette.color(QPalette.ColorRole.Text)
+            for item in self.items():
+                if isinstance(item, NodeItem):
+                    if item.title_item is not None:
+                        item.title_item.setDefaultTextColor(text_color)
+                    # Force port items to repaint so they pick up the new option.palette
+                    # from the updated viewport (which gui_view._on_theme_changed sets).
+                    for port in list(item.input_ports.values()) + list(item.output_ports.values()):
+                        port.update()
+        self.update()
 
     def register_pending_node_position(
         self, sink_name: str, scene_pos: QPointF

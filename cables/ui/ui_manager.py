@@ -105,27 +105,20 @@ class UIManager:
 
     def is_dark_mode(self) -> bool:
         """Determine if the system is in dark mode."""
-        palette = QApplication.palette()
-        return palette.window().color().lightness() < 128
+        from cable_core.theme import get_theme_manager
+        return get_theme_manager().is_dark_mode()
 
     def setup_colors(self) -> None:
         """Set up the color scheme based on dark/light mode."""
-        if self.dark_mode:
-            self.background_color = QColor(24, 26, 33)
-            self.text_color = QColor(255, 255, 255)
-            self.highlight_color = QColor(20, 62, 104)
-            self.button_color = QColor(68, 68, 68)
-            self.connection_color = QColor(0, 150, 255)
-            self.auto_highlight_color = QColor(255, 200, 0)
-            self.drag_highlight_color = QColor(41, 61, 90)
-        else:
-            self.background_color = QColor(255, 255, 255)
-            self.text_color = QColor(0, 0, 0)
-            self.highlight_color = QColor(173, 216, 230)
-            self.button_color = QColor(240, 240, 240)
-            self.connection_color = QColor(0, 100, 200)
-            self.auto_highlight_color = QColor(255, 140, 0)
-            self.drag_highlight_color = QColor(200, 200, 200)
+        from cable_core.theme import get_theme_manager
+        theme_mgr = get_theme_manager()
+        self.background_color = theme_mgr.get_color("background")
+        self.text_color = theme_mgr.get_color("text")
+        self.highlight_color = theme_mgr.get_color("highlight")
+        self.button_color = theme_mgr.get_color("button")
+        self.connection_color = theme_mgr.get_color("connection")
+        self.auto_highlight_color = theme_mgr.get_color("auto_highlight")
+        self.drag_highlight_color = theme_mgr.get_color("drag_highlight")
 
     def list_stylesheet(self) -> str:
         """Get stylesheet for lists and trees."""
@@ -282,3 +275,30 @@ class UIManager:
             "auto_highlight": self.auto_highlight_color,
             "drag_highlight": self.drag_highlight_color,
         }
+
+    def _on_theme_changed(self) -> None:
+        """Regenerate colors and re-apply all stylesheets."""
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info("UIManager._on_theme_changed: START")
+        self.dark_mode = self.is_dark_mode()
+        logger.info(f"UIManager._on_theme_changed: dark_mode = {self.dark_mode}")
+        self.setup_colors()
+
+        # Regenerate stylesheets now that colors are fresh
+        # Filter edits
+        flt = self.get_filter_stylesheet()
+        self.output_filter_edit.setStyleSheet(flt)
+        self.input_filter_edit.setStyleSheet(flt)
+
+        # No-hover toolbar buttons
+        nh = self.get_no_hover_button_stylesheet()
+        for btn in (
+            self.collapse_all_button,
+            self.untangle_button,
+            self.bottom_visibility_button,
+            self.zoom_in_button,
+            self.zoom_out_button,
+        ):
+            if btn is not None:
+                btn.setStyleSheet(nh)

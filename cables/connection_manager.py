@@ -37,6 +37,8 @@ from PyQt6.QtCore import (
     QPoint,
     pyqtSlot,
     QObject,
+    QEvent,
+    QFileSystemWatcher,
 )
 from PyQt6.QtGui import (
     QGuiApplication,
@@ -71,6 +73,7 @@ from cables.tab_manager import TabManager
 from cables.unified_sink_manager import UnifiedSinkManager
 from cable_core import app_config
 from cable_core import config_keys as keys
+from cable_core.theme import get_theme_manager
 from cables.features.mixer import AlsMixerApp
 from cables.features.node_visibility_manager import NodeVisibilityManager
 from cables.ui.ui_manager import UIManager
@@ -139,21 +142,65 @@ class JackConnectionManager(QMainWindow):
         self.graph_scene = None
 
         # Initialize all components in logical groups
+        logger.info("JackConnectionManager.__init__: starting config managers init...")
         self._init_config_managers()
+        logger.info("JackConnectionManager.__init__: starting window init...")
         self._init_window()
+        logger.info("JackConnectionManager.__init__: starting jack client init...")
         self._init_jack_client()
+        logger.info("JackConnectionManager.__init__: starting core services init...")
         self._init_core_services()
+        logger.info("JackConnectionManager.__init__: starting ui manager init...")
         self._init_ui_manager()
+        logger.info("JackConnectionManager.__init__: starting action manager init...")
         self._init_action_manager()
+        logger.info("JackConnectionManager.__init__: starting ui components init...")
         self._init_ui_components()
+        logger.info("JackConnectionManager.__init__: starting managers init...")
         self._init_managers()
+        logger.info("JackConnectionManager.__init__: starting connect internal signals...")
         self._connect_internal_signals()
+        logger.info("JackConnectionManager.__init__: starting activate jack...")
         self._activate_jack()
+        logger.info("JackConnectionManager.__init__: starting post init cleanup...")
         self._post_init_cleanup()
+        logger.info("JackConnectionManager.__init__: starting recreate virtual sinks if autostart...")
         self._recreate_virtual_sinks_if_autostart()
+        logger.info("JackConnectionManager.__init__: starting load startup preset if configured...")
         self._load_startup_preset_if_configured()
+        logger.info("JackConnectionManager.__init__: starting init interaction handlers...")
         self._init_interaction_handlers()
+        logger.info("JackConnectionManager.__init__: starting init node visibility...")
         self._init_node_visibility()
+        logger.info("JackConnectionManager.__init__: logical groups initialization completed.")
+
+        # Post-startup palette-settle timer: correct wrong initial theme detection
+        self._post_startup_theme_timer = QTimer(self)
+        self._post_startup_theme_timer.setSingleShot(True)
+        self._post_startup_theme_timer.setInterval(1500)
+        self._post_startup_theme_timer.timeout.connect(
+            lambda: get_theme_manager().check_theme_changed()
+        )
+        self._post_startup_theme_timer.start()
+        logger.info("JackConnectionManager.__init__: post-startup palette-settle timer started.")
+
+        # Watch config.ini for live theme changes from Cable (non-integrated mode).
+        # When Cable changes the forced theme via Other Settings, it writes to
+        # config.ini.  This watcher detects the write so Cables can re-read and
+        # apply the new theme immediately, keeping both windows in sync.
+        self._theme_config_watcher = QFileSystemWatcher(self)
+        self._theme_config_watcher.fileChanged.connect(self._on_config_file_changed)
+        config_ini_path = os.path.expanduser("~/.config/cable/config.ini")
+        if os.path.exists(config_ini_path):
+            self._theme_config_watcher.addPath(config_ini_path)
+
+        # Debounce timer: config.ini may be written in quick bursts (save +
+        # flush).  We wait 500ms of silence before re-reading the theme.
+        self._theme_reload_timer = QTimer(self)
+        self._theme_reload_timer.setSingleShot(True)
+        self._theme_reload_timer.setInterval(500)
+        self._theme_reload_timer.timeout.connect(self._reload_theme_from_config)
+        logger.info("JackConnectionManager.__init__: config watcher for live theme sync started.")
 
     def _init_config_managers(self) -> None:
         """Initialize configuration and preset managers."""
@@ -383,6 +430,13 @@ class JackConnectionManager(QMainWindow):
 
         # Connect JACK signals to connection view refresh for event-driven updates
         self._connect_jack_signals_to_connection_views()
+
+        # Connect JACK reconnection signal for recovery after PipeWire restart
+        self._jack_service.reconnected.connect(self._on_jack_reconnected)
+
+        # Wire theme manager for automatic theme-switching propagation
+        from cable_core.theme import get_theme_manager
+        get_theme_manager().theme_changed.connect(self._on_theme_changed)
 
     def _activate_jack(self) -> None:
         """Activate the JACK client."""
@@ -690,6 +744,49 @@ class JackConnectionManager(QMainWindow):
         else:
             self.break_connection_selected()
 
+    def _on_jack_reconnected(self) -> None:
+        """Handle JACK client reconnection after PipeWire restart.
+
+        Updates all direct client references to the new jack.Client instance
+        and triggers a full refresh of all tabs.
+        """
+        logger.info("JackConnectionManager: JACK reconnected, updating client references...")
+
+        # Get the new client from JackService
+        new_client = self._jack_service.client
+        if new_client is None:
+            logger.error("JackConnectionManager: Reconnected signal received but no client available.")
+            return
+
+        # Update direct client references
+        self.client = new_client
+        self.jack_handler._client = new_client
+        self.port_manager.jack_client = new_client
+
+        # Refresh all port trees (Audio + MIDI)
+        try:
+            self.refresh_ports(refresh_all=True)
+        except Exception as e:
+            logger.error(f"Error refreshing ports after reconnect: {e}")
+
+        # Refresh matrix widgets if they exist
+        try:
+            if hasattr(self, 'midi_matrix_widget') and self.midi_matrix_widget is not None:
+                self.midi_matrix_widget.refresh()
+        except Exception as e:
+            logger.error(f"Error refreshing MIDI matrix after reconnect: {e}")
+
+        # Refresh connection views
+        try:
+            if self.connection_view is not None:
+                self.connection_view.request_refresh()
+            if self.midi_connection_view is not None:
+                self.midi_connection_view.request_refresh()
+        except Exception as e:
+            logger.error(f"Error refreshing connection views after reconnect: {e}")
+
+        logger.info("JackConnectionManager: JACK reconnection recovery complete.")
+
     def _connect_jack_signals_to_connection_views(self) -> None:
         """
         Connect JackService signals to connection view refresh.
@@ -920,12 +1017,10 @@ class JackConnectionManager(QMainWindow):
 
     def changeEvent(self, event: Any) -> None:
         super().changeEvent(event)
-        if event.type() == event.Type.ActivationChange:
+        if event.type() == QEvent.Type.ActivationChange:
             is_focused = self.isActiveWindow()
             if self.ui_state_manager is not None:
                 self.ui_state_manager.handle_focus_change(is_focused)
-
-            # Refresh embedded Cable settings when window gains focus
             if is_focused and self.cable_widget is not None:
                 current_tab_index = self.ui_manager.tab_widget.currentIndex()
                 current_tab_text = self.ui_manager.tab_widget.tabText(current_tab_index)
@@ -934,7 +1029,6 @@ class JackConnectionManager(QMainWindow):
                     self.cable_widget._apply_devices()
                     self.cable_widget._apply_nodes()
                     self.cable_widget.update_latency_display()
-
             # Manage ALSA mixer updates based on focus and active tab
             tab_widget = getattr(self.ui_manager, "tab_widget", None)
             alsa_mixer_tab = getattr(self.ui_manager, "alsa_mixer_tab_widget", None)
@@ -942,12 +1036,248 @@ class JackConnectionManager(QMainWindow):
                 current_tab_index = tab_widget.currentIndex()
                 current_widget = tab_widget.widget(current_tab_index)
                 is_alsa_mixer_tab_active = current_widget == alsa_mixer_tab
-
                 if is_alsa_mixer_tab_active:
                     if is_focused:
                         self.alsa_mixer_app.start_updates()
                     else:
                         self.alsa_mixer_app.stop_updates()
+        elif event.type() in (
+            QEvent.Type.PaletteChange,
+            QEvent.Type.ApplicationPaletteChange,
+        ):
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info("JackConnectionManager.changeEvent: PaletteChange received")
+            from cable_core.theme import get_theme_manager
+            get_theme_manager().check_theme_changed()
+
+    def _on_theme_changed(self) -> None:
+        """Full theme-change orchestrator — called once per confirmed change."""
+        logger.info("_on_theme_changed: START")
+        # 1. UIManager: regenerate colors + re-apply filter/button stylesheets
+        if self.ui_manager is not None:
+            logger.info("_on_theme_changed: calling ui_manager._on_theme_changed()")
+            self.ui_manager._on_theme_changed()
+
+        # 2. Tab widgets: port trees, connection views, pw-top, latency
+        self._refresh_tab_stylesheets()
+
+        # 3. Matrix widgets — deferred to avoid re-entering JACK callbacks
+        if getattr(self, 'midi_matrix_widget', None):
+            QTimer.singleShot(50, self.midi_matrix_widget.refresh_matrix)
+        if getattr(self, 'audio_matrix_widget', None):
+            QTimer.singleShot(50, self.audio_matrix_widget.refresh_matrix)
+
+        # 4. Graph scene and viewport
+        scene = self._get_graph_scene()
+        if scene is not None:
+            scene.update()
+            view = self._get_graph_view()
+            if view is not None:
+                view.viewport().update()
+
+        # 5. DSP monitor
+        if getattr(self, 'cable_widget', None) and self.cable_widget.dsp_monitor:
+            self.cable_widget.dsp_monitor.on_theme_changed()
+
+        # 6. Highlight manager: update cached colors AND reset all per-item
+        #    foreground/background so they pick up the new default colors.
+        #    NOTE: update_colors() MUST come BEFORE clear_highlights() so
+        #    the clear uses the NEW default colors, not the stale old ones.
+        if getattr(self, 'highlight_manager', None) is not None:
+            # Update cached color references first
+            self.highlight_manager.update_colors(
+                text_color=self.ui_manager.text_color,
+                background_color=self.ui_manager.background_color,
+                highlight_color=self.ui_manager.highlight_color,
+                auto_highlight_color=self.ui_manager.auto_highlight_color,
+                drag_highlight_color=self.ui_manager.drag_highlight_color,
+            )
+            # Then clear per-item overrides using the NEW default colors
+            self.highlight_manager.clear_highlights()
+            self.highlight_manager.clear_midi_highlights()
+
+        # 7. ALSA mixer tab — re-apply its border stylesheets
+        if getattr(self, 'alsa_mixer_app', None) is not None:
+            try:
+                self.alsa_mixer_app.on_theme_changed()
+            except Exception:
+                pass  # mixer may not have on_theme_changed yet
+
+        # 8. Force repaint on all visible widget content
+        for w in (
+            getattr(self, 'pwtop_text', None),
+            getattr(self, 'latency_results_text', None),
+            getattr(self, 'input_tree', None),
+            getattr(self, 'output_tree', None),
+            getattr(self, 'midi_input_tree', None),
+            getattr(self, 'midi_output_tree', None),
+        ):
+            if w is not None:
+                w.update()
+        if getattr(self, 'latency_input_combo', None) is not None:
+            self.latency_input_combo.update()
+        if getattr(self, 'latency_output_combo', None) is not None:
+            self.latency_output_combo.update()
+        if getattr(self, 'latency_raw_output_checkbox', None) is not None:
+            self.latency_raw_output_checkbox.update()
+
+    def _on_config_file_changed(self, path: str) -> None:
+        """Called by QFileSystemWatcher when config.ini is modified.
+
+        Starts a debounce timer; only re-reads force_theme after 500ms of
+        silence to avoid reacting to partial or repeated writes.
+        """
+        logger.info(f"_on_config_file_changed: config file changed: {path}")
+        # Some editors replace the file rather than modifying it, so we must
+        # re-add the path to keep watching after a replacement.
+        if path in self._theme_config_watcher.files():
+            self._theme_config_watcher.removePath(path)
+        if os.path.exists(path):
+            self._theme_config_watcher.addPath(path)
+        self._theme_reload_timer.start()
+
+    def _reload_theme_from_config(self) -> None:
+        """Re-read force_theme from config.ini and apply if changed.
+
+        Called after the debounce timer fires following a config file change.
+        Only applies the theme if the value actually differs from the currently
+        active forced theme.
+        """
+        logger.info("_reload_theme_from_config: checking for theme change")
+        config_path = os.path.expanduser("~/.config/cable/config.ini")
+        if not os.path.exists(config_path):
+            logger.info("_reload_theme_from_config: config file not found")
+            return
+
+        # Re-add to watcher in case the file was replaced
+        if config_path not in self._theme_config_watcher.files():
+            self._theme_config_watcher.addPath(config_path)
+
+        try:
+            import configparser
+            from cable_core.app_config import FORCE_THEME_AUTO
+            cfg = configparser.ConfigParser()
+            cfg.read(config_path, encoding="utf-8")
+            force_theme = cfg.get(
+                "DEFAULT", keys.FORCE_THEME, fallback=FORCE_THEME_AUTO
+            )
+        except Exception as e:
+            logger.error(f"_reload_theme_from_config: error reading config: {e}")
+            return
+
+        logger.info(
+            f"_reload_theme_from_config: config force_theme={force_theme}"
+        )
+        get_theme_manager().set_forced_theme(force_theme)
+
+    def _refresh_tab_stylesheets(self) -> None:
+        """Re-apply every tab stylesheet that stores colors at init time."""
+        if self.ui_manager is None:
+            return
+
+        mgr = self.ui_manager
+        tree_style = mgr.list_stylesheet()
+        text_color = mgr.text_color.name()
+        bg_color = mgr.background_color.name()
+
+        # --- Audio / MIDI port trees and labels ---
+        for tree in (
+            self.input_tree,
+            self.output_tree,
+            self.midi_input_tree,
+            self.midi_output_tree,
+        ):
+            if tree is not None:
+                tree.setStyleSheet(tree_style)
+
+        # Tree header foreground
+        header_color = QColor("#ffffff") if mgr.dark_mode else QColor("#000000")
+        for tree in (
+            self.input_tree,
+            self.output_tree,
+            self.midi_input_tree,
+            self.midi_output_tree,
+        ):
+            if tree is not None and tree.headerItem() is not None:
+                for col in range(tree.columnCount()):
+                    tree.headerItem().setForeground(col, header_color)
+
+        # Connection views
+        for view in (self.connection_view, self.midi_connection_view):
+            if view is not None:
+                view.setStyleSheet(f"background: {bg_color}; border: none;")
+
+        # Tab labels (set in TabUIManager with inline stylesheet)
+        label_style = f"color: {text_color};"
+        for attr in ("audio_input_label", "audio_output_label",
+                     "midi_input_label", "midi_output_label"):
+            lbl = getattr(self, attr, None)
+            if lbl is not None:
+                lbl.setStyleSheet(label_style)
+
+        # --- pw-top tab ---
+        if getattr(self, "pwtop_text", None) is not None:
+            self.pwtop_text.setStyleSheet(f"""
+                QTextEdit {{
+                    background-color: {bg_color};
+                    color: {text_color};
+                    font-family: monospace;
+                    font-size: {self.config_manager.get_int_setting(
+                        keys.PWTOP_FONT_SIZE_PT, 13)}pt;
+                }}
+            """)
+
+        # --- Latency tab ---
+        results = getattr(self, "latency_results_text", None)
+        if results is not None:
+            results.setStyleSheet(f"""
+                QTextEdit {{
+                    background-color: {bg_color};
+                    color: {text_color};
+                    font-family: monospace;
+                    font-size: 14pt;
+                }}
+            """)
+        combo_style = mgr.list_stylesheet()
+        for combo in (
+            getattr(self, "latency_input_combo", None),
+            getattr(self, "latency_output_combo", None),
+        ):
+            if combo is not None:
+                combo.setStyleSheet(combo_style)
+
+        checkbox = getattr(self, "latency_raw_output_checkbox", None)
+        if checkbox is not None:
+            checkbox.setStyleSheet(f"color: {text_color};")
+
+        # Instructions label (plain QLabel with inline color)
+        instr = getattr(self, "latency_instructions_label", None)
+        if instr is not None:
+            instr.setStyleSheet(f"color: {text_color}; font-size: 11pt;")
+
+        # Latency buttons — re-apply the live button stylesheet
+        button_style = mgr.button_stylesheet()
+        for btn_attr in ("latency_refresh_button", "latency_run_button", "latency_stop_button"):
+            btn = getattr(self, btn_attr, None)
+            if btn is not None:
+                btn.setStyleSheet(button_style)
+
+        # Force repaint on all updated widgets so the new stylesheet takes effect
+        for w in (
+            self.input_tree,
+            self.output_tree,
+            self.midi_input_tree,
+            self.midi_output_tree,
+            getattr(self, "pwtop_text", None),
+            getattr(self, "latency_results_text", None),
+            getattr(self, "latency_instructions_label", None),
+            getattr(self, "latency_refresh_button", None),
+            getattr(self, "latency_run_button", None),
+            getattr(self, "latency_stop_button", None),
+        ):
+            if w is not None:
+                w.update()
 
     def _animate_button_press(self, button: Optional[QPushButton]) -> None:
         if not button:

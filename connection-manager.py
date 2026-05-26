@@ -11,6 +11,10 @@ import signal
 import logging
 from typing import Optional
 
+# Suppress D-Bus portal registration warnings on GNOME/Ubuntu
+# This prevents "Could not register app ID: Connection already associated" errors
+os.environ.setdefault("QT_LOGGING_RULES", "qt.qpa.services=false")
+
 # Add the script directory to path first so we can import cable_core
 script_dir = os.path.dirname(os.path.abspath(__file__))
 if script_dir not in sys.path:
@@ -28,7 +32,7 @@ setup_logging(verbose_override=_pre_args.verbose)
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QTimer
 from PyQt6.QtGui import QGuiApplication
-from cable_core.app_config import load_app_icon
+from cable_core.app_config import load_app_icon, load_and_apply_theme
 
 
 try:
@@ -67,8 +71,15 @@ def main() -> int:
         preset_manager.stop_daemon_mode()
         sys.exit(0)
 
+    logger.info("Launcher: Creating QApplication...")
     app = QApplication(sys.argv)
+    logger.info("Launcher: QApplication created.")
     QGuiApplication.setDesktopFileName("com.github.magillos.cable")
+
+    # Apply forced colour theme from config before building any widgets
+    logger.info("Launcher: Applying theme from config...")
+    load_and_apply_theme(os.path.expanduser("~/.config/cable/config.ini"))
+    logger.info("Launcher: Theme load completed.")
     
     app_icon = load_app_icon()
     if app_icon:
@@ -101,9 +112,13 @@ def main() -> int:
             # No Cable tab, just hide the window (no tray functionality without Cable)
             window.hide()
     else:
+        logger.info("Launcher: Creating JackConnectionManager...")
         window = JackConnectionManager(load_startup_preset=False, integrated_override=integrated_override)
+        logger.info("Launcher: JackConnectionManager created. Starting startup refresh...")
         window.start_startup_refresh()
+        logger.info("Launcher: Showing window...")
         window.show()
+        logger.info("Launcher: Window shown.")
 
     # Set up SIGINT handler for Ctrl+C
     signal.signal(signal.SIGINT, lambda sig, frame: app.quit())

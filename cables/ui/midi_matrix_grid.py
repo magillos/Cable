@@ -243,8 +243,13 @@ class _MatrixGridWidget(QWidget):
 
     def _draw_grid(self, painter: QPainter, grid_rect: QRect) -> None:
         """Draw the grid lines using pre-calculated positions."""
+        # Use text color from live palette so grid lines adapt to theme switch
+        from PyQt6.QtWidgets import QApplication
+        palette = QApplication.palette()
+        grid_color = palette.color(QPalette.ColorRole.Text)
+        grid_color.setAlpha(80 if palette.window().color().lightness() < 128 else 120)
         painter.setPen(
-            QPen(QColor(200, 200, 200), self.parent_matrix.style_config.grid_line_width)
+            QPen(grid_color, self.parent_matrix.style_config.grid_line_width)
         )
 
         # Calculate the bottom y-coordinate for the grid content
@@ -301,7 +306,8 @@ class _MatrixGridWidget(QWidget):
         input_ports = self.parent_matrix.model.input_ports
 
         # Determine theme-aware colors for unconnected squares
-        palette = self.palette()
+        from PyQt6.QtWidgets import QApplication
+        palette = QApplication.palette()
         is_dark_mode = palette.color(QPalette.ColorRole.Window).lightness() < 128
         style_config = self.parent_matrix.style_config
 

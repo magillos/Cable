@@ -9,7 +9,7 @@ QGraphicsItem representing a single JACK audio or MIDI port within a node.
 from PyQt6.QtWidgets import (
     QGraphicsItem, QGraphicsTextItem, QGraphicsPathItem, QMenu,
     QStyleOptionGraphicsItem, QWidget, QStyle, QGraphicsSceneHoverEvent, # Import QStyle and QGraphicsSceneHoverEvent
-    QGraphicsSceneMouseEvent, QGraphicsSceneContextMenuEvent
+    QGraphicsSceneMouseEvent, QGraphicsSceneContextMenuEvent, QApplication
 )
 from PyQt6.QtGui import (
     QPainter, QPen, QBrush, QColor, QPainterPath, QFont, QAction, QPolygonF,
@@ -114,11 +114,16 @@ class PortItem(QGraphicsItem):
         is_selected = bool(option.state & QStyle.StateFlag.State_Selected)
 
         # Determine background color
-        if is_selected or is_hovered or self._is_drag_highlighted or self._connection_highlighted:
-            bg_color = option.palette.color(QPalette.ColorRole.Highlight) # Use theme's highlight
-        else:
-            bg_color = self.port_color # Use type-specific color for default state
+        # Read from live QApplication palette (not option.palette) so that
+        # colors update immediately when the system theme changes while the
+        # graph view is embedded inside the tab widget.
+        app = QApplication.instance()
+        pal = app.palette() if app is not None else option.palette
 
+        if is_selected or is_hovered or self._is_drag_highlighted or self._connection_highlighted:
+            bg_color = pal.color(QPalette.ColorRole.Highlight)
+        else:
+            bg_color = self.port_color
 
         painter.setBrush(bg_color)
         painter.setPen(Qt.PenStyle.NoPen)
@@ -134,9 +139,10 @@ class PortItem(QGraphicsItem):
                                    indicator_margin, indicator_size, indicator_size)
             painter.drawRect(indicator_rect)
 
-        # Port Label
-        # painter.setPen(constants.PORT_TEXT_COLOR) # Use theme text color
-        painter.setPen(option.palette.color(QPalette.ColorRole.Text))
+        # Port Label — always use the current application palette so the text
+        # color follows light/dark theme switches even if the QStyleOption
+        # passed by the embedded QGraphicsView is stale.
+        painter.setPen(pal.color(QPalette.ColorRole.WindowText))
         font = QFont()
         font.setPointSize(8)
         painter.setFont(font)

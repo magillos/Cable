@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
     QFrame,
     QLineEdit,
     QCheckBox,
+    QComboBox,
     QMessageBox,
     QWidget,
     QLayout,
@@ -66,9 +67,12 @@ class SettingsWidgetBuilder:
         self.auto_layout_split_checkbox: Optional[QCheckBox] = None
         self.colored_connections_checkbox: Optional[QCheckBox] = None
         self.verbose_output_checkbox: Optional[QCheckBox] = None
+        self.force_theme_combo: Optional[QComboBox] = None
         self.integrate_checkbox: Optional[QCheckBox] = None
         self.monochrome_tray_checkbox: Optional[QCheckBox] = None
+        self.invert_tray_icon_checkbox: Optional[QCheckBox] = None
         self._settings_modified: bool = False
+        self._restart_required_modified: bool = False
         self._apply_button: Optional[QWidget] = None
         self._on_apply_enabled_changed: Optional[callable] = None
 
@@ -142,15 +146,24 @@ class SettingsWidgetBuilder:
 
         # Checkboxes
         self.monochrome_tray_checkbox = QCheckBox("Monochrome tray icon")
-        self.monochrome_tray_checkbox.setToolTip(
-            "Use monochrome tray icon that adapts to system theme\n"
-            "(Dark theme: white icon, Light theme: black icon)\n"
-            "Automatically updates when system theme changes"
+        self.monochrome_tray_checkbox.stateChanged.connect(
+            lambda _: self._mark_settings_modified(requires_restart=False)
         )
         self.monochrome_tray_checkbox.stateChanged.connect(
-            lambda _: self._mark_settings_modified()
+            self._on_monochrome_tray_changed
         )
         target_layout.addWidget(self.monochrome_tray_checkbox)
+
+        # Indented invert-icon checkbox (only active when monochrome is ON)
+        self.invert_tray_icon_checkbox = QCheckBox("Invert icon colours")
+        self.invert_tray_icon_checkbox.setEnabled(False)
+        self.invert_tray_icon_checkbox.stateChanged.connect(
+            lambda _: self._mark_settings_modified(requires_restart=False)
+        )
+        invert_layout = QHBoxLayout()
+        invert_layout.setContentsMargins(20, 0, 0, 0)  # 20px left indent
+        invert_layout.addWidget(self.invert_tray_icon_checkbox)
+        target_layout.addLayout(invert_layout)
 
         self.midi_matrix_checkbox = QCheckBox("Enable MIDI Matrix - EXPERIMENTAL")
         self.midi_matrix_checkbox.setToolTip(
@@ -229,6 +242,20 @@ class SettingsWidgetBuilder:
         )
         target_layout.addWidget(self.verbose_output_checkbox)
 
+        # Colour theme combo box
+        # Special case: colour theme is live (no restart) – see set_forced_theme + requires_restart=False
+        theme_layout = QHBoxLayout()
+        theme_label = QLabel("Colour theme:")
+        theme_layout.addWidget(theme_label)
+        self.force_theme_combo = QComboBox()
+        self.force_theme_combo.addItems(app_config.FORCE_THEME_LABELS)
+        self.force_theme_combo.currentIndexChanged.connect(
+            lambda _: self._mark_settings_modified(requires_restart=False)
+        )
+        theme_layout.addWidget(self.force_theme_combo)
+        theme_layout.addStretch()
+        target_layout.addLayout(theme_layout)
+
         target_layout.addWidget(self._make_separator())
 
         self.integrate_checkbox = QCheckBox("Integrate Cable and Cables")
@@ -259,8 +286,10 @@ class SettingsWidgetBuilder:
         self.auto_layout_split_checkbox.blockSignals(True)
         self.colored_connections_checkbox.blockSignals(True)
         self.verbose_output_checkbox.blockSignals(True)
+        self.force_theme_combo.blockSignals(True)
         self.integrate_checkbox.blockSignals(True)
         self.monochrome_tray_checkbox.blockSignals(True)
+        self.invert_tray_icon_checkbox.blockSignals(True)
 
         try:
             for key, setting_info in SETTINGS_MAP.items():
@@ -301,11 +330,26 @@ class SettingsWidgetBuilder:
             self.verbose_output_checkbox.setChecked(
                 self.config_manager.get_bool(keys.VERBOSE_OUTPUT, False)
             )
+            force_theme_value = self.config_manager.get_str_setting(
+                keys.FORCE_THEME, app_config.FORCE_THEME_AUTO
+            )
+            try:
+                idx = app_config.FORCE_THEME_OPTIONS.index(force_theme_value)
+            except ValueError:
+                idx = 0
+            self.force_theme_combo.setCurrentIndex(idx)
+
             self.integrate_checkbox.setChecked(
                 self.config_manager.get_bool(keys.INTEGRATE_CABLE_AND_CABLES, False)
             )
             self.monochrome_tray_checkbox.setChecked(
                 self.config_manager.get_bool(keys.MONOCHROME_TRAY_ICON, False)
+            )
+            self.invert_tray_icon_checkbox.setChecked(
+                self.config_manager.get_bool(keys.INVERT_TRAY_ICON, False)
+            )
+            self.invert_tray_icon_checkbox.setEnabled(
+                self.monochrome_tray_checkbox.isChecked()
             )
         finally:
             # Unblock all signals
@@ -321,8 +365,10 @@ class SettingsWidgetBuilder:
             self.auto_layout_split_checkbox.blockSignals(False)
             self.colored_connections_checkbox.blockSignals(False)
             self.verbose_output_checkbox.blockSignals(False)
+            self.force_theme_combo.blockSignals(False)
             self.integrate_checkbox.blockSignals(False)
             self.monochrome_tray_checkbox.blockSignals(False)
+            self.invert_tray_icon_checkbox.blockSignals(False)
 
     def save_settings(self) -> None:
         """Save all 'Other Settings' values from widgets to config."""
@@ -358,12 +404,21 @@ class SettingsWidgetBuilder:
         self.config_manager.set_bool(
             keys.VERBOSE_OUTPUT, self.verbose_output_checkbox.isChecked()
         )
+        theme_value = app_config.FORCE_THEME_OPTIONS[
+            self.force_theme_combo.currentIndex()
+        ]
+        self.config_manager.set_str_setting(keys.FORCE_THEME, theme_value)
         self.config_manager.set_bool(
             keys.INTEGRATE_CABLE_AND_CABLES, self.integrate_checkbox.isChecked()
         )
         self.config_manager.set_bool(
             keys.MONOCHROME_TRAY_ICON, self.monochrome_tray_checkbox.isChecked()
         )
+        self.config_manager.set_bool(
+            keys.INVERT_TRAY_ICON, self.invert_tray_icon_checkbox.isChecked()
+        )
+
+        self._apply_live_theme_update()
 
     def reset_to_defaults(self, parent_widget: QWidget) -> bool:
         """Delete the config directory after user confirmation. Returns True if reset was performed."""
@@ -401,7 +456,9 @@ class SettingsWidgetBuilder:
         return False
 
     def show_restart_warning(self, parent_widget: QWidget) -> None:
-        """Show a modal restart-required warning."""
+        """Show a modal restart-required warning.
+        Only called when requires_restart_warning() is True (i.e. non-theme changes).
+        """
         msg_box = QMessageBox(parent_widget)
         msg_box.setIcon(QMessageBox.Icon.Warning)
         msg_box.setWindowTitle("Restart Required")
@@ -426,17 +483,61 @@ class SettingsWidgetBuilder:
             label.deleteLater()
         return max_width + 60
 
-    def _mark_settings_modified(self) -> None:
-        """Mark settings as modified and enable the apply button if it exists."""
+    def _mark_settings_modified(self, requires_restart: bool = True) -> None:
+        """Mark settings as modified and enable the apply button if it exists.
+        Non-theme options set the restart flag so the warning dialog appears.
+        The colour-theme combo passes requires_restart=False.
+        """
         self._settings_modified = True
+        if requires_restart:
+            self._restart_required_modified = True
         if self._apply_button is not None:
             self._apply_button.setEnabled(True)
 
     def _reset_modified_flag(self) -> None:
         """Reset the modified flag and disable the apply button."""
         self._settings_modified = False
+        self._restart_required_modified = False
         if self._apply_button is not None:
             self._apply_button.setEnabled(False)
+
+    def requires_restart_warning(self) -> bool:
+        """True when at least one restart-requiring setting was changed since last load/reset.
+        Theme (FORCE_THEME) changes are applied live and never set this flag.
+        """
+        return self._restart_required_modified
+
+    def _apply_live_theme_update(self) -> None:
+        """Push the current value of the colour-theme combo into ThemeManager.
+        Safe to call even if combo untouched (set_forced_theme is idempotent).
+
+        Also flushes the config to disk so that the Cables process (in
+        non-integrated mode) can detect the change via its QFileSystemWatcher
+        and apply the same theme.
+        """
+        if self.force_theme_combo is None:
+            return
+        try:
+            theme_val = app_config.FORCE_THEME_OPTIONS[
+                self.force_theme_combo.currentIndex()
+            ]
+            from cable_core.theme import get_theme_manager
+
+            tm = get_theme_manager()
+            tm.set_forced_theme(theme_val)
+            # Flush to disk immediately so the Cables process (separate QApplication
+            # in non-integrated mode) can detect the change via its config file
+            # watcher and apply the same theme.
+            self.config_manager.flush()
+        except Exception as e:
+            logger.warning(f"Live theme apply failed (non-fatal): {e}")
+
+    def _on_monochrome_tray_changed(self, state: int) -> None:
+        """Enable/disable invert icon checkbox based on monochrome state."""
+        self.invert_tray_icon_checkbox.setEnabled(state == Qt.CheckState.Checked.value)
+        if state != Qt.CheckState.Checked.value:
+            self.invert_tray_icon_checkbox.setChecked(False)
+        self._mark_settings_modified(requires_restart=False)
 
     @staticmethod
     def _make_separator() -> QFrame:

@@ -62,6 +62,17 @@ if TYPE_CHECKING:
 
 PortType = Literal["midi", "audio"]
 
+# Shared scroll area stylesheet (re-applied on theme change so scrollbars re-polish).
+# The ::corner rule is essential — without it, QStyleSheetStyle paints the
+# corner widget (the small square between horizontal and vertical scrollbars)
+# with a hardcoded colour that ignores the system palette, so it stays dark
+# even on a light theme.
+_SCROLL_AREA_STYLESHEET = (
+    "QScrollArea { background-color: transparent; }"
+    " QWidget#qt_scrollarea_viewport { background-color: transparent; }"
+    " QAbstractScrollArea::corner { background-color: palette(window); }"
+)
+
 # Config key mapping per port type
 _MATRIX_CONFIG_KEYS: Dict[str, Dict[str, str]] = {
     "midi": {
@@ -207,8 +218,28 @@ class MatrixWidget(QWidget):
         jack_service.connection_made.connect(self.on_connection_changed)
         jack_service.connection_broken.connect(self.on_connection_changed)
 
+        # Connect to theme manager for automatic theme switching
+        from cable_core.theme import get_theme_manager
+        get_theme_manager().theme_changed.connect(self._on_theme_changed)
+
         # Initial refresh
         self.refresh_matrix()
+
+    def _on_theme_changed(self) -> None:
+        """Re-apply scrollbar styles and defer matrix refresh.
+
+        The scroll area's stylesheet is re-applied followed by
+        unpolish/polish to force Qt to fully re-evaluate the widget
+        style (scrollbars, corner widget, and all internal children).
+        """
+        if self.main_scroll_area is not None:
+            self.main_scroll_area.setStyleSheet(_SCROLL_AREA_STYLESHEET)
+            self.main_scroll_area.style().unpolish(self.main_scroll_area)
+            self.main_scroll_area.style().polish(self.main_scroll_area)
+            self.main_scroll_area.horizontalScrollBar().update()
+            self.main_scroll_area.verticalScrollBar().update()
+            self.main_scroll_area.update()
+        QTimer.singleShot(50, self.refresh_matrix)
 
     def set_node_visibility_manager(
         self, node_visibility_manager: "NodeVisibilityManager"
@@ -259,7 +290,7 @@ class MatrixWidget(QWidget):
             Qt.ScrollBarPolicy.ScrollBarAsNeeded
         )
         self.main_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-        self.main_scroll_area.setStyleSheet("QScrollArea { background-color: transparent; } QWidget#qt_scrollarea_viewport { background-color: transparent; }")
+        self.main_scroll_area.setStyleSheet(_SCROLL_AREA_STYLESHEET)
 
         # Create horizontal splitter for adjustable output label area
         self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -417,10 +448,8 @@ class MatrixWidget(QWidget):
 
     def _is_dark_mode(self) -> bool:
         """Check if the current theme is dark mode."""
-        window_color = self.palette().color(QPalette.ColorRole.Window)
-        return (
-            window_color.red() + window_color.green() + window_color.blue()
-        ) / 3 < 128
+        from cable_core.theme import get_theme_manager
+        return get_theme_manager().is_dark_mode()
 
     def refresh_matrix(self) -> None:
         """Refresh the entire matrix by reloading ports and connections."""

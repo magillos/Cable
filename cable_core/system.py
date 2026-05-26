@@ -83,3 +83,10 @@ class SystemManager:
         self.app._apply_devices()
         self.app._apply_nodes()
         self.app.reload_after_service_restart()
+
+        # Trigger JACK client reconnection (the old client is dead after PipeWire restart)
+        try:
+            from cables.jack_service import get_jack_service
+            get_jack_service().reconnect()
+        except Exception as e:
+            logger.debug(f"JACK reconnection trigger failed: {e}")

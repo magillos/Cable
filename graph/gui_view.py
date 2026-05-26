@@ -71,6 +71,20 @@ class JackGraphView(QGraphicsView):
         self.min_zoom_scale = 0.1  # Minimum zoom level (e.g., 10%)
         self.max_zoom_scale = 5.0  # Maximum zoom level (e.g., 500%)
 
+        # Connect to theme manager for automatic theme switching
+        from cable_core.theme import get_theme_manager
+        get_theme_manager().theme_changed.connect(self._on_theme_changed)
+
+    def _on_theme_changed(self) -> None:
+        """Propagate new app palette to view and viewport, then repaint."""
+        from PyQt6.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app is not None:
+            new_palette = app.palette()
+            self.setPalette(new_palette)
+            self.viewport().setPalette(new_palette)
+        self.viewport().update()
+
     def _update_scrollbar_visibility(self) -> None:
         """
         Updates the visibility of scrollbars based on whether all scene items

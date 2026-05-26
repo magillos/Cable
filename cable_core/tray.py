@@ -72,7 +72,11 @@ class TrayManager:
             monochrome_enabled = self.app.config_manager.get_bool(
                 keys.MONOCHROME_TRAY_ICON, False
             )
-            app_icon = load_tray_icon(monochrome_enabled)
+            invert_enabled = (
+                self.app.config_manager.get_bool(keys.INVERT_TRAY_ICON, False)
+                if monochrome_enabled else False
+            )
+            app_icon = load_tray_icon(monochrome_enabled, invert_enabled)
             if app_icon:
                 self.tray_icon.setIcon(app_icon)
             else:
@@ -179,7 +183,11 @@ class TrayManager:
         monochrome_enabled = self.app.config_manager.get_bool(
             keys.MONOCHROME_TRAY_ICON, False
         )
-        app_icon = load_tray_icon(monochrome_enabled)
+        invert_enabled = (
+            self.app.config_manager.get_bool(keys.INVERT_TRAY_ICON, False)
+            if monochrome_enabled else False
+        )
+        app_icon = load_tray_icon(monochrome_enabled, invert_enabled)
         if app_icon:
             self.tray_icon.setIcon(app_icon)
 
@@ -286,6 +294,44 @@ class TrayManager:
                     self.app.activateWindow()  # Use app method
                 else:
                     self.app.hide()  # Use app method
+        elif reason == QSystemTrayIcon.ActivationReason.MiddleClick:  # Middle click
+            # Middle click respects "Default App" setting and toggles visibility
+            if getattr(self.app, "embedded", False):
+                # When embedded, toggle the parent Cables window
+                self._toggle_parent_window()
+                return
+
+            # In integrated mode (standalone Cable redirecting to Cables), open Cables
+            if getattr(self, "integrated_mode", False):
+                self.handle_cables_action()
+                return
+
+            if self.app.tray_click_opens_cables:  # Check the app's toggle
+                if self.app.process_manager.connection_manager_process is None or (
+                    getattr(
+                        self.app.process_manager.connection_manager_process, "state", None
+                    ) is not None
+                    and self.app.process_manager.connection_manager_process.state()
+                    == QProcess.ProcessState.NotRunning
+                ):
+                    # If Cables app is not running at all, launch it
+                    self.app.process_manager.launch_connection_manager()
+                else:
+                    # Process is already running, just terminate it (toggle behavior)
+                    logger.debug("Connection manager is already running, closing it (middle-click)")
+                    self.app.process_manager.connection_manager_process.terminate()
+            else:
+                # Toggle Cable window visibility
+                if self.app.isMinimized() or not self.app.isVisible():
+                    # Force refresh settings before showing
+                    logger.debug("Refreshing devices/nodes from middle-click")
+                    self.app._apply_current_settings()
+                    self.app._apply_devices()
+                    self.app._apply_nodes()
+                    self.app.show()
+                    self.app.activateWindow()
+                else:
+                    self.app.hide()
 
     def quit_app(self) -> None:
         if self.tray_icon:

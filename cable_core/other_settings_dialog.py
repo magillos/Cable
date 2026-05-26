@@ -65,8 +65,16 @@ class OtherSettingsDialog(QDialog):
     def _handle_button_click(self, button: QAbstractButton) -> None:
         if self.sender().buttonRole(button) == QDialogButtonBox.ButtonRole.ApplyRole:
             self.builder.save_settings()
+            needs_restart = self.builder.requires_restart_warning()
             self.builder._reset_modified_flag()
-            self.builder.show_restart_warning(self)
+            if needs_restart:
+                self.builder.show_restart_warning(self)
+            # Live-apply tray icon (monochrome / invert) changes immediately
+            parent = self.parent()
+            if parent is not None and hasattr(parent, "tray_manager"):
+                tm = getattr(parent, "tray_manager", None)
+                if tm is not None:
+                    tm.update_tray_icon()
         elif self.sender().buttonRole(button) == QDialogButtonBox.ButtonRole.ResetRole:
             if self.builder.reset_to_defaults(self):
                 self.accept()

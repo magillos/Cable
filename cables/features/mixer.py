@@ -177,6 +177,26 @@ class AlsMixerApp(QWidget):
             self.scroll_content_widget.updateGeometry()
             self.scroll_area.updateGeometry()
 
+    def on_theme_changed(self) -> None:
+        """Re-apply ALSA mixer border stylesheets after a system theme switch."""
+        from cable_core.theme import get_theme_manager
+        tm = get_theme_manager()
+        text_color = tm.get_color("text").name()
+        bg_color = tm.get_color("background").name()
+        # Use background color as a substitute border — lightens/darkens automatically
+        self.setStyleSheet(f"""
+            QFrame#MixerGroupFrame {{
+                border: 1px solid {text_color};
+                border-radius: 4px;
+                padding: 4px;
+            }}
+            QFrame#ControlSubFrame {{
+                border: 1px solid {text_color};
+                border-radius: 2px;
+                padding: 3px;
+            }}
+        """)
+
     def init_ui(self) -> None:
         self.setWindowTitle("PyQt6 ALSA Mixer")
         self.setGeometry(200, 200, 800, 650)

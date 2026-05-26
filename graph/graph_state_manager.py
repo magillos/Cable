@@ -74,6 +74,7 @@ class GraphStateManager(QObject):
         jack_service.connection_made.connect(lambda out, inp: self.schedule_refresh())
         jack_service.connection_broken.connect(lambda out, inp: self.schedule_refresh())
         jack_service.shutdown.connect(self._on_jack_shutdown)
+        jack_service.reconnected.connect(self._on_jack_reconnected)
 
     # --- Public API ---
 
@@ -275,3 +276,14 @@ class GraphStateManager(QObject):
     def _on_jack_shutdown(self) -> None:
         logger.debug("GraphStateManager: JACK server shutdown detected.")
         self.jack_shutdown_detected.emit()
+
+    @pyqtSlot()
+    def _on_jack_reconnected(self) -> None:
+        """Handle JACK client reconnection after server restart.
+
+        Updates the client reference and triggers a full graph re-sync.
+        """
+        logger.info("GraphStateManager: JACK reconnected, updating client and re-syncing...")
+        jack_service = get_jack_service()
+        self.jack_client = jack_service.client
+        self.perform_sync()

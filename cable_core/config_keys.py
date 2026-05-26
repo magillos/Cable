@@ -17,6 +17,8 @@ __all__ = [
     # App Settings
     "TRAY_ENABLED",
     "TRAY_CLICK_OPENS_CABLES",
+    "MONOCHROME_TRAY_ICON",
+    "INVERT_TRAY_ICON",
     "REMEMBER_SETTINGS",
     "RESTORE_ONLY_MINIMIZED",
     "APPLY_QUANTUM_SAMPLE_RATE_INSTANTANEOUSLY",
@@ -28,6 +30,7 @@ __all__ = [
     "APPIMAGE_PATH",
     "INTEGRATE_CABLE_AND_CABLES",
     "VERBOSE_OUTPUT",
+    "FORCE_THEME",
     # UI Settings
     "AUTO_REFRESH_ENABLED",
     "COLLAPSE_ALL_ENABLED",
@@ -106,6 +109,7 @@ VIRTUAL_SINKS_RECREATE_AT_AUTOSTART = "virtual_sinks_recreate_at_autostart"
 TRAY_ENABLED = "tray_enabled"
 TRAY_CLICK_OPENS_CABLES = "tray_click_opens_cables"
 MONOCHROME_TRAY_ICON = "monochrome_tray_icon"
+INVERT_TRAY_ICON = "invert_tray_icon"
 REMEMBER_SETTINGS = "remember_settings"
 RESTORE_ONLY_MINIMIZED = "restore_only_minimized"
 APPLY_QUANTUM_SAMPLE_RATE_INSTANTANEOUSLY = "apply_quantum_sample_rate_instantaneously"
@@ -117,6 +121,7 @@ CHECK_UPDATES_AT_START = "check_updates_at_start"
 APPIMAGE_PATH = "appimage_path"
 INTEGRATE_CABLE_AND_CABLES = "integrate_cable_and_cables"
 VERBOSE_OUTPUT = "verbose_output"
+FORCE_THEME = "force_theme"
 
 # --- UI Settings ---
 AUTO_REFRESH_ENABLED = "auto_refresh_enabled"

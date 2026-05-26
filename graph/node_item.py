@@ -27,6 +27,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QGraphicsSceneMouseEvent,
     QGraphicsSceneContextMenuEvent,
+    QApplication,
 )
 from PyQt6.QtGui import (
     QPainter,
@@ -263,14 +264,22 @@ class NodeItem(QGraphicsItem):
         self, option: QStyleOptionGraphicsItem, is_selected: bool
     ) -> tuple[QColor, QColor, QColor, QColor]:
         """Determines the colors for painting the node based on theme and selection."""
+        # Always prefer the live QApplication palette over the one in the
+        # QStyleOption.  When the graph is an embedded view inside a tab,
+        # option.palette can lag behind the current system / app palette
+        # after a theme switch.
+        app = QApplication.instance()
+        pal = app.palette() if app is not None else option.palette
+
         border_color = (
             constants.SELECTION_BORDER_COLOR
             if is_selected
-            else option.palette.color(QPalette.ColorRole.WindowText)
+            else pal.color(QPalette.ColorRole.WindowText)
         )
 
-        original_node_body_bg = option.palette.color(QPalette.ColorRole.Base)
-        is_light_mode = original_node_body_bg.lightnessF() > 0.7
+        original_node_body_bg = pal.color(QPalette.ColorRole.Base)
+        from cable_core.theme import get_theme_manager
+        is_light_mode = not get_theme_manager().is_dark_mode()
 
         # Determine effective unified status
         is_unified_sink = getattr(self, "is_unified_sink", False)
@@ -314,14 +323,14 @@ class NodeItem(QGraphicsItem):
             if is_light_mode:
                 title_bg_color = QColor(220, 220, 220)
             else:
-                title_bg_color = option.palette.color(QPalette.ColorRole.Button)
+                title_bg_color = pal.color(QPalette.ColorRole.Button)
 
         if is_light_mode:
             node_body_bg_color = QColor(240, 240, 240)
             final_separator_color = QColor(192, 192, 192)
         else:
             node_body_bg_color = original_node_body_bg
-            final_separator_color = option.palette.color(QPalette.ColorRole.Mid)
+            final_separator_color = pal.color(QPalette.ColorRole.Mid)
 
         # Reddish border for virtual sinks marked "Recreate at auto-start"
         if (

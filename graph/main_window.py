@@ -3,7 +3,7 @@ Graph tab main window with toolbar, search, and layout controls.
 """
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                              QLineEdit, QSpacerItem, QSizePolicy, QMessageBox, QToolButton, QMenu, QApplication, QCheckBox)
-from PyQt6.QtCore import pyqtSlot, QSize, Qt, QTimer # Added QTimer for debounce
+from PyQt6.QtCore import pyqtSlot, QSize, Qt, QTimer, QEvent # Added QTimer for debounce
 from PyQt6.QtGui import QAction, QKeySequence, QIcon # Added for shortcuts and icons
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -260,9 +260,10 @@ class MainWindow(QMainWindow):
         self.scene.node_states_changed.connect(lambda: self.preset_handler.update_save_button_enabled_state() if self.preset_handler else None)
         self.scene.scene_connections_changed.connect(self._schedule_layout_reapply)
 
-        # JACK shutdown
+        # JACK shutdown and reconnection
         jack_service = get_jack_service()
         jack_service.shutdown.connect(self.handle_jack_shutdown)
+        jack_service.reconnected.connect(self.handle_jack_reconnected)
 
         # Button state updates
         self.scene.selectionChanged.connect(self.update_graph_connection_buttons_state)
@@ -276,6 +277,15 @@ class MainWindow(QMainWindow):
  
         # Zoom state persistence
         self.view.zoom_changed.connect(self.handle_zoom_changed)
+
+    def changeEvent(self, event: QEvent) -> None:
+        super().changeEvent(event)
+        if event.type() in (
+            QEvent.Type.PaletteChange,
+            QEvent.Type.ApplicationPaletteChange,
+        ):
+            from cable_core.theme import get_theme_manager
+            get_theme_manager().check_theme_changed()
 
     def _restore_state(self) -> None:
         """Set initial button states and apply saved zoom level."""
@@ -1127,8 +1137,29 @@ class MainWindow(QMainWindow):
         self.view.setEnabled(False)
         # Check if statusBar exists before using it
         if self.statusBar() is not None:
-             self.statusBar().showMessage("JACK connection lost.", 5000)
-        # Optionally try to reconnect or close the app
+              self.statusBar().showMessage("JACK connection lost. Waiting for reconnection...", 0)
+
+    def handle_jack_reconnected(self) -> None:
+        """Handle JACK client reconnection after server restart.
+
+        Re-enables the graph view and updates client references so the
+        graph can resume normal operation.
+        """
+        logger.info("GraphMainWindow: JACK reconnected, re-enabling graph.")
+
+        # Update client references
+        jack_service = get_jack_service()
+        new_client = jack_service.client
+        self.jack_client = new_client
+        self.scene.jack_client = new_client
+        self.scene.graph_jack_handler.jack_client = new_client
+
+        # Re-enable the view
+        self.view.setEnabled(True)
+
+        # Show status message
+        if self.statusBar() is not None:
+            self.statusBar().showMessage("JACK connection restored.", 5000)
 
     def closeEvent(self, event: 'QCloseEvent') -> None:
         """Ensure JACK client is cleaned up when closing the window."""

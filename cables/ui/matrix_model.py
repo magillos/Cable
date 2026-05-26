@@ -74,8 +74,11 @@ class MatrixModel:
             return check_method(port_name)
         return True
 
-    def load_ports(self, is_dark_mode: bool = False) -> None:
+    def load_ports(self, is_dark_mode: Optional[bool] = None) -> None:
         """Load ports from JACK and organize them by client."""
+        if is_dark_mode is None:
+            from cable_core.theme import get_theme_manager
+            is_dark_mode = get_theme_manager().is_dark_mode()
         self.output_ports = []
         self.input_ports = []
         self.client_colors = {}
@@ -196,8 +199,11 @@ class MatrixModel:
             client_ports[client_name]["color"] = palette[index]
             used_indices.add(index)
 
-    def _get_color_palette(self, is_dark_mode: bool) -> List[QColor]:
+    def _get_color_palette(self, is_dark_mode: Optional[bool] = None) -> List[QColor]:
         """Get the color palette based on the theme."""
+        if is_dark_mode is None:
+            from cable_core.theme import get_theme_manager
+            is_dark_mode = get_theme_manager().is_dark_mode()
         if is_dark_mode:
             return [
                 QColor(255, 128, 0),  # Bright orange

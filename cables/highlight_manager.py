@@ -63,6 +63,27 @@ class HighlightManager:
         self.midi_input_tree = midi_input_tree
         self.midi_output_tree = midi_output_tree
 
+    def update_colors(
+        self,
+        text_color: QColor,
+        background_color: QColor,
+        highlight_color: QColor,
+        auto_highlight_color: QColor,
+        drag_highlight_color: QColor,
+    ) -> None:
+        """Update all cached color references after a theme change."""
+        self.colors["text"] = text_color
+        self.colors["background"] = background_color
+        self.colors["highlight"] = highlight_color
+        self.colors["auto_highlight"] = auto_highlight_color
+        self.colors["drag_highlight"] = drag_highlight_color
+
+        self.default_text_color = text_color
+        self.default_background_color = background_color
+        self.highlight_color = highlight_color
+        self.auto_highlight_color = auto_highlight_color
+        self.drag_highlight_color = drag_highlight_color
+
     # --- Highlighting Methods Moved from JackConnectionManager ---
 
     def _highlight_connected_outputs_for_input(self, input_name: str, is_midi: bool) -> None:

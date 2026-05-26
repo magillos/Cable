@@ -246,8 +246,15 @@ class EmbeddedSettingsPanel(QWidget):
 
         if role == QDialogButtonBox.ButtonRole.ApplyRole:
             self.builder.save_settings()
+            needs_restart = self.builder.requires_restart_warning()
             self.builder._reset_modified_flag()
-            self.builder.show_restart_warning(self)
+            if needs_restart:
+                self.builder.show_restart_warning(self)
+            # Live-apply tray icon (monochrome / invert) changes immediately
+            if hasattr(self, "app") and hasattr(self.app, "tray_manager"):
+                tm = getattr(self.app, "tray_manager", None)
+                if tm is not None:
+                    tm.update_tray_icon()
         elif role == QDialogButtonBox.ButtonRole.ResetRole:
             self.builder.reset_to_defaults(self)
         elif role == QDialogButtonBox.ButtonRole.RejectRole:

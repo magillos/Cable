@@ -14,6 +14,10 @@ import configparser
 import argparse
 import shutil
 
+# Suppress D-Bus portal registration warnings on GNOME/Ubuntu
+# This prevents "Could not register app ID: Connection already associated" errors
+os.environ.setdefault("QT_LOGGING_RULES", "qt.qpa.services=false")
+
 # Parse verbose flag early (before setup_logging) to enable verbose output
 _pre_parser = argparse.ArgumentParser(add_help=False)
 _pre_parser.add_argument("-v", "--verbose", action="count", default=0)
@@ -33,7 +37,8 @@ from cable_core.process import ProcessManager
 from cable_core.updates import UpdateManager
 from cable_core.app_config import APP_VERSION, EDIT_LIST_TEXT, load_app_icon
 from cable_core.embedded_settings_panel import EmbeddedSettingsPanel
-from cable_core import app_config
+from cable_core import app_config as app_config
+from cable_core.app_config import load_and_apply_theme
 from cable_core import config_keys as keys
 
 # New managers for decomposed functionality
@@ -259,10 +264,25 @@ class PipeWireSettingsApp(QWidget):
         # Timer for debouncing tray icon updates on palette change (Flatpak)
         self._palette_change_timer = QTimer(self)
         self._palette_change_timer.setSingleShot(True)
-        self._palette_change_timer.setInterval(500)
+        self._palette_change_timer.setInterval(1200)
         self._palette_change_timer.timeout.connect(
             self._handle_palette_change
         )
+
+        # Post-startup palette-settle timer: correct wrong initial theme detection
+        self._post_startup_theme_timer = QTimer(self)
+        self._post_startup_theme_timer.setSingleShot(True)
+        self._post_startup_theme_timer.setInterval(1500)
+        self._post_startup_theme_timer.timeout.connect(self._post_startup_theme_check)
+        self._post_startup_theme_timer.start()
+
+    def _post_startup_theme_check(self) -> None:
+        """Re-check theme after startup to correct any stale initial detection."""
+        from cable_core.theme import get_theme_manager
+        tm = get_theme_manager()
+        tm.check_theme_changed()
+        if self.dsp_monitor is not None:
+            self.dsp_monitor.on_theme_changed()
 
     def get_integrated_mode(self) -> bool:
         """Return the effective integrated-mode state.
@@ -1139,14 +1159,82 @@ class PipeWireSettingsApp(QWidget):
                 self._apply_devices()
                 self._apply_nodes()
                 self.update_latency_display()
-        elif event.type() == QEvent.Type.PaletteChange:
+        elif event.type() in (
+            QEvent.Type.PaletteChange,
+            QEvent.Type.ApplicationPaletteChange,
+        ):
             # Debounce tray icon update on theme change to allow icon
             # theme caches to settle (important inside Flatpak sandbox).
             self._palette_change_timer.start()
 
     def _handle_palette_change(self) -> None:
-        """Delayed handler for palette changes — updates the tray icon."""
+        """Delayed handler for palette changes — full UI refresh."""
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info("Cable._handle_palette_change: START")
+        from cable_core.theme import get_theme_manager
+
+        # 1. Confirm theme change (debounced; only emits when confirmed)
+        logger.info("Cable._handle_palette_change: calling check_theme_changed()")
+        get_theme_manager().check_theme_changed()
+
+        # 2. Tray icon (already debounced; keep for Flatpak icon theme caches)
         self.tray_manager.update_tray_icon()
+
+        # 3. DSP monitor progress bar (immediate)
+        if self.dsp_monitor is not None:
+            self.dsp_monitor.on_theme_changed()
+
+        # 4. Re-apply this widget's own persistent stylesheets
+        self._apply_cable_stylesheets()
+
+    def _apply_cable_stylesheets(self) -> None:
+        """Re-apply persistent Cable panel stylesheets after a theme change.
+
+        Most Cable-panel widgets (QGroupBox, QLabel, QComboBox, QCheckBox
+        inside initUI/QuantumGroup/SampleRateGroup/etc.) are palette-based and
+        repaint automatically when ``QApplication.setPalette`` is called.  The
+        four widgets below carry inline stylesheets that were set once at init
+        time and must be re-applied when the theme changes:
+
+        1. DSP progress bar — explicit background＋track colours in setStyleSheet.
+        2. Settings button — conditional brand colour (only when update is available);
+           re-applied via update_version_display() so the highlight survives theme changes.
+        3. Restart buttons — explicit ``color: red`` declaration set at initUI.
+        4. Embedded splitter handle — transparent handle rule set once at initUI.
+        """
+        from cable_core.theme import get_theme_manager
+        tm = get_theme_manager()
+        bg = tm.get_color("background").name()
+        fg = tm.get_color("text").name()
+
+        # 1. DSP progress bar — DSPMonitor owns the colour logic;
+        #    on_theme_changed reads the *confirmed* palette and re-writes
+        #    both the bar colour and the bar track background in one shot.
+        if self.dsp_monitor is not None:
+            self.dsp_monitor.on_theme_changed()
+
+        # 2. Settings button — only orange (with bold) when an update is available.
+        #    We delegate to the existing update_version_display() which already
+        #    encodes the correct rule (orange + bold + version tooltip vs. normal).
+        #    This prevents the button from staying orange after a theme switch
+        #    when no update is pending.
+        if hasattr(self, 'settings_button'):
+            self.update_version_display()
+
+        # 3. Restart buttons — ``color: red`` is by design but must survive a
+        #    palette re-propagation cycle without dropping the explicit sheet.
+        for attr in ("restart_wireplumber_button", "restart_pipewire_button"):
+            btn = getattr(self, attr, None)
+            if btn is not None:
+                btn.setStyleSheet("QPushButton { color: red; font-weight: bold; }")
+
+        # 4. Embedded splitter handle — rule set once at initUI but only
+        #    applies when the splitter actually exists (embedded mode).
+        if hasattr(self, 'embedded_splitter') and self.embedded_splitter is not None:
+            self.embedded_splitter.setStyleSheet(
+                "QSplitter::handle { background: transparent; }"
+            )
 
     def get_settings_button_global_pos(self, local_pos: Any) -> Any:
         return self.settings_button.mapToGlobal(local_pos)
@@ -1296,6 +1384,10 @@ def main() -> None:
 
     # Create application instance
     app = CableApp(sys.argv)
+
+    # Apply forced colour theme from config before building any widgets
+    config_ini_path = os.path.expanduser("~/.config/cable/config.ini")
+    load_and_apply_theme(config_ini_path)
 
     # Create main window, passing the minimized flag
     ex = PipeWireSettingsApp(

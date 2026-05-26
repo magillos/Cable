@@ -10,7 +10,7 @@ This module provides a manager class that handles:
 
 import logging
 from typing import TYPE_CHECKING, Optional, Any
-from PyQt6.QtCore import QTimer, Qt
+from PyQt6.QtCore import QTimer, Qt, QObject, pyqtSignal
 from PyQt6.QtWidgets import QLabel, QProgressBar
 
 if TYPE_CHECKING:
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 __all__ = ['DSPMonitor']
 
 
-class DSPMonitor:
+class DSPMonitor(QObject):
     """
     Manages DSP load monitoring and XRUN tracking.
     
@@ -52,17 +52,8 @@ class DSPMonitor:
         xrun_display_value: QLabel,
         jack_service: Optional['JackService'] = None
     ) -> None:
-        """
-        Initialize the DSP monitor.
-        
-        Args:
-            parent: Parent widget (for timer parenting)
-            dsp_load_value: Label to display DSP load percentage
-            dsp_load_bar: Progress bar for DSP load visualization
-            xrun_display_value: Label to display xrun count
-            jack_service: Optional JackService instance (will be fetched if not provided)
-        """
-        self.parent = parent
+        super().__init__(parent)
+        self.parent_widget = parent  # QWidget reference for QTimer parenting
         self.dsp_load_value = dsp_load_value
         self.dsp_load_bar = dsp_load_bar
         self.xrun_display_value = xrun_display_value
@@ -77,6 +68,10 @@ class DSPMonitor:
         
         # Set initial color
         self._update_dsp_load_bar_color(0)
+
+        # Connect to theme manager for fast-path theme change refresh
+        from cable_core.theme import get_theme_manager
+        get_theme_manager().theme_changed.connect(self.on_theme_changed)
         
     def _get_jack_service(self) -> Optional['JackService']:
         """Get JackService instance, fetching if needed."""
@@ -108,7 +103,7 @@ class DSPMonitor:
     
     def start_monitoring(self) -> None:
         """Start the DSP load monitoring timer."""
-        self._dsp_load_timer = QTimer(self.parent)
+        self._dsp_load_timer = QTimer(self.parent_widget)
         self._dsp_load_timer.timeout.connect(self._update_dsp_load)
         self._dsp_load_timer.start(self._update_interval)
         logger.debug("DSP monitoring started")
@@ -195,3 +190,7 @@ class DSPMonitor:
                 border-radius: 2px;
             }}
         """)
+
+    def on_theme_changed(self) -> None:
+        """Refresh load bar stylesheet immediately after a theme change."""
+        self._update_dsp_load_bar_color(self.dsp_load_bar.value())

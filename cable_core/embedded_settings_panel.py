@@ -93,7 +93,7 @@ class EmbeddedSettingsPanel(QWidget):
         basic_layout.addWidget(self.apply_immediately_checkbox)
 
         self.show_confirmation_checkbox = QCheckBox(
-            "Show confirmation after applying Quantum and Sample Rate"
+            "Show confirmation after applying a setting"
         )
         self.show_confirmation_checkbox.stateChanged.connect(
             self._on_show_confirmation_changed

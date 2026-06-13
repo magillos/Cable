@@ -6,6 +6,7 @@ It uses the LatencyTesterInterface to access the capabilities it needs from
 the main application, enabling better testability and reduced coupling.
 """
 
+import json
 import re
 import shutil
 import subprocess
@@ -17,7 +18,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 from cables.jack_service import get_jack_service
-from typing import TYPE_CHECKING, Any, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, List, Optional, Tuple, Dict
 if TYPE_CHECKING:
     from cables.interfaces import LatencyTesterInterface
 
@@ -52,6 +53,10 @@ class LatencyTester:
         # Store selected physical port aliases for latency test
         self.latency_selected_input_alias: Optional[str] = None
         self.latency_selected_output_alias: Optional[str] = None
+        # Store the last measured average frames for the "Apply measured offset" button
+        self.last_measured_frames: Optional[float] = None
+        # Default measurement duration in seconds
+        self.measurement_duration_seconds: int = 10
         
         # Connect timer timeout signal internally
         self.latency_timer.timeout.connect(self.stop_latency_test)
@@ -67,7 +72,9 @@ class LatencyTester:
         
         self.manager.latency_run_button.setEnabled(False)
         self.manager.latency_stop_button.setEnabled(True)  # Enable Stop button
+        self.manager.latency_apply_offset_button.setEnabled(False)  # Disable apply while testing
         self.manager.latency_results_text.clear()  # Clear previous results/messages
+        self.last_measured_frames = None  # Clear previous measurement
         
         if self.manager.latency_raw_output_checkbox.isChecked():
             self.manager.latency_results_text.setText("Starting latency test (Raw Output)...\n"
@@ -130,9 +137,9 @@ class LatencyTester:
                 if re.search(r'\d+\.\d+\s+ms', data):
                     self.latency_waiting_for_connection = False
                     self.manager.latency_results_text.setText("Connection detected. Running test...")
-                    # Start the timer now
+                    # Start the timer now, using the configured duration
                     self.latency_timer.setSingleShot(True)
-                    self.latency_timer.start(10000)  # 10 seconds
+                    self.latency_timer.start(self.measurement_duration_seconds * 1000)  # Convert to milliseconds
             
             # If not waiting (or connection just detected), parse for values
             if not self.latency_waiting_for_connection:
@@ -147,6 +154,17 @@ class LatencyTester:
                             self.latency_values.append((latency_frames, latency_ms))
                         except ValueError:
                             pass  # Ignore lines that don't parse correctly
+    
+    def set_measurement_duration(self, seconds: int) -> None:
+        """
+        Set the measurement duration in seconds.
+        
+        Args:
+            seconds: Duration in seconds (must be positive)
+        """
+        if seconds > 0:
+            self.measurement_duration_seconds = seconds
+            logger.debug(f"Measurement duration set to {seconds} seconds")
     
     def stop_latency_test(self) -> None:
         """Stops the jack_delay process."""
@@ -178,8 +196,32 @@ class LatencyTester:
             count = len(self.latency_values)
             average_frames = total_frames / count
             average_ms = total_ms / count
-            # Display both average latencies
-            self.manager.latency_results_text.setText(f"Round-trip latency (average): {average_frames:.3f} frames / {average_ms:.3f} ms")
+            # Store the measured frames for the apply button
+            self.last_measured_frames = average_frames
+            # Enable the apply button now that we have a measurement
+            self.manager.latency_apply_offset_button.setEnabled(True)
+            # Display both average latencies and suggest offset
+            quantum = self._get_current_quantum()
+            if quantum is not None and quantum > 0:
+                offset_raw = (average_frames - quantum * 2) / 2.0
+                offset = max(0, int(round(offset_raw)))
+                sample_rate = self._get_current_sample_rate()
+                if sample_rate is not None and sample_rate > 0:
+                    ns_value = round(offset * 1_000_000_000 / sample_rate)
+                    self.manager.latency_results_text.setText(
+                        f"Round-trip latency (average): {average_frames:.3f} samples / {average_ms:.3f} ms\n"
+                        f"Suggested latency offset: {offset} samples / {ns_value} ns (for each, input and output node)\n"
+                        f"Apply suggested offset with the button below \u2193"
+                    )
+                else:
+                    self.manager.latency_results_text.setText(
+                        f"Round-trip latency (average): {average_frames:.3f} samples / {average_ms:.3f} ms\n"
+                        f"Suggested latency offset: {offset} samples"
+                    )
+            else:
+                self.manager.latency_results_text.setText(
+                    f"Round-trip latency (average): {average_frames:.3f} samples / {average_ms:.3f} ms"
+                )
         else:
             # Check if the process exited normally but produced no values
             if exit_status == QProcess.ExitStatus.NormalExit and exit_code == 0:
@@ -218,6 +260,7 @@ class LatencyTester:
         
         self.latency_waiting_for_connection = False  # Reset flag
         self.manager.latency_run_button.setEnabled(True)
+        self.manager.latency_apply_offset_button.setEnabled(False)  # Disable apply on error
         self.manager.latency_stop_button.setEnabled(False)  # Disable Stop button on error
     
     def _populate_latency_combos(self) -> None:
@@ -322,7 +365,7 @@ class LatencyTester:
                 else:
                     logger.warning(f"Warning: Target input port '{input_to_connect}' not found.")
                 
-                self.manager.latency_results_text.append("\nTry different ports if you're seeing this message after clicking 'Start measurement' button")
+                self.manager.latency_results_text.append("\nWait a few seconds, adjust I/O volume, or try different ports if you're seeing this message after clicking 'Start measurement' button")
                 # Refresh the audio tab view to show the new connections
                 if self.manager.port_type == 'audio':
                     self.manager.refresh_ports()
@@ -330,3 +373,406 @@ class LatencyTester:
             except Exception as e:
                 logger.error(f"Error during latency auto-connection: {e}")
                 self.manager.latency_results_text.append(f"\nError auto-connecting: {e}")
+    
+    # ── "Reset All Latency" feature ─────────────────────────────────
+    # Reuses the same approach as PipewireManager.reset_all_latency()
+    # but uses the LatencyTester's own PipeWire command runner.
+
+    def reset_all_latency(self) -> None:
+        """
+        Set Latency to '0' for all nodes.
+        
+        Mirrors the exact behavior of the "Reset All Latency" button in Cable:
+        uses 'pw-cli ls Node' to discover only ALSA audio nodes (same filtering
+        as PipewireManager._load_pw_cli_items), then runs
+        'pw-cli s <node_id> ProcessLatency { rate = 0 }' for each one.
+        """
+        # Discover ALSA audio nodes using pw-cli ls Node (same as
+        # PipewireManager.load_nodes() → _load_pw_cli_items('Node'))
+        output = self._run_pw_command(['pw-cli', 'ls', 'Node'])
+        if not output:
+            self.manager.latency_results_text.setText(
+                "Error: Could not query PipeWire node list (pw-cli ls Node failed)."
+            )
+            return
+
+        node_ids = []
+        current_id = None
+        current_name = None
+        for line in output.split('\n'):
+            line = line.strip()
+            if line.startswith('id '):
+                try:
+                    current_id = line.split(',')[0].split()[-1].strip()
+                except IndexError:
+                    current_id = None
+                    continue
+            elif 'node.name' in line:
+                try:
+                    current_name = line.split('=', 1)[1].strip().strip('"')
+                except IndexError:
+                    current_name = None
+
+                # Only include ALSA nodes (same filter as PipewireManager)
+                if current_id and current_name and current_name.startswith("alsa_"):
+                    node_ids.append(current_id)
+
+                current_id = None
+                current_name = None
+
+        if not node_ids:
+            self.manager.latency_results_text.setText(
+                "No ALSA PipeWire nodes found to reset."
+            )
+            return
+
+        self.manager.latency_results_text.setText(
+            f"Resetting latency for {len(node_ids)} ALSA node(s)...\n"
+        )
+
+        success_count = 0
+        fail_count = 0
+        for node_id in node_ids:
+            ok = self._run_pw_command(
+                ['pw-cli', 's', node_id, 'ProcessLatency', '{ rate = 0 }'],
+                check_output=False
+            )
+            if ok:
+                success_count += 1
+            else:
+                fail_count += 1
+
+        self.manager.latency_results_text.append(
+            f"Done. Reset {success_count} node(s) successfully"
+            + (f", {fail_count} failed." if fail_count > 0 else ".")
+        )
+
+    # ── "Apply measured offset" feature ──────────────────────────────
+
+    def apply_measured_offset(self) -> None:
+        """
+        Apply the measured round-trip latency offset to the selected audio nodes.
+        
+        Formula: offset = (measured_frames - quantum) / 2
+        Applied to both the input (capture) and output (playback) PipeWire nodes.
+        """
+        if self.last_measured_frames is None:
+            self.manager.latency_results_text.setText(
+                "No measurement available. Run a latency test first."
+            )
+            return
+
+        if not self.latency_selected_input_alias or not self.latency_selected_output_alias:
+            self.manager.latency_results_text.setText(
+                "Please select both Input (Capture) and Output (Playback) ports first."
+            )
+            return
+
+        # Step 1: Read current quantum
+        quantum = self._get_current_quantum()
+        if quantum is None or quantum == 0:
+            self.manager.latency_results_text.setText(
+                "Error: Could not determine current PipeWire quantum."
+            )
+            return
+
+        # Step 2: Calculate offset
+        measured = self.last_measured_frames
+        offset_raw = (measured - quantum * 2) / 2.0
+        offset = max(0, int(round(offset_raw)))  # Clamp to non-negative, round to integer
+
+        # Step 3: Map selected JACK ports to PipeWire node IDs via pw-dump
+        pw_dump = self._get_pw_dump()
+        if not pw_dump:
+            self.manager.latency_results_text.append(
+                "Error: Could not query PipeWire node list (pw-dump failed)."
+            )
+            return
+
+        # Find PW nodes for both selected ports
+        input_alias = self.latency_selected_input_alias
+        output_alias = self.latency_selected_output_alias
+
+        logger.info(f"Mapping JACK ports to PW nodes: input={input_alias}, output={output_alias}")
+
+        input_node_ids = self._find_pw_nodes_for_jack_port(input_alias, pw_dump)
+        output_node_ids = self._find_pw_nodes_for_jack_port(output_alias, pw_dump)
+
+        all_node_ids = set(input_node_ids + output_node_ids)
+        if not all_node_ids:
+            self.manager.latency_results_text.append(
+                "Error: Could not match selected ports to any PipeWire node. "
+                "Try refreshing the port list."
+            )
+            return
+
+        # Step 4: Apply offset to each found node
+        success_count = 0
+        fail_count = 0
+        for node_id in sorted(all_node_ids):
+            ok = self._apply_pw_latency_offset(node_id, offset)
+            if ok:
+                success_count += 1
+            else:
+                fail_count += 1
+
+        # Step 5: Report results
+        if success_count > 0:
+            plural = "" if success_count == 1 else "s"
+            self.manager.latency_results_text.setHtml(
+                f"Applied offset of <b>{offset}</b> samples to {success_count} PipeWire node{plural}."
+            )
+        if fail_count > 0:
+            plural = "" if fail_count == 1 else "s"
+            fail_msg = f"✗ Failed to apply offset to {fail_count} node{plural}."
+            if success_count > 0:
+                self.manager.latency_results_text.append(f"\n{fail_msg}")
+            else:
+                self.manager.latency_results_text.setHtml(fail_msg)
+
+    def _get_current_quantum(self) -> Optional[int]:
+        """
+        Get the current PipeWire quantum.
+        
+        Priority:
+        1. If integrated mode (cable_widget available), read from QuantumManager
+           (this is the most reliable — it's already parsed from pw-metadata)
+        2. Otherwise, probe pw-metadata directly (standalone Cables mode)
+        
+        Returns:
+            The quantum value as int, or None if cannot be determined.
+        """
+        # Priority 1: Reuse quantum from Cable's QuantumManager if available
+        cable_widget = getattr(self.manager, 'cable_widget', None)
+        if cable_widget is not None:
+            quantum_manager = getattr(cable_widget, 'quantum_manager', None)
+            if quantum_manager is not None:
+                quantum = quantum_manager.get_quantum_value()
+                if quantum is not None and quantum > 0:
+                    logger.debug(f"Got quantum from QuantumManager: {quantum}")
+                    return quantum
+
+        # Priority 2: Probe pw-metadata directly
+        # pw-metadata output format:
+        #   update: id:0 key:'clock.force-quantum' value:'1024' type:''
+        #   update: id:0 key:'clock.quantum' value:'1024' type:''
+        try:
+            # Try force-quantum first (non-zero means forced)
+            output = self._run_pw_command(
+                ['pw-metadata', '-n', 'settings']
+            )
+            if output:
+                # Parse force-quantum
+                match = re.search(r"clock\.force-quantum'.*?value:'(\d+)'", output)
+                if match:
+                    val = int(match.group(1))
+                    if val > 0:
+                        logger.debug(f"Got quantum from force-quantum: {val}")
+                        return val
+
+                # Fall back to effective quantum
+                match = re.search(r"clock\.quantum'.*?value:'(\d+)'", output)
+                if match:
+                    val = int(match.group(1))
+                    if val > 0:
+                        logger.debug(f"Got quantum from clock.quantum: {val}")
+                        return val
+
+            logger.warning("Could not parse quantum from pw-metadata output")
+            return None
+        except Exception as e:
+            logger.error(f"Error getting current quantum: {e}")
+            return None
+
+    def _get_current_sample_rate(self) -> Optional[int]:
+        """
+        Get the current PipeWire sample rate.
+        
+        Priority:
+        1. If integrated mode (cable_widget available), read from QuantumManager
+           (this is the most reliable — it's already parsed from pw-metadata)
+        2. Otherwise, probe pw-metadata directly (standalone Cables mode)
+        
+        Returns:
+            The sample rate as int (e.g. 48000), or None if cannot be determined.
+        """
+        # Priority 1: Reuse sample rate from Cable's QuantumManager if available
+        cable_widget = getattr(self.manager, 'cable_widget', None)
+        if cable_widget is not None:
+            quantum_manager = getattr(cable_widget, 'quantum_manager', None)
+            if quantum_manager is not None:
+                rate = quantum_manager.get_sample_rate_value()
+                if rate > 0:
+                    logger.debug(f"Got sample rate from QuantumManager: {rate}")
+                    return rate
+
+        # Priority 2: Probe pw-metadata directly
+        # pw-metadata output format:
+        #   update: id:0 key:'clock.rate' value:'48000' type:''
+        try:
+            output = self._run_pw_command(
+                ['pw-metadata', '-n', 'settings']
+            )
+            if output:
+                match = re.search(r"clock\.rate'.*?value:'(\d+)'", output)
+                if match:
+                    val = int(match.group(1))
+                    if val > 0:
+                        logger.debug(f"Got sample rate from pw-metadata: {val}")
+                        return val
+
+            logger.warning("Could not parse sample rate from pw-metadata output")
+            return None
+        except Exception as e:
+            logger.error(f"Error getting current sample rate: {e}")
+            return None
+
+    def _get_pw_dump(self) -> Optional[List[Dict[str, Any]]]:
+        """
+        Run pw-dump and return parsed JSON.
+        
+        Returns:
+            List of pw-dump objects, or None on failure.
+        """
+        try:
+            output = self._run_pw_command(['pw-dump'])
+            if not output:
+                return None
+            return json.loads(output)
+        except Exception as e:
+            logger.error(f"Error running pw-dump: {e}")
+            return None
+
+    def _find_pw_nodes_for_jack_port(
+        self, jack_port_name: str, pw_dump: List[Dict[str, Any]]
+    ) -> List[str]:
+        """
+        Given a JACK port name like 'Ryzen HD Audio Controller Speaker:playback_FL',
+        find the PipeWire node ID that owns the corresponding physical port.
+        
+        Matching strategy:
+        1. Extract the JACK client name (before ':') from the port name.
+        2. Find the PipeWire Node object whose 'node.description' matches
+           the JACK client name exactly.
+        3. Return that node's ID.
+        
+        This ensures only the specific measured device node is targeted,
+        not virtual sinks/sources that happen to share port names like
+        'playback_FL'.
+        
+        Args:
+            jack_port_name: The JACK port name
+                (e.g. 'Ryzen HD Audio Controller Speaker:playback_FL')
+            pw_dump: Parsed pw-dump JSON data
+            
+        Returns:
+            List of PW node ID strings (may be empty, typically one element).
+        """
+        # Extract JACK client name (the part before ':')
+        if ':' not in jack_port_name:
+            logger.warning(f"JACK port name has no ':' separator: {jack_port_name}")
+            return []
+        
+        jack_client_name = jack_port_name.split(':', 1)[0]
+        logger.debug(f"Looking for PW node matching JACK client: '{jack_client_name}'")
+        
+        node_ids: set = set()
+        
+        # Search for PipeWire Node objects whose description matches the JACK client name.
+        # PipeWire exposes JACK port names as '<node.description>:<port.name>',
+        # so the JACK client name corresponds to node.description.
+        for obj in pw_dump:
+            if not isinstance(obj, dict):
+                continue
+            obj_type = obj.get('type', '')
+            if 'PipeWire:Interface:Node' not in obj_type:
+                continue
+            
+            info = obj.get('info', {})
+            props = info.get('props', {}) if isinstance(info, dict) else {}
+            
+            node_desc = props.get('node.description', '')
+            if node_desc == jack_client_name:
+                node_id = obj.get('id')
+                if node_id is not None:
+                    node_ids.add(str(node_id))
+                    logger.info(
+                        f"Matched JACK client '{jack_client_name}' -> "
+                        f"PW node {node_id} (name={props.get('node.name', '')})"
+                    )
+        
+        if not node_ids:
+            logger.warning(
+                f"No PipeWire node found matching JACK client '{jack_client_name}'"
+            )
+
+        return list(node_ids)
+
+    def _apply_pw_latency_offset(self, node_id: str, offset: int) -> bool:
+        """
+        Apply ProcessLatency '{ rate = <offset> }' to a PipeWire node.
+        
+        Args:
+            node_id: PipeWire node ID string
+            offset: Latency offset value (in frames)
+            
+        Returns:
+            True if the command succeeded, False otherwise.
+        """
+        try:
+            command = [
+                'pw-cli', 's', node_id, 'ProcessLatency',
+                f'{{ rate = {offset} }}'
+            ]
+            logger.info(f"Applying latency offset {offset} to PW node {node_id}")
+            ok = self._run_pw_command(command, check_output=False)
+            if ok:
+                logger.info(f"Successfully applied offset {offset} to node {node_id}")
+                return True
+            else:
+                logger.error(f"Failed to apply offset {offset} to node {node_id}")
+                return False
+        except Exception as e:
+            logger.error(f"Error applying offset to node {node_id}: {e}")
+            return False
+
+    def _run_pw_command(
+        self, command_args: List[str], check_output: bool = True
+    ) -> Any:
+        """
+        Run a PipeWire-related command, respecting the flatpak_env flag.
+        
+        This mirrors the pattern used in PipewireManager.run_command().
+        
+        Args:
+            command_args: Command and arguments as a list
+            check_output: If True, return stdout string; if False, return bool success
+            
+        Returns:
+            stdout string, bool, or None depending on mode and success.
+        """
+        try:
+            if self.manager.flatpak_env:
+                command_args = ['flatpak-spawn', '--host'] + command_args
+
+            if check_output:
+                result = subprocess.check_output(
+                    command_args,
+                    universal_newlines=True,
+                    stderr=subprocess.DEVNULL
+                )
+                return result.strip()
+            else:
+                subprocess.run(
+                    command_args,
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+                return True
+        except subprocess.CalledProcessError as e:
+            logger.debug(f"Command failed: {' '.join(command_args)}: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Error running command: {' '.join(command_args)}: {e}")
+            return None

@@ -1256,9 +1256,22 @@ class JackConnectionManager(QMainWindow):
         if instr is not None:
             instr.setStyleSheet(f"color: {text_color}; font-size: 11pt;")
 
+        # Duration labels and spinbox (new elements)
+        duration_before = getattr(self, "latency_duration_text_before", None)
+        if duration_before is not None:
+            duration_before.setStyleSheet(f"color: {text_color}; font-size: 11pt;")
+        
+        duration_after = getattr(self, "latency_duration_text_after", None)
+        if duration_after is not None:
+            duration_after.setStyleSheet(f"color: {text_color}; font-size: 11pt;")
+        
+        duration_spinbox = getattr(self, "latency_duration_spinbox", None)
+        if duration_spinbox is not None:
+            duration_spinbox.setStyleSheet(f"color: {text_color}; font-size: 11pt;")
+
         # Latency buttons — re-apply the live button stylesheet
         button_style = mgr.button_stylesheet()
-        for btn_attr in ("latency_refresh_button", "latency_run_button", "latency_stop_button"):
+        for btn_attr in ("latency_refresh_button", "latency_run_button", "latency_stop_button", "latency_apply_offset_button"):
             btn = getattr(self, btn_attr, None)
             if btn is not None:
                 btn.setStyleSheet(button_style)
@@ -1272,9 +1285,13 @@ class JackConnectionManager(QMainWindow):
             getattr(self, "pwtop_text", None),
             getattr(self, "latency_results_text", None),
             getattr(self, "latency_instructions_label", None),
+            getattr(self, "latency_duration_text_before", None),
+            getattr(self, "latency_duration_text_after", None),
+            getattr(self, "latency_duration_spinbox", None),
             getattr(self, "latency_refresh_button", None),
             getattr(self, "latency_run_button", None),
             getattr(self, "latency_stop_button", None),
+            getattr(self, "latency_apply_offset_button", None),
         ):
             if w is not None:
                 w.update()

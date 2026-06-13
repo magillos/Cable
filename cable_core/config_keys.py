@@ -22,7 +22,7 @@ __all__ = [
     "REMEMBER_SETTINGS",
     "RESTORE_ONLY_MINIMIZED",
     "APPLY_QUANTUM_SAMPLE_RATE_INSTANTANEOUSLY",
-    "SHOW_QUANTUM_SAMPLE_RATE_CONFIRMATION",
+    "SHOW_SETTING_CONFIRMATION",
     "SAVED_QUANTUM",
     "SAVED_SAMPLE_RATE",
     "AUTOSTART_ENABLED",
@@ -113,7 +113,7 @@ INVERT_TRAY_ICON = "invert_tray_icon"
 REMEMBER_SETTINGS = "remember_settings"
 RESTORE_ONLY_MINIMIZED = "restore_only_minimized"
 APPLY_QUANTUM_SAMPLE_RATE_INSTANTANEOUSLY = "apply_quantum_sample_rate_instantaneously"
-SHOW_QUANTUM_SAMPLE_RATE_CONFIRMATION = "show_quantum_sample_rate_confirmation"
+SHOW_SETTING_CONFIRMATION = "show_setting_confirmation"
 SAVED_QUANTUM = "saved_quantum"
 SAVED_SAMPLE_RATE = "saved_sample_rate"
 AUTOSTART_ENABLED = "autostart_enabled"

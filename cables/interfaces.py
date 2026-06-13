@@ -163,6 +163,7 @@ class LatencyUIProvider(Protocol):
     latency_results_text: "QTextEdit"
     latency_run_button: "QPushButton"
     latency_stop_button: "QPushButton"
+    latency_apply_offset_button: "QPushButton"
     latency_raw_output_checkbox: "QCheckBox"
     latency_input_combo: "QComboBox"
     latency_output_combo: "QComboBox"

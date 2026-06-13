@@ -319,16 +319,36 @@ def show_hide_node_confirmation_dialog(
     return result
 # ------------------------------------
 
-# --- Quantum/Sample Rate Confirmation Dialog ---
-class QuantumSampleRateConfirmationDialog(QDialog):
-    """Auto-closing confirmation dialog for quantum/sample rate changes."""
+# --- Setting Confirmation Dialog ---
+class SettingConfirmationDialog(QDialog):
+    """Auto-closing confirmation dialog for setting changes (quantum, sample rate, latency, profile)."""
     
     def __init__(self, message: str, duration_ms: int = 2000, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Setting Applied")
         self.setModal(False)  # Non-modal so it doesn't block interaction
         
+        # Prevent the dialog from stealing focus
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setWindowFlags(
+            Qt.WindowType.ToolTip |  # Use tooltip style to avoid taskbar and focus issues
+            Qt.WindowType.FramelessWindowHint |
+            Qt.WindowType.WindowStaysOnTopHint
+        )
+        
         layout = QVBoxLayout(self)
+        
+        # Add some padding and styling for frameless window
+        self.setStyleSheet("""
+            QDialog {
+                background-color: palette(window);
+                border: 1px solid palette(mid);
+                border-radius: 4px;
+            }
+            QLabel {
+                padding: 10px;
+            }
+        """)
         
         # Message label
         message_label = QLabel(message)

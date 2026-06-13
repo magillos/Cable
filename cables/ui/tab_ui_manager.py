@@ -15,7 +15,8 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QToolButton,
     QMenu,
-)  # Added QToolButton, QMenu, QSplitter
+    QSpinBox,
+)  # Added QToolButton, QMenu, QSplitter, QSpinBox
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QFont, QIcon, QAction
 import threading  # Added for graph tab
@@ -455,17 +456,16 @@ class TabUIManager:
 
         manager.latency_tester = LatencyTester(manager)
 
-        # Instructions Label
+        # Instructions Label - Main part
         instructions_text = (
             "<b>Instructions:</b><br><br>"
             "1. Ensure 'jack_delay', 'jack-delay' or 'jack_iodelay' (via 'jack-example-tools') is installed.<br>"
             "2. Physically connect an output and input of your audio interface using a cable (loopback).<br>"
             "3. Select the corresponding Input (Capture) and Output (Playback) ports using the dropdowns below.<br>"
             "4. Click 'Start Measurement'. The selected ports will be automatically connected to jack_delay.<br>"
-            "(you can click 'Start Measurement' first and then try different ports)<br>"
+            "(You can click 'Start Measurement' first and then try different ports). Any previously applied offset will be ignored in the results.<br>"
             "5. <b><font color='orange'>Warning:</font></b> Start with low volume/gain levels on your interface "
-            "to avoid potential damage from the test signal.<br><br>"
-            "After the signal is detected, the average measured round-trip latency will be shown after 10 seconds.<br><br><br><br><br>"
+            "to avoid potential damage from the test signal."
         )
         instructions_label = QLabel(instructions_text)
         instructions_label.setWordWrap(True)
@@ -477,6 +477,55 @@ class TabUIManager:
 
         # Store so _refresh_tab_stylesheets can update the color on theme change
         manager.latency_instructions_label = instructions_label
+        
+        # Add spacing
+        layout.addSpacerItem(
+            QSpacerItem(20, 10, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+        )
+        
+        # Create a horizontal layout for the duration setting line
+        duration_container = QWidget()
+        duration_layout = QHBoxLayout(duration_container)
+        duration_layout.setContentsMargins(0, 0, 0, 0)
+        duration_layout.setSpacing(5)
+        
+        duration_text_before = QLabel("After the signal is detected, the average measured round-trip latency will be shown after")
+        duration_text_before.setStyleSheet(f"color: {manager.text_color.name()}; font-size: 11pt;")
+        
+        # Create QSpinBox for measurement duration
+        manager.latency_duration_spinbox = QSpinBox()
+        manager.latency_duration_spinbox.setMinimum(1)
+        manager.latency_duration_spinbox.setMaximum(999)
+        manager.latency_duration_spinbox.setValue(10)
+        manager.latency_duration_spinbox.setToolTip("Duration for averaging latency measurements")
+        manager.latency_duration_spinbox.setFixedWidth(60)
+        manager.latency_duration_spinbox.setStyleSheet(
+            f"color: {manager.text_color.name()}; font-size: 11pt;"
+        )
+        
+        # Connect spinbox to update the latency tester
+        manager.latency_duration_spinbox.valueChanged.connect(
+            manager.latency_tester.set_measurement_duration
+        )
+        
+        duration_text_after = QLabel("seconds.")
+        duration_text_after.setStyleSheet(f"color: {manager.text_color.name()}; font-size: 11pt;")
+        
+        duration_layout.addWidget(duration_text_before)
+        duration_layout.addWidget(manager.latency_duration_spinbox)
+        duration_layout.addWidget(duration_text_after)
+        duration_layout.addStretch(1)
+        
+        layout.addWidget(duration_container)
+        
+        # Store additional labels for theme refresh
+        manager.latency_duration_text_before = duration_text_before
+        manager.latency_duration_text_after = duration_text_after
+        
+        # Add spacing
+        layout.addSpacerItem(
+            QSpacerItem(20, 20, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+        )
 
         # Combo Boxes for Port Selection
         manager.latency_input_combo = QComboBox()
@@ -489,9 +538,6 @@ class TabUIManager:
 
         # Refresh Button
         manager.latency_refresh_button = QPushButton("Refresh Ports")
-        manager.latency_refresh_button.setStyleSheet(
-            manager.ui_manager.button_stylesheet()
-        )
         manager.latency_refresh_button.clicked.connect(
             manager.latency_tester._populate_latency_combos
         )
@@ -525,15 +571,11 @@ class TabUIManager:
         # Start/Stop Buttons Layout
         start_stop_button_layout = QHBoxLayout()
         manager.latency_run_button = QPushButton("Start measurement")
-        manager.latency_run_button.setStyleSheet(manager.ui_manager.button_stylesheet())
         manager.latency_run_button.clicked.connect(
             manager.latency_tester.run_latency_test
         )
 
         manager.latency_stop_button = QPushButton("Stop")
-        manager.latency_stop_button.setStyleSheet(
-            manager.ui_manager.button_stylesheet()
-        )
         manager.latency_stop_button.clicked.connect(
             manager.latency_tester.stop_latency_test
         )
@@ -568,9 +610,34 @@ class TabUIManager:
         """)
         manager.latency_results_text.setText("Ready to test.")
         layout.addWidget(manager.latency_results_text, 1)
-        layout.addWidget(
-            manager.latency_raw_output_checkbox
-        )  # Add checkbox below results
+
+        # Bottom row: checkbox on the left, "Apply measured offset" and "Reset All Latency" on the right
+        bottom_row_layout = QHBoxLayout()
+        bottom_row_layout.addWidget(manager.latency_raw_output_checkbox)
+
+        manager.latency_apply_offset_button = QPushButton("Apply measured offset")
+        manager.latency_apply_offset_button.setToolTip(
+            "Apply the measured round-trip latency offset to both input and output nodes, "
+            "overwriting any existing Latency settings.<br><br>"
+            "Applied to all PipeWire nodes associated with the selected ports."
+                    )
+        manager.latency_apply_offset_button.clicked.connect(
+            manager.latency_tester.apply_measured_offset
+        )
+        manager.latency_apply_offset_button.setEnabled(False)
+        bottom_row_layout.addWidget(manager.latency_apply_offset_button)
+
+        manager.latency_reset_all_button = QPushButton("Reset All Latency")
+        manager.latency_reset_all_button.setToolTip(
+            "Sets ProcessLatency to '0' for all PipeWire nodes"
+        )
+        manager.latency_reset_all_button.clicked.connect(
+            manager.latency_tester.reset_all_latency
+        )
+        bottom_row_layout.addWidget(manager.latency_reset_all_button)
+
+        bottom_row_layout.addStretch(1)
+        layout.addLayout(bottom_row_layout)
 
         # Populate combo boxes and connect signals
         manager.latency_tester._populate_latency_combos()

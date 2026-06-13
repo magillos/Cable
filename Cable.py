@@ -172,7 +172,7 @@ class PipeWireSettingsApp(QWidget):
                 self.show_confirmation_checkbox.setChecked(checked),
                 self.show_confirmation_checkbox.blockSignals(False),
                 self.config_manager.set_bool_setting(
-                    keys.SHOW_QUANTUM_SAMPLE_RATE_CONFIRMATION, checked
+                    keys.SHOW_SETTING_CONFIRMATION, checked
                 ),
             )[-1],
         )  # Instantiate TrayManager
@@ -514,7 +514,7 @@ class PipeWireSettingsApp(QWidget):
 
         # New checkbox for showing confirmation after applying
         self.show_confirmation_checkbox = QCheckBox(
-            "Show confirmation after applying Quantum and Sample Rate"
+            "Show confirmation after applying a setting"
         )
         self.show_confirmation_checkbox.setChecked(False)
         self.show_confirmation_checkbox.stateChanged.connect(
@@ -565,6 +565,7 @@ class PipeWireSettingsApp(QWidget):
             async_runner=self.async_runner,
             device_combo=self.device_combo,
             profile_combo=self.profile_combo,
+            apply_button=self.apply_profile_button,
         )
 
         # Initialize LatencyManager for latency offset management
@@ -575,6 +576,7 @@ class PipeWireSettingsApp(QWidget):
             node_combo=self.node_combo,
             latency_input=self.latency_input,
             nanoseconds_checkbox=self.nanoseconds_checkbox,
+            apply_button=self.apply_latency_button,
         )
 
         # Initialize QuantumManager for quantum/sample rate settings
@@ -749,15 +751,31 @@ class PipeWireSettingsApp(QWidget):
         logger.debug("Resetting all latency and refreshing settings...")
         if self.latency_manager is not None:
             node_ids = self.latency_manager.get_all_node_ids()
-            self.latency_manager.reset_all_latency(node_ids, self.refresh_all_settings)
+            result = self.latency_manager.reset_all_latency(node_ids, self.refresh_all_settings)
+            
+            # Refresh the currently selected node's latency value to show 0
+            self.latency_manager.refresh_current_node()
+            
+            # Show confirmation dialog if enabled
+            if self.show_confirmation and result['total_count'] > 0:
+                success_count = result['success_count']
+                fail_count = result['fail_count']
+                
+                if fail_count == 0:
+                    message = f"Reset {success_count} ALSA node(s) successfully."
+                else:
+                    message = f"Reset {success_count} node(s) successfully, {fail_count} failed."
+                
+                self._show_setting_confirmation(message)
+        
         logger.debug("Finished resetting latency and refreshing.")
 
     def refresh_all_settings(self) -> None:
         """Refresh all settings from PipeWire and config."""
         logger.debug("Refreshing all settings...")
 
-        self._apply_devices()
-        self._apply_nodes()
+        self._apply_devices(preserve_selection=True)
+        self._apply_nodes(preserve_selection=True)
 
         if self.quantum_manager is not None:
             self.quantum_manager.populate_dropdowns()
@@ -780,15 +798,23 @@ class PipeWireSettingsApp(QWidget):
         if self.quantum_manager is not None:
             self.quantum_manager.apply_loaded_settings(settings)
 
-    def _apply_devices(self) -> None:
-        """Load available audio devices."""
+    def _apply_devices(self, preserve_selection: bool = False) -> None:
+        """Load available audio devices.
+        
+        Args:
+            preserve_selection: If True, preserve current selection after reload.
+        """
         if self.device_manager is not None:
-            self.device_manager.load_devices()
+            self.device_manager.load_devices(preserve_selection=preserve_selection)
 
-    def _apply_nodes(self) -> None:
-        """Load available audio nodes."""
+    def _apply_nodes(self, preserve_selection: bool = False) -> None:
+        """Load available audio nodes.
+        
+        Args:
+            preserve_selection: If True, preserve current selection after reload.
+        """
         if self.latency_manager is not None:
-            self.latency_manager.load_nodes()
+            self.latency_manager.load_nodes(preserve_selection=preserve_selection)
 
     def _apply_profiles(self) -> None:
         """Load profiles for selected device."""
@@ -803,12 +829,27 @@ class PipeWireSettingsApp(QWidget):
     def _handle_apply_latency(self) -> None:
         """Apply latency settings."""
         if self.latency_manager is not None:
-            self.latency_manager.apply_latency()
+            result = self.latency_manager.apply_latency()
+            # Show confirmation dialog if enabled and successful
+            if result['success'] and self.show_confirmation:
+                node_name = result['node_name']
+                offset_value = result['offset_value']
+                unit = "ns" if result['is_nanoseconds'] else "samples"
+                self._show_setting_confirmation(
+                    f"Applied offset of {offset_value} {unit} to PipeWire node:\n{node_name}"
+                )
 
     def _handle_apply_profile(self) -> None:
         """Apply profile settings."""
         if self.device_manager is not None:
-            self.device_manager.apply_profile()
+            success = self.device_manager.apply_profile()
+            # Show confirmation dialog if enabled and successful
+            if success and self.show_confirmation:
+                selected_profile = self.profile_combo.currentText()
+                if selected_profile:
+                    self._show_setting_confirmation(
+                        f"Audio profile '{selected_profile}' applied"
+                    )
 
     def apply_quantum_settings(self, skip_save: bool = False) -> None:
         """Apply quantum settings."""
@@ -822,7 +863,7 @@ class PipeWireSettingsApp(QWidget):
                 self.apply_quantum_button.setEnabled(False)
                 # Show confirmation dialog if enabled
                 if self.show_confirmation and not self.initial_load:
-                    self._show_quantum_sample_rate_confirmation(
+                    self._show_setting_confirmation(
                         f"{self.quantum_combo.currentText()} quantum applied"
                     )
 
@@ -838,7 +879,7 @@ class PipeWireSettingsApp(QWidget):
                 self.apply_sample_rate_button.setEnabled(False)
                 # Show confirmation dialog if enabled
                 if self.show_confirmation and not self.initial_load:
-                    self._show_quantum_sample_rate_confirmation(
+                    self._show_setting_confirmation(
                         f"{self.sample_rate_combo.currentText()} sample rate applied"
                     )
 
@@ -849,7 +890,7 @@ class PipeWireSettingsApp(QWidget):
                 self._apply_current_settings(force_reset_quantum=True)
                 # Show confirmation dialog if enabled
                 if self.show_confirmation:
-                    self._show_quantum_sample_rate_confirmation(
+                    self._show_setting_confirmation(
                         "Default quantum restored"
                     )
 
@@ -860,7 +901,7 @@ class PipeWireSettingsApp(QWidget):
                 self._apply_current_settings(force_reset_sample_rate=True)
                 # Show confirmation dialog if enabled
                 if self.show_confirmation:
-                    self._show_quantum_sample_rate_confirmation(
+                    self._show_setting_confirmation(
                         "Default sample rate restored"
                     )
 
@@ -872,7 +913,7 @@ class PipeWireSettingsApp(QWidget):
             "remember_settings": self.remember_settings,
             "restore_only_minimized": self.restore_only_minimized,
             "apply_quantum_sample_rate_instantaneously": self.apply_immediately,
-            "show_quantum_sample_rate_confirmation": self.show_confirmation,
+            "show_setting_confirmation": self.show_confirmation,
             "autostart_enabled": self.autostart_enabled,
             "check_updates_at_start": self.check_updates_at_start,
             "appimage_path": self.appimage_path,
@@ -886,7 +927,7 @@ class PipeWireSettingsApp(QWidget):
             "apply_quantum_sample_rate_instantaneously", False
         )
         self.show_confirmation = settings.get(
-            "show_quantum_sample_rate_confirmation", False
+            "show_setting_confirmation", False
         )
         self.saved_quantum = settings["saved_quantum"]
         self.saved_sample_rate = settings["saved_sample_rate"]
@@ -1099,15 +1140,15 @@ class PipeWireSettingsApp(QWidget):
         """Handle show confirmation checkbox state changes."""
         self.show_confirmation = bool(state)
         self.config_manager.set_bool_setting(
-            keys.SHOW_QUANTUM_SAMPLE_RATE_CONFIRMATION, self.show_confirmation
+            keys.SHOW_SETTING_CONFIRMATION, self.show_confirmation
         )
 
-    def _show_quantum_sample_rate_confirmation(self, message: str) -> None:
-        """Show auto-closing confirmation dialog for quantum/sample rate changes."""
-        from cable_core.dialogs import QuantumSampleRateConfirmationDialog
+    def _show_setting_confirmation(self, message: str) -> None:
+        """Show auto-closing confirmation dialog for setting changes."""
+        from cable_core.dialogs import SettingConfirmationDialog
         from cable_core.app_config import QUANTUM_SAMPLE_RATE_CONFIRMATION_DURATION_MS
 
-        dialog = QuantumSampleRateConfirmationDialog(
+        dialog = SettingConfirmationDialog(
             message=message,
             duration_ms=QUANTUM_SAMPLE_RATE_CONFIRMATION_DURATION_MS,
             parent=self,
@@ -1156,8 +1197,8 @@ class PipeWireSettingsApp(QWidget):
             # Refresh pipewire settings when window gains focus (non-embedded mode only)
             if not self.embedded and self.values_initialized:
                 self._apply_current_settings()
-                self._apply_devices()
-                self._apply_nodes()
+                self._apply_devices(preserve_selection=True)
+                self._apply_nodes(preserve_selection=True)
                 self.update_latency_display()
         elif event.type() in (
             QEvent.Type.PaletteChange,

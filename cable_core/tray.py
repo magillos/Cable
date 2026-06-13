@@ -432,11 +432,11 @@ class TrayManager:
 
         # Add show confirmation toggle
         show_confirmation_action = QAction(
-            "Show confirmation after applying Quantum and Sample Rate", self.app
+            "Show confirmation after applying a setting", self.app
         )
         show_confirmation_action.setCheckable(True)
         show_confirmation_action.setChecked(
-            self._config_manager.get_bool(keys.SHOW_QUANTUM_SAMPLE_RATE_CONFIRMATION, False)
+            self._config_manager.get_bool(keys.SHOW_SETTING_CONFIRMATION, False)
             if self._config_manager else False
         )
         show_confirmation_action.toggled.connect(
@@ -803,7 +803,7 @@ class TrayManager:
         Handles the case where the app window may be hidden by using the tray icon
         as a visual anchor point for the dialog.
         """
-        from cable_core.dialogs import QuantumSampleRateConfirmationDialog
+        from cable_core.dialogs import SettingConfirmationDialog
         from cable_core.app_config import QUANTUM_SAMPLE_RATE_CONFIRMATION_DURATION_MS
 
         # Combine messages if both quantum and sample rate were changed
@@ -814,7 +814,7 @@ class TrayManager:
 
         # Use the app as parent; the dialog will center on it if visible,
         # or appear near the tray icon area if the app is hidden
-        dialog = QuantumSampleRateConfirmationDialog(
+        dialog = SettingConfirmationDialog(
             message=message,
             duration_ms=QUANTUM_SAMPLE_RATE_CONFIRMATION_DURATION_MS,
             parent=self.app,

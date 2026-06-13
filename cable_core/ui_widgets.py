@@ -163,6 +163,7 @@ class AudioProfileGroup(QGroupBox):
         
         self.apply_button = QPushButton("Apply Profile")
         self.apply_button.clicked.connect(apply_slot)
+        self.apply_button.setEnabled(False)  # Start disabled until valid selection
         layout.addWidget(self.apply_button)
         
         # Apply group style
@@ -203,6 +204,7 @@ class LatencyGroup(QGroupBox):
         
         self.apply_button = QPushButton("Apply Latency")
         self.apply_button.clicked.connect(apply_slot)
+        self.apply_button.setEnabled(False)  # Start disabled until valid selection
         
         if vertical_buttons:
             buttons_layout = QVBoxLayout()

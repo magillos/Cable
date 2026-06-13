@@ -17,8 +17,8 @@ class AutostartManager:
 
         # Set the appropriate Exec line based on environment
         if appimage_path:
-            # For AppImage, use the full path to the AppImage with --minimized
-            exec_line = f"{appimage_path} --minimized"
+            # For AppImage, use pw-jack with quoted path (handles spaces in directories)
+            exec_line = f'pw-jack "{appimage_path}" --minimized'
         elif flatpak_env:
             exec_line = "/usr/bin/flatpak run com.github.magillos.cable --minimized"
         else:

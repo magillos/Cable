@@ -466,7 +466,7 @@ class ConfigManager:
             "remember_settings": False,
             "restore_only_minimized": False,
             "apply_quantum_sample_rate_instantaneously": False,
-            "show_quantum_sample_rate_confirmation": False,
+            "show_setting_confirmation": False,
             "saved_quantum": 0,
             "saved_sample_rate": 0,
             "has_saved_quantum": False,
@@ -497,9 +497,9 @@ class ConfigManager:
                     keys.APPLY_QUANTUM_SAMPLE_RATE_INSTANTANEOUSLY,
                     fallback=False,
                 )
-                settings["show_quantum_sample_rate_confirmation"] = config.getboolean(
+                settings["show_setting_confirmation"] = config.getboolean(
                     "DEFAULT",
-                    keys.SHOW_QUANTUM_SAMPLE_RATE_CONFIRMATION,
+                    keys.SHOW_SETTING_CONFIRMATION,
                     fallback=False,
                 )
 
@@ -553,7 +553,7 @@ class ConfigManager:
                     f"Loaded apply_quantum_sample_rate_instantaneously: {settings['apply_quantum_sample_rate_instantaneously']}"
                 )
                 logger.info(
-                    f"Loaded show_quantum_sample_rate_confirmation: {settings['show_quantum_sample_rate_confirmation']}"
+                    f"Loaded show_setting_confirmation: {settings['show_setting_confirmation']}"
                 )
                 logger.info(f"Loaded appimage_path: {settings['appimage_path']}")
             except Exception as e:
@@ -583,8 +583,8 @@ class ConfigManager:
                 keys.APPLY_QUANTUM_SAMPLE_RATE_INSTANTANEOUSLY: str(
                     settings_dict.get("apply_quantum_sample_rate_instantaneously", False)
                 ),
-                keys.SHOW_QUANTUM_SAMPLE_RATE_CONFIRMATION: str(
-                    settings_dict.get("show_quantum_sample_rate_confirmation", False)
+                keys.SHOW_SETTING_CONFIRMATION: str(
+                    settings_dict.get("show_setting_confirmation", False)
                 ),
                 keys.AUTOSTART_ENABLED: str(
                     settings_dict.get("autostart_enabled", False)
@@ -602,7 +602,7 @@ class ConfigManager:
             keys.REMEMBER_SETTINGS,
             keys.RESTORE_ONLY_MINIMIZED,
             keys.APPLY_QUANTUM_SAMPLE_RATE_INSTANTANEOUSLY,
-            keys.SHOW_QUANTUM_SAMPLE_RATE_CONFIRMATION,
+            keys.SHOW_SETTING_CONFIRMATION,
             keys.AUTOSTART_ENABLED,
             keys.CHECK_UPDATES_AT_START,
             keys.APPIMAGE_PATH,

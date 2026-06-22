@@ -204,7 +204,7 @@ class PresetHandler:
 
         # --- Startup Preset Section ---
         menu.addSeparator()
-        startup_menu = menu.addMenu("Preset to load at (auto)start")
+        startup_menu = menu.addMenu("Preset to load at autostart")
         startup_group = QActionGroup(startup_menu)  # Use QActionGroup for exclusivity
         startup_group.setExclusive(True)
 

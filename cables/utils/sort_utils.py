@@ -250,16 +250,44 @@ def natural_sort_key_for_full_port_name(
 # Stereo pair detection for per-pair bulk areas
 # ---------------------------------------------------------------------------
 
-# Default L/R suffix pairs for Phase 1 detection (longest first for specificity).
+# Default L/R suffix pairs for Phase 1 detection.
+#
+# All entries are written in canonical lowercase — Phase 1 matching is
+# case-insensitive (port names are lowercased before suffix lookup), so
+# 'Output L' and 'OUTPUT L' both match ' l'. Casing no longer needs to be
+# enumerated per convention.
+#
+# Each single-letter suffix keeps its separator explicitly (underscore,
+# space, or dash) so that a bare 'l'/'r' does not greedily match unrelated
+# words like 'vocal' or 'center'. Full-word suffixes ('left'/'right') are
+# long enough to be unambiguous without a separator.
+#
+# Pairs are tried longest-first for specificity, so '_fl' is attempted
+# before '_l' and won't let 'playback_FL' pair against a non-existent
+# 'playback_R'. Surround variants (FL/FR, SL/SR, RL/RR) are listed for
+# each separator in turn.
+#
 # These are defined here to avoid a cross-package import from graph.constants.
 # If graph.constants.STEREO_PAIR_SUFFIXES exists, it should mirror this list.
 _DEFAULT_STEREO_PAIR_SUFFIXES: List[Tuple[str, str]] = [
-    ('_FL', '_FR'),    # Front Left/Right
-    ('_SL', '_SR'),    # Side Left/Right
-    ('_RL', '_RR'),    # Rear Left/Right
-    ('_L', '_R'),      # Generic Left/Right (underscore prefix)
-    ('left', 'right'), # Lowercase word
-    ('Left', 'Right'), # Capitalized word
+    # Front Left/Right — all three separators
+    ('_fl', '_fr'),
+    (' fl', ' fr'),
+    ('-fl', '-fr'),
+    # Side Left/Right
+    ('_sl', '_sr'),
+    (' sl', ' sr'),
+    ('-sl', '-sr'),
+    # Rear Left/Right
+    ('_rl', '_rr'),
+    (' rl', ' rr'),
+    ('-rl', '-rr'),
+    # Generic single-letter Left/Right — all three separators
+    ('_l', '_r'),
+    (' l', ' r'),
+    ('-l', '-r'),
+    # Full words — separator-agnostic (long enough to be unambiguous)
+    ('left', 'right'),
 ]
 
 # Regex to extract a trailing number from a port short name for Phase 2.
@@ -292,10 +320,20 @@ def detect_stereo_pairs(
 
     Uses a two-phase approach:
 
-    **Phase 1 — Explicit L/R suffix matching:**
+    **Phase 1 — Explicit L/R suffix matching (case-insensitive):**
     Ports whose short_name ends with a recognised left/right suffix pair
-    (e.g. ``_FL``/``_FR``, ``_L``/``_R``, ``left``/``right``) are paired
-    when they share the same base name (the part before the suffix).
+    are paired when they share the same base name (the part before the
+    suffix). Matching is case-insensitive: port names are lowercased before
+    lookup, so ``Monitor L``, ``monitor l`` and ``MONITOR L`` all pair
+    against the ``" l"`` suffix without casing having to be enumerated.
+
+    The default suffix list covers the separators seen in the wild:
+    underscore (``_L``/``_R``, ``_FL``/``_FR`` …), space (`` L``/`` R``,
+    as emitted by jack_mixer), and dash (``-L``/``-R``). Single-letter
+    suffixes always carry their separator so that a bare ``l``/``r`` does
+    not match unrelated words such as ``vocal`` or ``center``; the full
+    words ``left``/``right`` are unambiguous on their own.
+
     Longer suffixes are tried first to prevent ``_L`` from greedily
     matching a port whose name actually ends with ``_FL``.
 
@@ -322,7 +360,8 @@ def detect_stereo_pairs(
             ``is_midi`` attributes, or duck-type equivalents).
         pair_suffixes: Optional list of ``(left_suffix, right_suffix)``
             tuples for Phase 1.  Defaults to
-            :data:`_DEFAULT_STEREO_PAIR_SUFFIXES`.
+            :data:`_DEFAULT_STEREO_PAIR_SUFFIXES`.  Suffixes are matched
+            case-insensitively, so callers may pass any casing.
 
     Returns:
         A tuple of ``(pairs, unpaired)`` where *pairs* is a list of
@@ -348,32 +387,41 @@ def detect_stereo_pairs(
     matched: set = set()  # indices into audio_ports_sorted
 
     # ------------------------------------------------------------------
-    # Phase 1: Explicit L/R suffix matching
+    # Phase 1: Explicit L/R suffix matching (case-insensitive)
     # ------------------------------------------------------------------
-    # Build a multi-valued lookup: name → list of port indices.
+    # Build a multi-valued lookup keyed on the lowercased name so that
+    # 'Monitor L', 'monitor L', 'MONITOR L' all resolve to the same key.
     # Both the original short_name and its numeric-postfix-stripped form
     # are registered so that ports like "output_FL-115" can be found
-    # via the key "output_FL".
+    # via the key "output_fl".
     name_to_indices: dict[str, list[int]] = {}
     for idx, port in enumerate(audio_ports_sorted):
         if idx in matched:
             continue
         for name in (port.short_name, _strip_numeric_postfix(port.short_name)):
-            name_to_indices.setdefault(name, []).append(idx)
+            name_to_indices.setdefault(name.lower(), []).append(idx)
 
-    for left_suf, right_suf in pair_suffixes:
+    # Lowercase the suffixes once so the per-port endswith() checks don't
+    # redo the work on every iteration; suffixes in
+    # _DEFAULT_STEREO_PAIR_SUFFIXES are already lowercase, but a caller may
+    # pass mixed-case custom suffixes.
+    norm_suffixes = [(ls.lower(), rs.lower()) for ls, rs in pair_suffixes]
+
+    for left_suf, right_suf in norm_suffixes:
         for idx, port in enumerate(audio_ports_sorted):
             if idx in matched:
                 continue
             short = port.short_name
             stripped = _strip_numeric_postfix(short)
+            short_l = short.lower()
+            stripped_l = stripped.lower()
 
             # Determine which name variant matches the left suffix
             match_name = None
-            if short.endswith(left_suf):
-                match_name = short
-            elif stripped != short and stripped.endswith(left_suf):
-                match_name = stripped
+            if short_l.endswith(left_suf):
+                match_name = short_l
+            elif stripped_l != short_l and stripped_l.endswith(left_suf):
+                match_name = stripped_l
 
             if match_name is None:
                 continue

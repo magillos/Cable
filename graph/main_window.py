@@ -155,8 +155,8 @@ class MainWindow(QMainWindow):
             tooltip="Redo last connection <span style='color:grey'>Shift+Ctrl+Z/Ctrl+Y</span>"
         )
         
-        # Untangle button with menu
-        self.untangle_action = QAction("Untangle", self)
+        # Layouts button with menu (formerly called Untangle and refernced in the code as such)
+        self.untangle_action = QAction("Layouts", self)
         self.untangle_action.setToolTip("Reorganise graph layout <span style='color:grey'>Alt+U</span>")
         self.untangle_action.triggered.connect(self._handle_untangle)
         self.untangle_menu = QMenu(self)

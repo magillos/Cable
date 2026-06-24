@@ -55,7 +55,11 @@ class LatencyTester:
         self.latency_selected_output_alias: Optional[str] = None
         # Store the last measured average frames for the "Apply measured offset" button
         self.last_measured_frames: Optional[float] = None
-        # Default measurement duration in seconds
+        # Number of initial samples to discard (jack_delay probes every ~0.5s,
+        # so 10 samples ≈ 5s of startup transients)
+        self.SAMPLES_TO_DISCARD: int = 10
+        # Default measurement duration in seconds (user-facing; actual timer
+        # is extended by ~5s internally to account for startup discard)
         self.measurement_duration_seconds: int = 10
         
         # Connect timer timeout signal internally
@@ -137,9 +141,10 @@ class LatencyTester:
                 if re.search(r'\d+\.\d+\s+ms', data):
                     self.latency_waiting_for_connection = False
                     self.manager.latency_results_text.setText("Connection detected. Running test...")
-                    # Start the timer now, using the configured duration
+                    # Start the timer now, using the configured duration + 5s to allow
+                    # for discarding startup transient samples (~5s at 0.5s intervals)
                     self.latency_timer.setSingleShot(True)
-                    self.latency_timer.start(self.measurement_duration_seconds * 1000)  # Convert to milliseconds
+                    self.latency_timer.start((self.measurement_duration_seconds + 5) * 1000)  # Convert to milliseconds
             
             # If not waiting (or connection just detected), parse for values
             if not self.latency_waiting_for_connection:
@@ -190,37 +195,66 @@ class LatencyTester:
             # If raw output was shown, just indicate stop
             self.manager.latency_results_text.setText("Measurement stopped.")
         elif self.latency_values:
-            # Calculate average for frames and ms separately (only if not raw output)
-            total_frames = sum(val[0] for val in self.latency_values)
-            total_ms = sum(val[1] for val in self.latency_values)
-            count = len(self.latency_values)
-            average_frames = total_frames / count
-            average_ms = total_ms / count
-            # Store the measured frames for the apply button
-            self.last_measured_frames = average_frames
+            # ── Compute median with startup-sample discarding ────────
+            # 1. Sort by frame values
+            sorted_values = sorted(self.latency_values, key=lambda v: v[0])
+            
+            # 2. Discard first N startup samples (avoid buffer-skew transients)
+            #    but only if we have enough samples to spare.
+            if len(sorted_values) > self.SAMPLES_TO_DISCARD:
+                trimmed = sorted_values[self.SAMPLES_TO_DISCARD:]
+                logger.debug(f"Discarded {self.SAMPLES_TO_DISCARD} startup samples, "
+                             f"keeping {len(trimmed)} for median")
+            else:
+                # Not enough samples to discard — use all available
+                trimmed = sorted_values
+                logger.debug(f"Only {len(sorted_values)} samples collected, "
+                             f"using all (no discard)")
+            
+            # 3. Compute median of the trimmed set
+            n = len(trimmed)
+            if n == 0:
+                # Edge case: all samples were discarded (impossible given the
+                # guard above, but keep for safety)
+                median_frames = 0.0
+                median_ms = 0.0
+            elif n % 2 == 1:
+                # Odd count: pick the middle element
+                median_frames = trimmed[n // 2][0]
+                median_ms = trimmed[n // 2][1]
+            else:
+                # Even count: average the two middle elements
+                mid = n // 2
+                median_frames = (trimmed[mid - 1][0] + trimmed[mid][0]) / 2.0
+                median_ms = (trimmed[mid - 1][1] + trimmed[mid][1]) / 2.0
+            
+            # 4. Round to nearest frame for display and storage
+            rounded_frames = round(median_frames)
+            self.last_measured_frames = float(rounded_frames)
             # Enable the apply button now that we have a measurement
             self.manager.latency_apply_offset_button.setEnabled(True)
-            # Display both average latencies and suggest offset
+            
+            # ── Display results ──────────────────────────────────────
             quantum = self._get_current_quantum()
             if quantum is not None and quantum > 0:
-                offset_raw = (average_frames - quantum * 2) / 2.0
+                offset_raw = (rounded_frames - quantum * 2) / 2.0
                 offset = max(0, int(round(offset_raw)))
                 sample_rate = self._get_current_sample_rate()
                 if sample_rate is not None and sample_rate > 0:
                     ns_value = round(offset * 1_000_000_000 / sample_rate)
                     self.manager.latency_results_text.setText(
-                        f"Round-trip latency (average): {average_frames:.3f} samples / {average_ms:.3f} ms\n"
+                        f"Round-trip latency (median): {rounded_frames} samples / {median_ms:.3f} ms\n"
                         f"Suggested latency offset: {offset} samples / {ns_value} ns (for each, input and output node)\n"
                         f"Apply suggested offset with the button below \u2193"
                     )
                 else:
                     self.manager.latency_results_text.setText(
-                        f"Round-trip latency (average): {average_frames:.3f} samples / {average_ms:.3f} ms\n"
+                        f"Round-trip latency (median): {rounded_frames} samples / {median_ms:.3f} ms\n"
                         f"Suggested latency offset: {offset} samples"
                     )
             else:
                 self.manager.latency_results_text.setText(
-                    f"Round-trip latency (average): {average_frames:.3f} samples / {average_ms:.3f} ms"
+                    f"Round-trip latency (median): {rounded_frames} samples / {median_ms:.3f} ms"
                 )
         else:
             # Check if the process exited normally but produced no values

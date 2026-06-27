@@ -10,7 +10,7 @@ from typing import Optional
 from PyQt6.QtGui import QIcon
 
 # --- Application Version ---
-APP_VERSION = "0.10.11"
+APP_VERSION = "0.10.12"
 
 # --- Shared Constants ---
 EDIT_LIST_TEXT = "Edit List..."

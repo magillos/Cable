@@ -4,7 +4,7 @@ Graph tab main window with toolbar, search, and layout controls.
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                              QLineEdit, QSpacerItem, QSizePolicy, QMessageBox, QToolButton, QMenu, QApplication, QCheckBox)
 from PyQt6.QtCore import pyqtSlot, QSize, Qt, QTimer, QEvent # Added QTimer for debounce
-from PyQt6.QtGui import QAction, QKeySequence, QIcon # Added for shortcuts and icons
+from PyQt6.QtGui import QAction, QKeySequence, QIcon, QActionGroup # Added QActionGroup for radio buttons
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import logging
@@ -469,6 +469,9 @@ class MainWindow(QMainWindow):
         """Populates the untangle layout menu with available layouts."""
         self.untangle_menu.clear()
         
+        layout_group = QActionGroup(self.untangle_menu)
+        layout_group.setExclusive(True)
+        
         for value in self.untangle_values:
             if value == ORIGINAL_LAYOUT:
                 label = "Autosaved layout"
@@ -479,24 +482,21 @@ class MainWindow(QMainWindow):
             else:
                 label = f"{value} nodes per row"
             
-            action = QAction(label, self)
+            action = QAction(label, self.untangle_menu)
+            action.setCheckable(True)
+            action.setChecked(value == self.current_untangle_setting and self.untangle_button_clicked)
             
             # Grey out Auto layout when graphviz is not installed
             if value == AUTO_LAYOUT and not _graphviz_available:
                 action.setEnabled(False)
                 action.setToolTip("Requires python-graphviz and graphviz")
             
-            # Highlight active layout with bold font (consistent with presets menu)
-            if value == self.current_untangle_setting and self.untangle_button_clicked:
-                font = action.font()
-                font.setBold(True)
-                action.setFont(font)
-            
             # Store the value in the action for retrieval when triggered
             action.setData(value)
             action.triggered.connect(lambda checked, v=value: self._apply_untangle_layout(v))
             
             self.untangle_menu.addAction(action)
+            layout_group.addAction(action)
     
     def _update_persistent_layout_button_state(self) -> None:
         """Updates the enabled state of the 'Persistent layout' button based on current layout."""

@@ -691,10 +691,13 @@ class NodeVisibilityManager:
                     client_name, True
                 )
 
-                # Check for partial visibility (one part hidden, one visible)
-                if (audio_in_visible != audio_out_visible) or (
-                    midi_in_visible != midi_out_visible
-                ):
+                # Check for partial visibility (one part hidden, one visible).
+                # Track audio and MIDI variants separately so that audio/MIDI-split
+                # clients (keyed as "client (Audio)" / "client (MIDI)") can be
+                # split independently when only one variant has partial visibility.
+                audio_partial = audio_in_visible != audio_out_visible
+                midi_partial = midi_in_visible != midi_out_visible
+                if audio_partial or midi_partial:
                     logger.debug(
                         f"Node {client_name} has partial visibility - should be split"
                     )
@@ -704,65 +707,126 @@ class NodeVisibilityManager:
                     logger.debug(
                         f"  MIDI in: {midi_in_visible}, MIDI out: {midi_out_visible}"
                     )
-                    nodes_to_split.append(client_name)
+                    nodes_to_split.append(
+                        {
+                            "client_name": client_name,
+                            "audio_partial": audio_partial,
+                            "midi_partial": midi_partial,
+                        }
+                    )
 
-            # Auto-split nodes that need partial visibility but aren't split yet
-            self._auto_split_nodes_for_visibility(scene, nodes_to_split)
-
-            # Perform a full refresh to apply visibility settings
+            # Rebuild the graph FIRST. A previously fully-hidden node is absent
+            # from scene.nodes, so splitting it must happen *after* the refresh
+            # recreates it. full_graph_refresh() is synchronous: it runs the
+            # sync pipeline (perform_sync -> _perform_sync -> full_sync_ready ->
+            # _on_full_sync_ready -> _apply_node_sync) inline, so any now-visible
+            # node exists in scene.nodes before the split is attempted below.
             scene.full_graph_refresh()
 
+            # Auto-split nodes that need partial visibility but aren't split yet.
+            self._auto_split_nodes_for_visibility(scene, nodes_to_split)
+
+            # Finally hide the still-hidden split parts (e.g. uncheck Output while
+            # Input is checked). This only affects split nodes; the unsplit
+            # refresh above already removed fully-hidden nodes.
+            apply_split_part_visibility = getattr(
+                scene, "_apply_split_part_visibility", None
+            )
+            if callable(apply_split_part_visibility):
+                apply_split_part_visibility()
+
     def _auto_split_nodes_for_visibility(
-        self, scene, nodes_to_split: List[str]
+        self, scene, nodes_to_split: List[Any]
     ) -> None:
         """
         Automatically split nodes that have partial visibility but are not yet split.
 
+        Handles three node identity shapes in scene.nodes:
+          - regular client: key == base client name
+          - audio/MIDI-split clients: keys "client (Audio)" / "client (MIDI)"
+          - input/output-split origin: handled implicitly via split_handler
+
         Args:
             scene: The graph scene
-            nodes_to_split: List of client names that need to be split
+            nodes_to_split: List of dicts describing partial visibility:
+                {"client_name": str, "audio_partial": bool, "midi_partial": bool}
         """
         if not nodes_to_split:
             return
 
-        for client_name in nodes_to_split:
-            # Check if the node exists in the scene
-            if client_name not in scene.nodes:
-                continue
+        for entry in nodes_to_split:
+            client_name = entry["client_name"]
+            audio_partial = entry.get("audio_partial", False)
+            midi_partial = entry.get("midi_partial", False)
 
-            node = scene.nodes[client_name]
+            # Resolve which scene.nodes key(s) correspond to this client.
+            # Try the audio/MIDI-split variants first; fall back to base name.
+            audio_key = f"{client_name} (Audio)"
+            midi_key = f"{client_name} (MIDI)"
 
-            # Skip if already split
-            if node.is_split_origin:
-                continue
+            resolved_keys: List[str] = []
+            if audio_key in scene.nodes and audio_partial:
+                resolved_keys.append(audio_key)
+            if midi_key in scene.nodes and midi_partial:
+                resolved_keys.append(midi_key)
+            # If neither suffixed key exists, assume a regular (non-split) client
+            if not resolved_keys and client_name in scene.nodes:
+                resolved_keys.append(client_name)
 
-            # Skip if it's a split part (not an origin)
-            if node.is_split_part:
-                continue
-
-            # Check if node has both input and output ports (required for splitting)
-            has_inputs = bool(node.input_ports)
-            has_outputs = bool(node.output_ports)
-
-            if not has_inputs or not has_outputs:
+            if not resolved_keys:
                 logger.debug(
-                    f"Node {client_name} cannot be split: missing {'inputs' if not has_inputs else 'outputs'}"
+                    f"Node {client_name} not found in scene (or no matching variant needs splitting)"
                 )
                 continue
 
-            # Check if the node has a split_handler
-            if getattr(node, "split_handler", None) is None:
-                logger.warning(
-                    f"Node {client_name} has no split_handler, cannot auto-split"
-                )
-                continue
+            for node_key in resolved_keys:
+                self._try_split_node(scene, node_key)
 
-            # Perform the split
-            try:
-                logger.info(f"Auto-splitting node {client_name} for partial visibility")
-                node.split_handler.split_node(save_state=True)
-            except Exception as e:
-                logger.error(f"Error auto-splitting node {client_name}: {e}")
+    def _try_split_node(self, scene, node_key: str) -> None:
+        """Attempt to split a single node for partial visibility.
+
+        Skips nodes that are already split, are split parts, lack both input
+        and output ports, or have no split_handler. Logs and swallows errors.
+
+        Args:
+            scene: The graph scene
+            node_key: The key of the node in scene.nodes
+        """
+        node = scene.nodes.get(node_key)
+        if node is None:
+            return
+
+        # Skip if already split
+        if node.is_split_origin:
+            return
+
+        # Skip if it's a split part (not an origin)
+        if node.is_split_part:
+            return
+
+        # Check if node has both input and output ports (required for splitting)
+        has_inputs = bool(node.input_ports)
+        has_outputs = bool(node.output_ports)
+
+        if not has_inputs or not has_outputs:
+            logger.debug(
+                f"Node {node_key} cannot be split: missing {'inputs' if not has_inputs else 'outputs'}"
+            )
+            return
+
+        # Check if the node has a split_handler
+        if getattr(node, "split_handler", None) is None:
+            logger.warning(
+                f"Node {node_key} has no split_handler, cannot auto-split"
+            )
+            return
+
+        # Perform the split
+        try:
+            logger.info(f"Auto-splitting node {node_key} for partial visibility")
+            node.split_handler.split_node(save_state=True)
+        except Exception as e:
+            logger.error(f"Error auto-splitting node {node_key}: {e}")
 
     def _update_tree_visibility(
         self, input_tree: Any, output_tree: Any, is_midi: bool = False

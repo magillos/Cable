@@ -319,6 +319,74 @@ def show_hide_node_confirmation_dialog(
     return result
 # ------------------------------------
 
+def _setup_frameless_message(
+    widget: QWidget, message: str, *, word_wrap: bool = False
+) -> QVBoxLayout:
+    """Apply the shared frameless-notification style and add a centered message label.
+
+    Shared by SettingConfirmationDialog (cable_core/dialogs.py) and
+    FramelessNotification (cables/utils/helpers.py).
+    """
+    widget.setModal(False)  # Non-modal so it doesn't block interaction
+
+    # Prevent the dialog from stealing focus
+    widget.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+    widget.setWindowFlags(
+        Qt.WindowType.ToolTip  # Use tooltip style to avoid taskbar and focus issues
+        | Qt.WindowType.FramelessWindowHint
+        | Qt.WindowType.WindowStaysOnTopHint
+    )
+
+    layout = QVBoxLayout(widget)
+
+    # Add some padding and styling for frameless window
+    widget.setStyleSheet(
+        """
+        QDialog {
+            background-color: palette(window);
+            border: 1px solid palette(mid);
+            border-radius: 4px;
+        }
+        QLabel {
+            padding: 10px;
+        }
+        """
+    )
+
+    message_label = QLabel(message)
+    message_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    if word_wrap:
+        message_label.setWordWrap(True)
+    layout.addWidget(message_label)
+    return layout
+
+
+def _center_dialog_on_parent_or_screen(widget: QWidget) -> None:
+    """Center a dialog on its visible parent, or on the primary screen.
+
+    Shared by SettingConfirmationDialog (cable_core/dialogs.py) and
+    FramelessNotification (cables/utils/helpers.py).
+    """
+    parent_widget = widget.parent()
+    if parent_widget and parent_widget.isVisible():
+        # Center on visible parent
+        parent_rect = parent_widget.geometry()
+        dialog_rect = widget.geometry()
+        x = parent_rect.x() + (parent_rect.width() - dialog_rect.width()) // 2
+        y = parent_rect.y() + (parent_rect.height() - dialog_rect.height()) // 2
+        widget.move(x, y)
+    else:
+        # Parent is hidden or None: center on primary screen
+        from PyQt6.QtGui import QGuiApplication
+
+        screen = QGuiApplication.primaryScreen()
+        if screen:
+            screen_geometry = screen.availableGeometry()
+            x = screen_geometry.x() + (screen_geometry.width() - widget.width()) // 2
+            y = screen_geometry.y() + (screen_geometry.height() - widget.height()) // 2
+            widget.move(x, y)
+
+
 # --- Setting Confirmation Dialog ---
 class SettingConfirmationDialog(QDialog):
     """Auto-closing confirmation dialog for setting changes (quantum, sample rate, latency, profile)."""
@@ -326,38 +394,9 @@ class SettingConfirmationDialog(QDialog):
     def __init__(self, message: str, duration_ms: int = 2000, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Setting Applied")
-        self.setModal(False)  # Non-modal so it doesn't block interaction
-        
-        # Prevent the dialog from stealing focus
-        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
-        self.setWindowFlags(
-            Qt.WindowType.ToolTip |  # Use tooltip style to avoid taskbar and focus issues
-            Qt.WindowType.FramelessWindowHint |
-            Qt.WindowType.WindowStaysOnTopHint
-        )
-        
-        layout = QVBoxLayout(self)
-        
-        # Add some padding and styling for frameless window
-        self.setStyleSheet("""
-            QDialog {
-                background-color: palette(window);
-                border: 1px solid palette(mid);
-                border-radius: 4px;
-            }
-            QLabel {
-                padding: 10px;
-            }
-        """)
-        
-        # Message label
-        message_label = QLabel(message)
-        message_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(message_label)
-        
+        _setup_frameless_message(self, message)
         # Set reasonable size
         self.resize(250, 80)
-        
         # Auto-close timer
         from PyQt6.QtCore import QTimer
         QTimer.singleShot(duration_ms, self.accept)
@@ -365,23 +404,7 @@ class SettingConfirmationDialog(QDialog):
     def showEvent(self, event: QShowEvent) -> None:
         """Override show event to center the dialog on parent or screen."""
         super().showEvent(event)
-        parent_widget = self.parent()
-        if parent_widget and parent_widget.isVisible():
-            # Center on visible parent
-            parent_rect = parent_widget.geometry()
-            dialog_rect = self.geometry()
-            x = parent_rect.x() + (parent_rect.width() - dialog_rect.width()) // 2
-            y = parent_rect.y() + (parent_rect.height() - dialog_rect.height()) // 2
-            self.move(x, y)
-        else:
-            # Parent is hidden or None: center on primary screen
-            from PyQt6.QtGui import QGuiApplication
-            screen = QGuiApplication.primaryScreen()
-            if screen:
-                screen_geometry = screen.availableGeometry()
-                x = screen_geometry.x() + (screen_geometry.width() - self.width()) // 2
-                y = screen_geometry.y() + (screen_geometry.height() - self.height()) // 2
-                self.move(x, y)
+        _center_dialog_on_parent_or_screen(self)
 # ------------------------------------
 
 

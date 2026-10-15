@@ -39,6 +39,66 @@ try: _MIXER_CAP_CVOLUME_INT = alsaaudio.MIXER_CAP_CVOLUME
 except AttributeError: logger.debug(f"Warning: alsaaudio.MIXER_CAP_CVOLUME not found. Using default int value {_MIXER_CAP_CVOLUME_INT}.")
 # --- End Constants ---
 
+
+def _build_mixer_volume_frame(
+    mixer_app,
+    mixer_obj,
+    mixer_name_key: str,
+    mixer_name_from_list: str,
+    mixer_group_layout,
+    control_data: dict,
+    *,
+    slider_key: str,
+    label_key: str,
+    log_direction: str,
+) -> bool:
+    """Build the playback/capture volume slider sub-frame.
+
+    Shared body of the playback and capture volume blocks in
+    AlsMixerApp._on_card_selected. Returns True if successfully built
+    (and added to mixecontrol_data / mixer_group_layout), False on error.
+    """
+    volume_frame = QFrame()
+    volume_frame.setObjectName("ControlSubFrame")
+    frame_layout = QVBoxLayout(volume_frame)
+
+    slider = QSlider(Qt.Orientation.Vertical)
+    slider.setRange(0, 100)
+    slider.setTickPosition(QSlider.TickPosition.TicksLeft)
+    slider.setTickInterval(20)
+
+    val_label = QLabel("N/A")
+    val_label.setFixedWidth(30)
+    val_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+    try:
+        current_volumes = mixer_obj.getvolume()
+        if current_volumes:
+            vol_val = int(current_volumes[0])
+            slider.setValue(vol_val)
+            val_label.setText(str(vol_val))
+        else:
+            slider.setEnabled(False)
+            val_label.setText("Err")
+
+        slider.valueChanged.connect(
+            partial(mixer_app._on_dynamic_volume_changed, mixer_name_key, val_label)
+        )
+        control_data[slider_key] = slider
+        control_data[label_key] = val_label
+
+        frame_layout.addWidget(slider, 0, Qt.AlignmentFlag.AlignCenter)
+        frame_layout.addWidget(val_label, 0, Qt.AlignmentFlag.AlignCenter)
+
+        mixer_group_layout.addWidget(volume_frame)
+        return True
+    except alsaaudio.ALSAAudioError as e:
+        logger.warning(
+            f"  UI INFO: {log_direction} Vol for '{mixer_name_from_list}' inaccessible: {e}"
+        )
+        return False
+
+
 class AlsMixerApp(QWidget):
     def __init__(self, config_manager: Optional[Any] = None) -> None:
         super().__init__()
@@ -451,39 +511,18 @@ class AlsMixerApp(QWidget):
             actually_controllable_elements = 0
 
             if has_pb_vol:
-                volume_frame = QFrame()
-                volume_frame.setObjectName("ControlSubFrame")
-                frame_layout = QVBoxLayout(volume_frame)
-
-                slider = QSlider(Qt.Orientation.Vertical)
-                slider.setRange(0, 100)
-                slider.setTickPosition(QSlider.TickPosition.TicksLeft)
-                slider.setTickInterval(20)
-                val_label = QLabel("N/A")
-                val_label.setFixedWidth(30)
-                val_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-                try:
-                    current_volumes = mixer_obj.getvolume()
-                    if current_volumes:
-                        vol_val = int(current_volumes[0])
-                        slider.setValue(vol_val)
-                        val_label.setText(str(vol_val))
-                    else:
-                        slider.setEnabled(False)
-                        val_label.setText("Err")
-
-                    slider.valueChanged.connect(partial(self._on_dynamic_volume_changed, mixer_name_key, val_label))
-                    control_data['pb_slider'] = slider
-                    control_data['pb_vol_label'] = val_label
-
-                    frame_layout.addWidget(slider, 0, Qt.AlignmentFlag.AlignCenter)
-                    frame_layout.addWidget(val_label, 0, Qt.AlignmentFlag.AlignCenter)
-
-                    mixer_group_layout.addWidget(volume_frame)
+                if _build_mixer_volume_frame(
+                    self,
+                    mixer_obj,
+                    mixer_name_key,
+                    mixer_name_from_list,
+                    mixer_group_layout,
+                    control_data,
+                    slider_key="pb_slider",
+                    label_key="pb_vol_label",
+                    log_direction="PB",
+                ):
                     actually_controllable_elements += 1
-                except alsaaudio.ALSAAudioError as e:
-                    logger.warning(f"  UI INFO: PB Vol for '{mixer_name_from_list}' inaccessible: {e}")
             if has_pb_mute:
                 cb = QCheckBox("")
                 try:
@@ -507,40 +546,18 @@ class AlsMixerApp(QWidget):
                 sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine); sep.setFrameShadow(QFrame.Shadow.Sunken); mixer_group_layout.addWidget(sep)
 
             if has_cap_vol:
-                cap_volume_frame = QFrame()
-                cap_volume_frame.setObjectName("ControlSubFrame")
-                cap_frame_layout = QVBoxLayout(cap_volume_frame)
-
-                slider = QSlider(Qt.Orientation.Vertical)
-                slider.setRange(0, 100)
-                slider.setTickPosition(QSlider.TickPosition.TicksLeft)
-                slider.setTickInterval(20)
-
-                val_label = QLabel("N/A")
-                val_label.setFixedWidth(30)
-                val_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-                try:
-                    current_volumes = mixer_obj.getvolume()
-                    if current_volumes:
-                        vol_val = int(current_volumes[0])
-                        slider.setValue(vol_val)
-                        val_label.setText(str(vol_val))
-                    else:
-                        slider.setEnabled(False)
-                        val_label.setText("Err")
-
-                    slider.valueChanged.connect(partial(self._on_dynamic_volume_changed, mixer_name_key, val_label))
-                    control_data['cap_slider'] = slider
-                    control_data['cap_vol_label'] = val_label
-
-                    cap_frame_layout.addWidget(slider, 0, Qt.AlignmentFlag.AlignCenter)
-                    cap_frame_layout.addWidget(val_label, 0, Qt.AlignmentFlag.AlignCenter)
-
-                    mixer_group_layout.addWidget(cap_volume_frame)
+                if _build_mixer_volume_frame(
+                    self,
+                    mixer_obj,
+                    mixer_name_key,
+                    mixer_name_from_list,
+                    mixer_group_layout,
+                    control_data,
+                    slider_key="cap_slider",
+                    label_key="cap_vol_label",
+                    log_direction="CAP",
+                ):
                     actually_controllable_elements += 1
-                except alsaaudio.ALSAAudioError as e:
-                    logger.warning(f"  UI INFO: CAP Vol for '{mixer_name_from_list}' inaccessible: {e}")
             if actually_controllable_elements > 0:
                 self.mixer_controls_data[mixer_name_key] = control_data
                 self.mixer_hbox_layout.addWidget(mixer_group_widget)

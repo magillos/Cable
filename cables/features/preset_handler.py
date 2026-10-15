@@ -505,18 +505,9 @@ class PresetHandler:
 
         if success:
             logger.debug("Preset load complete. Refreshing UI.")
-            self.current_preset_name = name
-            self.manager.config_manager.set_str(keys.ACTIVE_PRESET, name)
-            # Initially set save button to disabled since we just loaded the preset (no changes yet)
-            self.save_button_initially_enabled = False
-            save_action = getattr(self.manager, "save_preset_action", None)
-            if save_action:
-                save_action.setEnabled(False)
-            logger.debug(f"Load Success: Set active_preset in config to '{name}'")
-            self.manager.refresh_ports()
-
-            # Update preset button styles to reflect daemon state
-            self._update_preset_button_styles()
+            self._finalise_preset_load(
+                name, f"Load Success: Set active_preset in config to '{name}'"
+            )
 
             if not is_startup:
                 show_timed_messagebox(
@@ -539,18 +530,24 @@ class PresetHandler:
                 logger.info(
                     f"Preset '{name}' loaded but some connections could not be restored (missing client?)."
                 )
-            self.current_preset_name = name
-            self.manager.config_manager.set_str(keys.ACTIVE_PRESET, name)
-            # Initially set save button to disabled since we just loaded the preset (no changes yet)
-            self.save_button_initially_enabled = False
-            save_action = getattr(self.manager, "save_preset_action", None)
-            if save_action:
-                save_action.setEnabled(False)
-            logger.debug("Load Success (partial): Set active_preset in config.")
-            self.manager.refresh_ports()
-            # Update preset button styles to reflect daemon state
-            self._update_preset_button_styles()
+            self._finalise_preset_load(
+                name, "Load Success (partial): Set active_preset in config."
+            )
             return True
+
+    def _finalise_preset_load(self, name: str, debug_message: str) -> None:
+        """Finalise a preset load: mark active, disable save button, refresh ports and buttons."""
+        self.current_preset_name = name
+        self.manager.config_manager.set_str(keys.ACTIVE_PRESET, name)
+        # Initially set save button to disabled since we just loaded the preset (no changes yet)
+        self.save_button_initially_enabled = False
+        save_action = getattr(self.manager, "save_preset_action", None)
+        if save_action:
+            save_action.setEnabled(False)
+        logger.debug(debug_message)
+        self.manager.refresh_ports()
+        # Update preset button styles to reflect daemon state
+        self._update_preset_button_styles()
 
     def _delete_selected_preset(self, name: str) -> None:
         """Deletes the selected preset after confirmation."""

@@ -194,36 +194,43 @@ class ConfigManager:
 
     def flush(self) -> None:
         """Write config to disk if there are unsaved changes."""
-        if self._dirty and self._config is not None:
-            # Merge specific changes to disk
-            try:
-                disk_config = configparser.ConfigParser(allow_no_value=True)
-                if os.path.exists(self.config_file):
-                    disk_config.read(self.config_file, encoding="utf-8")
+        if not self._dirty or self._config is None:
+            return
+        # Merge specific changes to disk
+        try:
+            disk_config = self._merge_changes_to_disk_config()
+            if not self._write_config_to_disk(disk_config):
+                return
+            self._dirty = False
+            self._changed_keys.clear()
+        except Exception as e:
+            logger.error(f"Error flushing config: {e}")
 
-                if "DEFAULT" not in disk_config:
-                    disk_config["DEFAULT"] = {}
+    def _merge_changes_to_disk_config(self) -> configparser.ConfigParser:
+        """Build the on-disk config with the in-memory changed keys merged in."""
+        disk_config = configparser.ConfigParser(allow_no_value=True)
+        if os.path.exists(self.config_file):
+            disk_config.read(self.config_file, encoding="utf-8")
 
-                for key in self._changed_keys:
-                    if self._config.has_option("DEFAULT", key):
-                        disk_config["DEFAULT"][key] = self._config.get("DEFAULT", key)
-                    else:
-                        if disk_config.has_option("DEFAULT", key):
-                            disk_config.remove_option("DEFAULT", key)
+        if "DEFAULT" not in disk_config:
+            disk_config["DEFAULT"] = {}
 
-                self._write_config_to_disk(disk_config)
-                self._dirty = False
-                self._changed_keys.clear()
-            except Exception as e:
-                logger.error(f"Error flushing config: {e}")
+        for key in self._changed_keys:
+            if self._config.has_option("DEFAULT", key):
+                disk_config["DEFAULT"][key] = self._config.get("DEFAULT", key)
+            elif disk_config.has_option("DEFAULT", key):
+                disk_config.remove_option("DEFAULT", key)
+        return disk_config
 
-    def _write_config_to_disk(self, config: configparser.ConfigParser) -> None:
-        """Actually write config to disk."""
+    def _write_config_to_disk(self, config: configparser.ConfigParser) -> bool:
+        """Actually write config to disk, returning whether it succeeded."""
         try:
             with open(self.config_file, "w", encoding="utf-8") as configfile:
                 config.write(configfile)
+            return True
         except Exception as e:
             logger.error(f"Error writing config file {self.config_file}: {e}")
+            return False
 
     def write_config(self, config: configparser.ConfigParser) -> None:
         """Write configuration - now just marks dirty and updates cache."""
@@ -240,28 +247,44 @@ class ConfigManager:
                 self._changed_keys.add(key)
         self._dirty = True
 
+    def _get_split_parts(
+        self, key: str
+    ) -> Optional[List[str]]:
+        """Return striped comma-split parts for key, or None when the option is absent/empty.
+
+        Callers return their own default_list on a None result. Shared prefix
+        of get_list_from_config / get_all_values_from_config.
+        """
+        config = self._get_cached_config()
+
+        if not config.has_option("DEFAULT", key):
+            return None
+
+        value = config.get("DEFAULT", key)
+        if not value:
+            return None
+
+        return [item.strip() for item in value.split(",") if item.strip()]
+
     def get_list_from_config(self, key: str, default_list: List[int]) -> List[int]:
         """Get a list of active values from config (excluding commented out values), with fallback to default.
 
         Note: Uses the in-memory cache. If an external process modifies config.ini,
         changes won't be visible until the cache is reloaded (restart).
         """
-        config = self._get_cached_config()
+        parts = self._get_split_parts(key)
+        if parts is None:
+            return default_list
 
-        if config.has_option("DEFAULT", key):
-            value = config.get("DEFAULT", key)
-            if value:
-                parts = [item.strip() for item in value.split(",") if item.strip()]
-                vals = []
-                for p in parts:
-                    if p and not p.startswith("#"):  # Ignore commented out values
-                        try:
-                            vals.append(int(p))
-                        except ValueError:
-                            continue
-                if vals:
-                    return vals
-        return default_list
+        vals = []
+        for p in parts:
+            if p.startswith("#"):  # Skip commented out values
+                continue
+            try:
+                vals.append(int(p))
+            except ValueError:
+                continue
+        return vals if vals else default_list
 
     def get_all_values_from_config(
         self, key: str, default_list: List[int]
@@ -270,52 +293,44 @@ class ConfigManager:
 
         Note: Uses the in-memory cache. See get_list_from_config for caching details.
         """
-        config = self._get_cached_config()
+        parts = self._get_split_parts(key)
+        if parts is None:
+            return default_list
 
-        if config.has_option("DEFAULT", key):
-            value = config.get("DEFAULT", key)
-            if value:
-                parts = [item.strip() for item in value.split(",") if item.strip()]
-                vals = []
-                for p in parts:
-                    clean_val = p.lstrip("#")  # Remove leading # if present
-                    try:
-                        vals.append(int(clean_val))
-                    except ValueError:
-                        continue
-                if vals:
-                    return vals
-        return default_list
+        vals = []
+        for p in parts:
+            clean_val = p.lstrip("#")  # Remove leading # if present
+            try:
+                vals.append(int(clean_val))
+            except ValueError:
+                continue
+        return vals if vals else default_list
+
+    def _get_typed_setting(self, key: str, accessor_name: str, default):
+        """Read a typed setting via a configparser accessor with fallback to default.
+
+        Shared body of get_int_setting / get_str_setting / get_bool_setting /
+        get_float_setting / get_str. ``accessor_name`` is e.g. ``"getint"``.
+        """
+        try:
+            config = self._get_cached_config()
+            if config.has_option("DEFAULT", key):
+                return getattr(config, accessor_name)("DEFAULT", key)
+        except (configparser.Error, ValueError):
+            logger.debug("Failed to read config key '%s'", key)
+        return default
 
     def get_int_setting(self, key: str, default: int = 0) -> int:
         """Get integer setting from config."""
-        try:
-            config = self._get_cached_config()
-            if config.has_option("DEFAULT", key):
-                return config.getint("DEFAULT", key)
-        except (configparser.Error, ValueError):
-            logger.debug("Failed to read config key '%s'", key)
-        return default
+        return self._get_typed_setting(key, "getint", default)
 
     def get_str_setting(self, key: str, default: str = "") -> str:
         """Get string setting from config."""
-        try:
-            config = self._get_cached_config()
-            if config.has_option("DEFAULT", key):
-                return config.get("DEFAULT", key)
-        except (configparser.Error, ValueError):
-            logger.debug("Failed to read config key '%s'", key)
-        return default
+        return self._get_typed_setting(key, "get", default)
 
     def get_bool_setting(self, key: str, default: bool = False) -> bool:
         """Get boolean setting from config."""
-        try:
-            config = self._get_cached_config()
-            if config.has_option("DEFAULT", key):
-                return config.getboolean("DEFAULT", key)
-        except (configparser.Error, ValueError):
-            logger.debug("Failed to read config key '%s'", key)
-        return default
+        return self._get_typed_setting(key, "getboolean", default)
 
     def set_int_setting(self, key: str, value: int) -> None:
         """Set integer setting in config."""
@@ -351,13 +366,7 @@ class ConfigManager:
 
     def get_float_setting(self, key: str, default: float = 0.0) -> float:
         """Get float setting from config."""
-        try:
-            config = self._get_cached_config()
-            if config.has_option("DEFAULT", key):
-                return config.getfloat("DEFAULT", key)
-        except (configparser.Error, ValueError):
-            logger.debug("Failed to read config key '%s'", key)
-        return default
+        return self._get_typed_setting(key, "getfloat", default)
 
     def set_float_setting(self, key: str, value: float) -> None:
         """Set float setting in config."""
@@ -375,13 +384,7 @@ class ConfigManager:
 
     def get_str(self, key: str, default: Optional[str] = None) -> Optional[str]:
         """Get string setting, returning default (which may be None) if not found."""
-        try:
-            config = self._get_cached_config()
-            if config.has_option("DEFAULT", key):
-                return config.get("DEFAULT", key)
-        except (configparser.Error, ValueError):
-            logger.debug("Failed to read config key '%s'", key)
-        return default
+        return self._get_typed_setting(key, "get", default)
 
     def load_defaults(self) -> None:
         """Load Cables-specific defaults if not already present."""
@@ -439,24 +442,8 @@ class ConfigManager:
             logger.error(f"Error writing config file {self.config_file}: {e}")
 
     # Add DEFAULT_QUANTUM/SAMPLE_RATE_VALUES for compatibility
-    DEFAULT_QUANTUM_VALUES = [
-        16,
-        32,
-        48,
-        64,
-        96,
-        128,
-        144,
-        192,
-        240,
-        256,
-        512,
-        1024,
-        2048,
-        4096,
-        8192,
-    ]
-    DEFAULT_SAMPLE_RATE_VALUES = [44100, 48000, 88200, 96000, 176400, 192000]
+    DEFAULT_QUANTUM_VALUES = keys.DEFAULT_QUANTUM_VALUES
+    DEFAULT_SAMPLE_RATE_VALUES = keys.DEFAULT_SAMPLE_RATE_VALUES
 
     def load_settings(self) -> Dict[str, Any]:
         """Load saved settings from config file and return a dict."""
@@ -478,88 +465,92 @@ class ConfigManager:
 
         if os.path.exists(self.config_file):
             try:
-                config = self._get_cached_config()
-
-                settings["tray_enabled"] = config.getboolean(
-                    "DEFAULT", keys.TRAY_ENABLED, fallback=False
-                )
-                settings["tray_click_opens_cables"] = config.getboolean(
-                    "DEFAULT", keys.TRAY_CLICK_OPENS_CABLES, fallback=True
-                )
-                settings["remember_settings"] = config.getboolean(
-                    "DEFAULT", keys.REMEMBER_SETTINGS, fallback=False
-                )
-                settings["restore_only_minimized"] = config.getboolean(
-                    "DEFAULT", keys.RESTORE_ONLY_MINIMIZED, fallback=False
-                )
-                settings["apply_quantum_sample_rate_instantaneously"] = config.getboolean(
-                    "DEFAULT",
-                    keys.APPLY_QUANTUM_SAMPLE_RATE_INSTANTANEOUSLY,
-                    fallback=False,
-                )
-                settings["show_setting_confirmation"] = config.getboolean(
-                    "DEFAULT",
-                    keys.SHOW_SETTING_CONFIRMATION,
-                    fallback=False,
-                )
-
-                has_saved_quantum = config.has_option("DEFAULT", keys.SAVED_QUANTUM)
-                has_saved_sample_rate = config.has_option(
-                    "DEFAULT", keys.SAVED_SAMPLE_RATE
-                )
-                settings["has_saved_quantum"] = has_saved_quantum
-                settings["has_saved_sample_rate"] = has_saved_sample_rate
-
-                if has_saved_quantum:
-                    settings["saved_quantum"] = config.getint(
-                        "DEFAULT", keys.SAVED_QUANTUM, fallback=0
-                    )
-                if has_saved_sample_rate:
-                    settings["saved_sample_rate"] = config.getint(
-                        "DEFAULT", keys.SAVED_SAMPLE_RATE, fallback=0
-                    )
-
-                settings["autostart_enabled"] = config.getboolean(
-                    "DEFAULT", keys.AUTOSTART_ENABLED, fallback=False
-                )
-                settings["check_updates_at_start"] = config.getboolean(
-                    "DEFAULT", keys.CHECK_UPDATES_AT_START, fallback=False
-                )
-
-                appimage_path = config.get("DEFAULT", keys.APPIMAGE_PATH, fallback=None)
-                if appimage_path and not os.path.exists(appimage_path):
-                    logger.warning(
-                        f"Warning: Configured AppImage path does not exist: {appimage_path}"
-                    )
-                    appimage_path = None
-                settings["appimage_path"] = appimage_path
-
-                logger.info(
-                    f"Loaded tray_click_opens_cables from config: {settings['tray_click_opens_cables']}"
-                )
-                logger.info(
-                    f"Loaded remember_settings: {settings['remember_settings']}"
-                )
-                logger.info(
-                    f"Loaded autostart_enabled: {settings['autostart_enabled']}"
-                )
-                logger.info(
-                    f"Loaded check_updates_at_start: {settings['check_updates_at_start']}"
-                )
-                logger.info(
-                    f"Loaded restore_only_minimized: {settings['restore_only_minimized']}"
-                )
-                logger.info(
-                    f"Loaded apply_quantum_sample_rate_instantaneously: {settings['apply_quantum_sample_rate_instantaneously']}"
-                )
-                logger.info(
-                    f"Loaded show_setting_confirmation: {settings['show_setting_confirmation']}"
-                )
-                logger.info(f"Loaded appimage_path: {settings['appimage_path']}")
+                self._populate_settings_from_config(settings)
             except Exception as e:
                 logger.error(f"Error loading settings: {e}")
 
         return settings
+
+    def _populate_settings_from_config(self, settings: Dict[str, Any]) -> None:
+        """Read every persisted setting from the cached config into ``settings``."""
+        config = self._get_cached_config()
+
+        settings["tray_enabled"] = config.getboolean(
+            "DEFAULT", keys.TRAY_ENABLED, fallback=False
+        )
+        settings["tray_click_opens_cables"] = config.getboolean(
+            "DEFAULT", keys.TRAY_CLICK_OPENS_CABLES, fallback=True
+        )
+        settings["remember_settings"] = config.getboolean(
+            "DEFAULT", keys.REMEMBER_SETTINGS, fallback=False
+        )
+        settings["restore_only_minimized"] = config.getboolean(
+            "DEFAULT", keys.RESTORE_ONLY_MINIMIZED, fallback=False
+        )
+        settings["apply_quantum_sample_rate_instantaneously"] = config.getboolean(
+            "DEFAULT",
+            keys.APPLY_QUANTUM_SAMPLE_RATE_INSTANTANEOUSLY,
+            fallback=False,
+        )
+        settings["show_setting_confirmation"] = config.getboolean(
+            "DEFAULT",
+            keys.SHOW_SETTING_CONFIRMATION,
+            fallback=False,
+        )
+
+        has_saved_quantum = config.has_option("DEFAULT", keys.SAVED_QUANTUM)
+        has_saved_sample_rate = config.has_option(
+            "DEFAULT", keys.SAVED_SAMPLE_RATE
+        )
+        settings["has_saved_quantum"] = has_saved_quantum
+        settings["has_saved_sample_rate"] = has_saved_sample_rate
+
+        if has_saved_quantum:
+            settings["saved_quantum"] = config.getint(
+                "DEFAULT", keys.SAVED_QUANTUM, fallback=0
+            )
+        if has_saved_sample_rate:
+            settings["saved_sample_rate"] = config.getint(
+                "DEFAULT", keys.SAVED_SAMPLE_RATE, fallback=0
+            )
+
+        settings["autostart_enabled"] = config.getboolean(
+            "DEFAULT", keys.AUTOSTART_ENABLED, fallback=False
+        )
+        settings["check_updates_at_start"] = config.getboolean(
+            "DEFAULT", keys.CHECK_UPDATES_AT_START, fallback=False
+        )
+
+        appimage_path = config.get("DEFAULT", keys.APPIMAGE_PATH, fallback=None)
+        if appimage_path and not os.path.exists(appimage_path):
+            logger.warning(
+                f"Warning: Configured AppImage path does not exist: {appimage_path}"
+            )
+            appimage_path = None
+        settings["appimage_path"] = appimage_path
+
+        logger.info(
+            f"Loaded tray_click_opens_cables from config: {settings['tray_click_opens_cables']}"
+        )
+        logger.info(
+            f"Loaded remember_settings: {settings['remember_settings']}"
+        )
+        logger.info(
+            f"Loaded autostart_enabled: {settings['autostart_enabled']}"
+        )
+        logger.info(
+            f"Loaded check_updates_at_start: {settings['check_updates_at_start']}"
+        )
+        logger.info(
+            f"Loaded restore_only_minimized: {settings['restore_only_minimized']}"
+        )
+        logger.info(
+            f"Loaded apply_quantum_sample_rate_instantaneously: {settings['apply_quantum_sample_rate_instantaneously']}"
+        )
+        logger.info(
+            f"Loaded show_setting_confirmation: {settings['show_setting_confirmation']}"
+        )
+        logger.info(f"Loaded appimage_path: {settings['appimage_path']}")
 
     def save_settings(self, settings_dict: Dict[str, Any]) -> None:
         """Save UI settings to config file (does not save audio settings)."""

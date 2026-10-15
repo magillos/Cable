@@ -220,7 +220,7 @@ class BulkAreaItem(QGraphicsItem):
                             except Exception as e:
                                 logger.error(f" Error disconnecting {src} -> {dst}: {e}")
 
-                    action.triggered.connect(handler)
+                action.triggered.connect(handler)
 
                 make_disconnect_handler(conns)
                 menu.addAction(action)
@@ -261,77 +261,82 @@ class BulkAreaItem(QGraphicsItem):
                     return True
         return False
 
+    # ------------------------------------------------------------------
+    # itemChange – extracted into private helpers
+    # ------------------------------------------------------------------
+
     def itemChange(self, change: QGraphicsItem.GraphicsItemChange, value: Any) -> Any:
         """Handle selection synchronization with associated paired PortItems and other BulkAreaItems."""
-        if change == QGraphicsItem.GraphicsItemChange.ItemSelectedHasChanged:
-            from .node_item import NodeItem # Local import for isinstance and logic
+        if change != QGraphicsItem.GraphicsItemChange.ItemSelectedHasChanged:
+            return super().itemChange(change, value)
 
-            if self.scene() and getattr(self.scene(), 'interaction_handler', None) is not None and self.parent_node:
-                handler = self.scene().interaction_handler
+        if self.scene() is None:
+            return super().itemChange(change, value)
 
-                # If GraphInteractionHandler is doing a batch selection, only do basic child port sync.
-                if handler._processing_selection:
-                    current_selection_state = bool(value)
-                    for port_item in self.paired_ports:
-                        if port_item.isSelected() != current_selection_state:
-                            port_item.setSelected(current_selection_state)
-                    return super().itemChange(change, value)
+        handler = getattr(self.scene(), 'interaction_handler', None)
+        if handler is None or self.parent_node is None:
+            return super().itemChange(change, value)
 
-                # Prevent re-entry for this specific bulk area's selection change processing
-                if self._is_handling_selection_change:
-                    return super().itemChange(change, value)
+        # If GraphInteractionHandler is doing a batch selection, only do basic child port sync.
+        if handler._processing_selection:
+            current_selection_state = bool(value)
+            for port_item in self.paired_ports:
+                if port_item.isSelected() != current_selection_state:
+                    port_item.setSelected(current_selection_state)
+            return super().itemChange(change, value)
 
-                self._is_handling_selection_change = True
-                try:
-                    # Part 1: Synchronize with own paired ports
-                    new_selection_state = bool(value)
-                    for port_item in self.paired_ports:
-                        if port_item.isSelected() != new_selection_state:
-                            port_item.setSelected(new_selection_state)
+        # Prevent re-entry for this specific bulk area's selection change processing
+        if self._is_handling_selection_change:
+            return super().itemChange(change, value)
 
-                    # Part 2: Inter-Node Bulk Area Selection Synchronization
-                    # Determine if this level can propagate bulk-to-bulk selection
-                    can_propagate_bulk_to_bulk = False
-                    if not handler._is_in_auto_selection_cascade:
-                        can_propagate_bulk_to_bulk = True
-                        handler._is_in_auto_selection_cascade = True
+        self._is_handling_selection_change = True
+        try:
+            new_selection_state = bool(value)
+            self._sync_paired_ports_selection(new_selection_state)
+            self._sync_connected_bulk_areas(handler, new_selection_state)
+        finally:
+            self._is_handling_selection_change = False
 
-                    try:
-                        if can_propagate_bulk_to_bulk:
-                            # 2. Propagate selection to connected BulkAreaItems on other nodes
-                            all_items_in_scene = list(self.scene().items())
-
-                            if value: # Current bulk area (self) is being SELECTED
-                                for item_in_scene_check in all_items_in_scene:
-                                    if not isinstance(item_in_scene_check, typing.cast(type, NodeItem)) or item_in_scene_check == self.parent_node:
-                                        continue
-
-                                    other_node = item_in_scene_check
-                                    # Check all bulk areas on the other node's opposite side
-                                    target_bulks = other_node.input_bulk_areas if not self.is_input else other_node.output_bulk_areas
-
-                                    for target_bulk in target_bulks:
-                                        if target_bulk and not target_bulk.isSelected():
-                                            if self._is_connected_to_other_bulk(target_bulk):
-                                                target_bulk.set_connection_highlighted(True)
-                            else: # Current bulk area (self) is being DESELECTED
-                                for item_in_scene_check in all_items_in_scene:
-                                    if not isinstance(item_in_scene_check, typing.cast(type, NodeItem)) or item_in_scene_check == self.parent_node:
-                                        continue
-
-                                    other_node_to_check = item_in_scene_check
-                                    bulks_on_other = other_node_to_check.input_bulk_areas if not self.is_input else other_node_to_check.output_bulk_areas
-
-                                    for bulk_on_other in bulks_on_other:
-                                        if bulk_on_other:
-                                            if self._is_connected_to_other_bulk(bulk_on_other):
-                                                bulk_on_other.set_connection_highlighted(False)
-                    finally:
-                        if can_propagate_bulk_to_bulk:
-                            handler._is_in_auto_selection_cascade = False
-                finally:
-                    self._is_handling_selection_change = False
         return super().itemChange(change, value)
+
+    # ------------------------------------------------------------------
+    # itemChange helpers
+    # ------------------------------------------------------------------
+
+    def _sync_paired_ports_selection(self, new_selection_state: bool) -> None:
+        """Synchronise the selection state of this bulk area's 2 paired ports."""
+        for port_item in self.paired_ports:
+            if port_item.isSelected() != new_selection_state:
+                port_item.setSelected(new_selection_state)
+
+    def _sync_connected_bulk_areas(
+        self, handler: Any, new_selection_state: bool,
+    ) -> None:
+        """Propagate (de)selection to connected BulkAreaItems on other nodes."""
+        # Determine if this level can propagate bulk-to-bulk selection
+        can_propagate = False
+        if not handler._is_in_auto_selection_cascade:
+            can_propagate = True
+            handler._is_in_auto_selection_cascade = True
+
+        if not can_propagate:
+            return
+
+        try:
+            if new_selection_state:  # SELECT
+                self._select_connected_bulk_areas()
+            else:  # DESELECT
+                self._deselect_connected_bulk_areas()
+        finally:
+            handler._is_in_auto_selection_cascade = False
+
+    def _select_connected_bulk_areas(self) -> None:
+        """Highlight all connected BulkAreaItems on other nodes (SELECT pass)."""
+        self._toggle_connected_bulk_areas(highlighted=True, only_if_unselected=True)
+
+    def _deselect_connected_bulk_areas(self) -> None:
+        """Un-highlight all connected BulkAreaItems on other nodes (DESELECT pass)."""
+        self._toggle_connected_bulk_areas(highlighted=False, only_if_unselected=False)
 
     def set_drag_highlight(self, highlighted: bool) -> None:
         """Externally set the highlight state for drag hover."""
@@ -341,23 +346,44 @@ class BulkAreaItem(QGraphicsItem):
 
     def _highlight_connected_bulk_areas(self) -> None:
         """Highlight bulk areas connected to this one via its paired ports."""
-        from .node_item import NodeItem # Local import for isinstance
+        self._toggle_connected_bulk_areas(highlighted=True, only_if_unselected=True)
 
-        if not self.scene():
+    def _toggle_connected_bulk_areas(
+        self, *, highlighted: bool, only_if_unselected: bool
+    ) -> None:
+        """Toggle the connection highlight on every connected bulk on other nodes.
+
+        Shared implementation for :meth:`_select_connected_bulk_areas`,
+        :meth:`_deselect_connected_bulk_areas` and
+        :meth:`_highlight_connected_bulk_areas`. Iterates every other node's
+        bulk areas on the *opposite* side of the signal chain (input bulks if
+        this item is an output, and vice-versa) and, when this item is
+        connected to that bulk via its paired ports, applies the requested
+        highlight state.
+        """
+        from .node_item import NodeItem  # Local import for isinstance
+
+        scene = self.scene()
+        if not scene:
             return
 
-        all_items_in_scene = list(self.scene().items())
+        all_items_in_scene = list(scene.items())
         for item_in_scene in all_items_in_scene:
             if not isinstance(item_in_scene, typing.cast(type, NodeItem)) or item_in_scene == self.parent_node:
                 continue
 
             other_node = item_in_scene
-            target_bulks = other_node.input_bulk_areas if not self.is_input else other_node.output_bulk_areas
+            target_bulks = (
+                other_node.input_bulk_areas if not self.is_input else other_node.output_bulk_areas
+            )
 
             for target_bulk in target_bulks:
-                if target_bulk and not target_bulk.isSelected():
-                    if self._is_connected_to_other_bulk(target_bulk):
-                        target_bulk.set_connection_highlighted(True)
+                if not target_bulk:
+                    continue
+                if only_if_unselected and target_bulk.isSelected():
+                    continue
+                if self._is_connected_to_other_bulk(target_bulk):
+                    target_bulk.set_connection_highlighted(highlighted)
 
     def set_connection_highlighted(self, highlighted: bool) -> None:
         """Set the connection highlighting state."""

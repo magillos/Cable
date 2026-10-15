@@ -10,7 +10,7 @@ from typing import Optional
 from PyQt6.QtGui import QIcon
 
 # --- Application Version ---
-APP_VERSION = "0.10.13"
+APP_VERSION = "0.10.14"
 
 # --- Shared Constants ---
 EDIT_LIST_TEXT = "Edit List..."
@@ -32,75 +32,42 @@ def _extra_icon_paths() -> list[str]:
     return paths
 
 
-def load_app_icon(
-    icon_name: str = "jack-plug.svg", theme_name: str = "jack-plug"
-) -> Optional[QIcon]:
-    """Load the application icon, checking frozen/script dir then theme."""
-    app_icon = None
-
+def _load_icon_from_path(icon_name: str) -> Optional[QIcon]:
+    """Try to load an icon from the script/frozen directory, then extra paths."""
     if getattr(sys, "frozen", False) and getattr(sys, "_MEIPASS", None) is not None:
         base_path = sys._MEIPASS
     else:
         base_path = os.path.dirname(os.path.abspath(sys.argv[0]))
 
-    local_icon_path = os.path.join(base_path, icon_name)
-    if os.path.exists(local_icon_path):
-        app_icon = QIcon(local_icon_path)
-        if app_icon.isNull():
-            app_icon = None
+    local_path = os.path.join(base_path, icon_name)
+    if os.path.exists(local_path):
+        icon = QIcon(local_path)
+        if not icon.isNull():
+            return icon
 
-    # Fallback: check packaged icon directories (Flatpak, Debian, Arch, etc.)
-    if app_icon is None:
-        for extra_dir in _extra_icon_paths():
-            extra_path = os.path.join(extra_dir, icon_name)
-            if os.path.exists(extra_path):
-                app_icon = QIcon(extra_path)
-                if not app_icon.isNull():
-                    break
-                app_icon = None
-
-    if app_icon is None:
-        theme_icon = QIcon.fromTheme(theme_name)
-        if not theme_icon.isNull():
-            app_icon = theme_icon
-
-    return app_icon
-
-
-def _detect_dark_mode_from_config() -> Optional[bool]:
-    """Read dark-mode setting from KDE/GNOME config files.
-
-    Returns ``True`` (dark), ``False`` (light), or ``None`` (unknown).
-    """
-    # KDE Plasma: kdeglobals ColorScheme key
-    kdeglobals_path = os.path.expanduser("~/.config/kdeglobals")
-    if os.path.exists(kdeglobals_path):
-        try:
-            import configparser
-            cfg = configparser.ConfigParser()
-            cfg.read(kdeglobals_path, encoding="utf-8")
-            scheme = cfg.get("KDE", "ColorScheme", fallback="")
-            if scheme:
-                return "dark" in scheme.lower()
-        except Exception:
-            pass
-
-    # GNOME: gtk-application-prefer-dark-theme
-    gtk_settings_path = os.path.expanduser("~/.config/gtk-3.0/settings.ini")
-    if os.path.exists(gtk_settings_path):
-        try:
-            import configparser
-            cfg = configparser.ConfigParser()
-            cfg.read(gtk_settings_path, encoding="utf-8")
-            prefer_dark = cfg.getboolean(
-                "Settings", "gtk-application-prefer-dark-theme", fallback=False
-            )
-            return prefer_dark  # True=dark, False=light
-        except Exception:
-            pass
+    for extra_dir in _extra_icon_paths():
+        extra_path = os.path.join(extra_dir, icon_name)
+        if os.path.exists(extra_path):
+            icon = QIcon(extra_path)
+            if not icon.isNull():
+                return icon
 
     return None
 
+
+def load_app_icon(
+    icon_name: str = "jack-plug.svg", theme_name: str = "jack-plug"
+) -> Optional[QIcon]:
+    """Load the application icon, checking frozen/script dir then theme."""
+    icon = _load_icon_from_path(icon_name)
+    if icon is not None:
+        return icon
+
+    theme_icon = QIcon.fromTheme(theme_name)
+    if not theme_icon.isNull():
+        return theme_icon
+
+    return None
 
 def _detect_dark_mode() -> bool:
     """Detect whether the system is using a dark theme.
@@ -157,40 +124,18 @@ def load_tray_icon(monochrome: bool = False, invert: bool = False) -> Optional[Q
     else:
         icon_file = "jack-plug-dark.svg" if is_dark_mode else "jack-plug-light.svg"
         icon_theme_name = "jack-plug-dark" if is_dark_mode else "jack-plug-light"
-    app_icon = None
 
-    if getattr(sys, "frozen", False) and getattr(sys, "_MEIPASS", None) is not None:
-        base_path = sys._MEIPASS
-    else:
-        base_path = os.path.dirname(os.path.abspath(sys.argv[0]))
-
-    local_icon_path = os.path.join(base_path, icon_file)
-    if os.path.exists(local_icon_path):
-        app_icon = QIcon(local_icon_path)
-        if app_icon.isNull():
-            app_icon = None
-
-    # Fallback: check packaged icon directories (Flatpak, Debian, Arch, etc.)
-    if app_icon is None:
-        for extra_dir in _extra_icon_paths():
-            extra_path = os.path.join(extra_dir, icon_file)
-            if os.path.exists(extra_path):
-                app_icon = QIcon(extra_path)
-                if not app_icon.isNull():
-                    break
-                app_icon = None
+    icon = _load_icon_from_path(icon_file)
+    if icon is not None:
+        return icon
 
     # Check system icon theme before falling back
-    if app_icon is None:
-        theme_icon = QIcon.fromTheme(icon_theme_name)
-        if not theme_icon.isNull():
-            app_icon = theme_icon
+    theme_icon = QIcon.fromTheme(icon_theme_name)
+    if not theme_icon.isNull():
+        return theme_icon
 
     # Final fallback to default icon if monochrome not found
-    if app_icon is None:
-        app_icon = load_app_icon()
-
-    return app_icon
+    return load_app_icon()
 
 
 # Main App Window (Cable.py) — first-launch defaults

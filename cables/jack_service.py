@@ -129,35 +129,12 @@ class JackService(QObject):
         if self._is_closing():
             return
         try:
-            if port is None:
+            port_name, client_name, port_flags, port_type, is_input = self._resolve_port_metadata(
+                port
+            )
+            if port_name is None:
                 return
-            
-            if getattr(port, 'name', None) is None or getattr(port, 'is_input', None) is None:
-                return
-            
-            port_name = port.name
-            if not isinstance(port_name, str) or not port_name:
-                return
-            
-            client_name = port_name.split(':', 1)[0] if ':' in port_name else port_name
-            
-            try:
-                port_flags = port.flags
-            except AttributeError:
-                port_flags = 0
-            
-            try:
-                port_type = port.type
-            except AttributeError:
-                if getattr(port, 'is_midi', False):
-                    port_type = "midi"
-                elif getattr(port, 'is_audio', False):
-                    port_type = "audio"
-                else:
-                    port_type = "unknown"
-            
-            is_input = port.is_input
-            
+
             if registered:
                 self.port_added.emit(port_name, client_name, port_flags, port_type, is_input)
                 self.port_registered.emit(port_name, is_input)
@@ -167,6 +144,42 @@ class JackService(QObject):
                 
         except Exception as e:
             logger.debug(f"JackService port registration callback error: {e}")
+
+    def _resolve_port_metadata(self, port: Optional[jack.Port]):
+        """Resolve a JACK port's name, client, flags, type and input direction.
+
+        Returns ``(port_name, client_name, port_flags, port_type, is_input)`` with
+        ``port_name`` set to None for an unusable port.
+        """
+        if port is None:
+            return None, None, 0, None, None
+
+        if getattr(port, 'name', None) is None or getattr(port, 'is_input', None) is None:
+            return None, None, 0, None, None
+
+        port_name = port.name
+        if not isinstance(port_name, str) or not port_name:
+            return None, None, 0, None, None
+
+        client_name = port_name.split(':', 1)[0] if ':' in port_name else port_name
+
+        try:
+            port_flags = port.flags
+        except AttributeError:
+            port_flags = 0
+
+        try:
+            port_type = port.type
+        except AttributeError:
+            if getattr(port, 'is_midi', False):
+                port_type = "midi"
+            elif getattr(port, 'is_audio', False):
+                port_type = "audio"
+            else:
+                port_type = "unknown"
+
+        is_input = port.is_input
+        return port_name, client_name, port_flags, port_type, is_input
     
     def _on_client_registration(self, client_name: str, registered: bool) -> None:
         """JACK callback for client registration/unregistration."""
@@ -344,23 +357,7 @@ class JackService(QObject):
         connections: List[Tuple[str, str]] = []
         try:
             if port_or_name:
-                if isinstance(port_or_name, jack.Port):
-                    port_name_to_query = port_or_name.name
-                else:
-                    port_name_to_query = port_or_name
-                
-                port_obj = self._client.get_port_by_name(port_name_to_query)
-                if port_obj:
-                    if port_obj.is_output:
-                        connected_items = self._client.get_all_connections(port_name_to_query)
-                        for item in connected_items:
-                            dest_name = item.name if isinstance(item, jack.Port) else item
-                            connections.append((port_name_to_query, dest_name))
-                    elif port_obj.is_input:
-                        source_items = self._client.get_all_connections(port_name_to_query)
-                        for item in source_items:
-                            src_name = item.name if isinstance(item, jack.Port) else item
-                            connections.append((src_name, port_name_to_query))
+                self._append_connections_for_port(connections, port_or_name)
             else:
                 output_ports = self.get_ports(is_output=True)
                 for port_obj in output_ports:
@@ -371,6 +368,29 @@ class JackService(QObject):
             return connections
         except jack.JackError:
             return []
+
+    def _append_connections_for_port(
+        self, connections: List[Tuple[str, str]], port_or_name: str | jack.Port
+    ) -> None:
+        """Append the (source, dest) connection tuples for a single port."""
+        if isinstance(port_or_name, jack.Port):
+            port_name_to_query = port_or_name.name
+        else:
+            port_name_to_query = port_or_name
+
+        port_obj = self._client.get_port_by_name(port_name_to_query)
+        if not port_obj:
+            return
+        if port_obj.is_output:
+            connected_items = self._client.get_all_connections(port_name_to_query)
+            for item in connected_items:
+                dest_name = item.name if isinstance(item, jack.Port) else item
+                connections.append((port_name_to_query, dest_name))
+        elif port_obj.is_input:
+            source_items = self._client.get_all_connections(port_name_to_query)
+            for item in source_items:
+                src_name = item.name if isinstance(item, jack.Port) else item
+                connections.append((src_name, port_name_to_query))
     
     def get_client_names(self) -> List[str]:
         """

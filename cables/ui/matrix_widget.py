@@ -73,6 +73,27 @@ _SCROLL_AREA_STYLESHEET = (
     " QAbstractScrollArea::corner { background-color: palette(window); }"
 )
 
+def _build_matrix_splitter(orientation: Qt.Orientation, hide_handle: bool) -> QSplitter:
+    """Construct a QSplitter for the matrix, applying standard styling.
+
+    Shared builder for the matrix widget's vertical and main (horizontal)
+    splitters — avoids duplicating the hide/styling block.
+    """
+    splitter = QSplitter(orientation)
+    splitter.setChildrenCollapsible(True)
+    if hide_handle:
+        splitter.setHandleWidth(0)
+        splitter.setStyleSheet(
+            "QSplitter::handle { background-color: transparent; border: none; }"
+        )
+    else:
+        splitter.setHandleWidth(2)
+        splitter.setStyleSheet(
+            "QSplitter::handle { background-color: #444444; border: none; }"
+        )
+    return splitter
+
+
 # Config key mapping per port type
 _MATRIX_CONFIG_KEYS: Dict[str, Dict[str, str]] = {
     "midi": {
@@ -265,18 +286,10 @@ class MatrixWidget(QWidget):
             keys.HIDE_MATRIX_SPLITTERS, False
         )
 
-        self.v_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.v_splitter = _build_matrix_splitter(
+            Qt.Orientation.Vertical, hide_splitters
+        )
         self.v_splitter.setChildrenCollapsible(True)
-        if hide_splitters:
-            self.v_splitter.setHandleWidth(0)
-            self.v_splitter.setStyleSheet(
-                "QSplitter::handle { background-color: transparent; border: none; }"
-            )
-        else:
-            self.v_splitter.setHandleWidth(2)
-            self.v_splitter.setStyleSheet(
-                "QSplitter::handle { background-color: #444444; border: none; }"
-            )
 
         # --- Top panel: scroll area with output labels + grid ---
         self.main_scroll_area = QScrollArea()
@@ -293,18 +306,10 @@ class MatrixWidget(QWidget):
         self.main_scroll_area.setStyleSheet(_SCROLL_AREA_STYLESHEET)
 
         # Create horizontal splitter for adjustable output label area
-        self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.main_splitter = _build_matrix_splitter(
+            Qt.Orientation.Horizontal, hide_splitters
+        )
         self.main_splitter.setChildrenCollapsible(True)
-        if hide_splitters:
-            self.main_splitter.setHandleWidth(0)
-            self.main_splitter.setStyleSheet(
-                "QSplitter::handle { background-color: transparent; border: none; }"
-            )
-        else:
-            self.main_splitter.setHandleWidth(2)
-            self.main_splitter.setStyleSheet(
-                "QSplitter::handle { background-color: #444444; border: none; }"
-            )
         self.main_splitter.setSizePolicy(
             QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Minimum
         )

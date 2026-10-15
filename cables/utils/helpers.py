@@ -2,9 +2,11 @@
 Helper functions for the Cables application
 """
 
-from PyQt6.QtWidgets import QDialog, QLabel, QVBoxLayout, QWidget
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtWidgets import QDialog, QWidget
+from PyQt6.QtCore import QTimer
 from PyQt6.QtGui import QShowEvent
+
+from cable_core.dialogs import _center_dialog_on_parent_or_screen, _setup_frameless_message
 
 
 class FramelessNotification(QDialog):
@@ -20,34 +22,7 @@ class FramelessNotification(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle(title)
-        self.setModal(False)
-
-        # Prevent focus stealing
-        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
-        self.setWindowFlags(
-            Qt.WindowType.ToolTip
-            | Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-        )
-
-        layout = QVBoxLayout(self)
-
-        # Styling for frameless window
-        self.setStyleSheet("""
-            QDialog {
-                background-color: palette(window);
-                border: 1px solid palette(mid);
-                border-radius: 4px;
-            }
-            QLabel {
-                padding: 10px;
-            }
-        """)
-
-        message_label = QLabel(text)
-        message_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        message_label.setWordWrap(True)
-        layout.addWidget(message_label)
+        _setup_frameless_message(self, text, word_wrap=True)
 
         # Auto-size based on text content
         line_count = text.count("\n") + 1
@@ -64,25 +39,7 @@ class FramelessNotification(QDialog):
     def showEvent(self, event: QShowEvent) -> None:
         """Center the dialog on parent or screen."""
         super().showEvent(event)
-        parent_widget = self.parent()
-        if parent_widget and parent_widget.isVisible():
-            parent_rect = parent_widget.geometry()
-            dialog_rect = self.geometry()
-            x = parent_rect.x() + (parent_rect.width() - dialog_rect.width()) // 2
-            y = parent_rect.y() + (parent_rect.height() - dialog_rect.height()) // 2
-            self.move(x, y)
-        else:
-            from PyQt6.QtGui import QGuiApplication
-
-            screen = QGuiApplication.primaryScreen()
-            if screen:
-                screen_geometry = screen.availableGeometry()
-                x = screen_geometry.x() + (screen_geometry.width() - self.width()) // 2
-                y = (
-                    screen_geometry.y()
-                    + (screen_geometry.height() - self.height()) // 2
-                )
-                self.move(x, y)
+        _center_dialog_on_parent_or_screen(self)
 
 
 def show_timed_messagebox(

@@ -32,20 +32,3 @@ def _silent_print(*args: Any, **kwargs: Any) -> None:
     pass
 
 
-def init_verbose_mode() -> None:
-    """Initialize verbose mode based on config setting.
-    Call this early in the application startup.
-    """
-    global _verbose_enabled
-    _verbose_enabled = _load_verbose_setting()
-    
-    if _verbose_enabled and not sys.stdout.isatty():
-        _verbose_enabled = False  # Suppress verbose output when not in a terminal to avoid flooding journalctl
-
-    if not _verbose_enabled:
-        builtins.print = _silent_print
-
-
-def is_verbose() -> bool:
-    """Check if verbose mode is enabled."""
-    return _verbose_enabled

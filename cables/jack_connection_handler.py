@@ -140,49 +140,9 @@ class JackConnectionHandler:
 
         elif num_outputs > 1 and num_inputs > 1:
             logger.debug(f"  Scenario: Group/List ({num_outputs}) -> Group/List ({num_inputs}) - Applying suffix/sequential matching")
-
-            common_suffixes = [
-                '_FL', '_FR', '_SL', '_SR', '_FC', '_LFE', '_RL', '_RR',
-                '_L', '_R', '_1', '_2', '_3', '_4', '_5', '_6', '_7', '_8',
-                'left', 'right', 'Left', 'Right'
-            ]
-
-            unmatched_outputs = list(output_list)
-            unmatched_inputs = list(input_list)
-            connections_made_in_group = []
-
-            for suffix in common_suffixes:
-                outputs_with_suffix = [p for p in unmatched_outputs if p.endswith(suffix)]
-                inputs_with_suffix = [p for p in unmatched_inputs if p.endswith(suffix)]
-
-                pairs_to_connect = min(len(outputs_with_suffix), len(inputs_with_suffix))
-                for i in range(pairs_to_connect):
-                    out_p = outputs_with_suffix[i]
-                    in_p = inputs_with_suffix[i]
-                    try:
-                        logger.debug(f"    Suffix Match ({suffix}): {out_p} -> {in_p}")
-                        self._port_operation(operation_type, out_p, in_p, is_midi, is_undo_redo=is_undo_redo)
-                        connections_made_in_group.append((out_p, in_p))
-                        unmatched_outputs.remove(out_p)
-                        unmatched_inputs.remove(in_p)
-                        made_connection_attempt = True
-                    except Exception as e:
-                        logger.debug(f"      Connection failed: {e}")
-
-            while unmatched_outputs and unmatched_inputs:
-                out_p = unmatched_outputs[0]
-                in_p = unmatched_inputs[0]
-                try:
-                    logger.debug(f"    Sequential Match: {out_p} -> {in_p}")
-                    self._port_operation(operation_type, out_p, in_p, is_midi, is_undo_redo=is_undo_redo)
-                    connections_made_in_group.append((out_p, in_p))
-                    made_connection_attempt = True
-                except Exception as e:
-                    logger.debug(f"      Connection failed: {e}")
-                unmatched_outputs.pop(0)
-                unmatched_inputs.pop(0)
-
-            logger.debug(f"  Group-to-group connection finished. Attempted {len(connections_made_in_group)} connections.")
+            made_connection_attempt = self._connect_group_to_group(
+                output_list, input_list, operation_type, is_midi, is_undo_redo
+            ) or made_connection_attempt
 
         elif num_outputs == 1 and num_inputs == 1:
             single_output = output_list[0]
@@ -198,6 +158,64 @@ class JackConnectionHandler:
 
         if made_connection_attempt:
              logger.debug("Multiple connection process finished.")
+
+    def _connect_group_to_group(
+        self,
+        output_list: List[str],
+        input_list: List[str],
+        operation_type: str,
+        is_midi: bool,
+        is_undo_redo: bool,
+    ) -> bool:
+        """Connect a group of outputs to a group of inputs using suffix matching
+        first, then sequential matching for the remainder.
+
+        Returns True if at least one connection was attempted.
+        """
+        common_suffixes = [
+            '_FL', '_FR', '_SL', '_SR', '_FC', '_LFE', '_RL', '_RR',
+            '_L', '_R', '_1', '_2', '_3', '_4', '_5', '_6', '_7', '_8',
+            'left', 'right', 'Left', 'Right'
+        ]
+
+        unmatched_outputs = list(output_list)
+        unmatched_inputs = list(input_list)
+        connections_made_in_group = []
+        made_connection_attempt = False
+
+        for suffix in common_suffixes:
+            outputs_with_suffix = [p for p in unmatched_outputs if p.endswith(suffix)]
+            inputs_with_suffix = [p for p in unmatched_inputs if p.endswith(suffix)]
+
+            pairs_to_connect = min(len(outputs_with_suffix), len(inputs_with_suffix))
+            for i in range(pairs_to_connect):
+                out_p = outputs_with_suffix[i]
+                in_p = inputs_with_suffix[i]
+                try:
+                    logger.debug(f"    Suffix Match ({suffix}): {out_p} -> {in_p}")
+                    self._port_operation(operation_type, out_p, in_p, is_midi, is_undo_redo=is_undo_redo)
+                    connections_made_in_group.append((out_p, in_p))
+                    unmatched_outputs.remove(out_p)
+                    unmatched_inputs.remove(in_p)
+                    made_connection_attempt = True
+                except Exception as e:
+                    logger.debug(f"      Connection failed: {e}")
+
+        while unmatched_outputs and unmatched_inputs:
+            out_p = unmatched_outputs[0]
+            in_p = unmatched_inputs[0]
+            try:
+                logger.debug(f"    Sequential Match: {out_p} -> {in_p}")
+                self._port_operation(operation_type, out_p, in_p, is_midi, is_undo_redo=is_undo_redo)
+                connections_made_in_group.append((out_p, in_p))
+                made_connection_attempt = True
+            except Exception as e:
+                logger.debug(f"      Connection failed: {e}")
+            unmatched_outputs.pop(0)
+            unmatched_inputs.pop(0)
+
+        logger.debug(f"  Group-to-group connection finished. Attempted {len(connections_made_in_group)} connections.")
+        return made_connection_attempt
 
     def get_all_connections(self, port_name: str) -> List[Tuple[str, str]]:
         """

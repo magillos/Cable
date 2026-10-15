@@ -6,38 +6,47 @@ from cable_core.app_config import EDIT_LIST_TEXT
 from typing import List, Callable, Any, Optional
 from cable_core.config import ConfigManager
 
-def create_section_group(title: str, layout: QVBoxLayout) -> QGroupBox:
-    group = QGroupBox()
-    group.setLayout(layout)
-    group.setContentsMargins(QMargins(5, 10, 5, 10))
 
-    from PyQt6.QtGui import QFont
-    title_font = QFont()
-    title_font.setBold(True)
-    title_font.setPointSize(title_font.pointSize() + 1)
+class _UiWidgetGroupStyler:
+    """Applies the standard group-box stylesheet/title block.
 
-    title_label = QLabel(title)
-    title_label.setFont(title_font)
-    title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    Extracted helper consolidating the four ``create_section_group``-style
+    blocks that were previously inlined at the end of every group's
+    ``__init__``.
+    """
 
-    layout.insertWidget(0, title_label)
-    return group
+    @staticmethod
+    def apply(widget: QWidget, layout, title_text: str) -> None:
+        widget.setLayout(layout)
+        widget.setContentsMargins(QMargins(5, 10, 5, 10))
+        from PyQt6.QtGui import QFont
+        title_font = QFont()
+        title_font.setBold(True)
+        title_font.setPointSize(title_font.pointSize() + 1)
+        title_label = QLabel(title_text)
+        title_label.setFont(title_font)
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.insertWidget(0, title_label)
+
 
 class BaseAudioSettingGroup(QGroupBox):
-    def __init__(self, title: str, config_manager: ConfigManager, default_values_key: str, 
-                 default_values_list: List[int], vertical_buttons: bool, 
-                 apply_slot: Callable, reset_slot: Callable, refresh_slot: Callable, 
+    def __init__(self, title: str, config_manager: ConfigManager, default_values_key: str,
+                 default_values_list: List[int], vertical_buttons: bool,
+                 apply_slot: Callable, reset_slot: Callable, refresh_slot: Callable,
                  parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.combo_box = QComboBox()
         self.apply_button = QPushButton()
         self.reset_button = QPushButton()
         self.refresh_button = QPushButton()
-        
+
         layout = QVBoxLayout()
         select_layout = QHBoxLayout()
         label = QLabel(f"{title}:")
         self.combo_box.setEditable(True)
+        # Disable mouse-wheel scrolling on the combo box so that wheel events
+        # propagate to the parent scroll area and scroll the whole panel.
+        self.combo_box.wheelEvent = lambda event: event.ignore()
         
         values = config_manager.get_list_from_config(default_values_key, default_values_list)
         for value in values:
@@ -73,16 +82,7 @@ class BaseAudioSettingGroup(QGroupBox):
         self.main_layout = layout
         
         # Apply style from create_section_group
-        self.setLayout(layout)
-        self.setContentsMargins(QMargins(5, 10, 5, 10))
-        from PyQt6.QtGui import QFont
-        title_font = QFont()
-        title_font.setBold(True)
-        title_font.setPointSize(title_font.pointSize() + 1)
-        title_label = QLabel(title)
-        title_label.setFont(title_font)
-        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.insertWidget(0, title_label)
+        _UiWidgetGroupStyler.apply(self, layout, title)
 
 class QuantumGroup(BaseAudioSettingGroup):
     def __init__(self, config_manager: ConfigManager, default_values_list: List[int], vertical_buttons: bool,
@@ -140,20 +140,22 @@ class SampleRateGroup(BaseAudioSettingGroup):
 class AudioProfileGroup(QGroupBox):
     def __init__(self, apply_slot: Callable, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
-        
+
         layout = QVBoxLayout()
         device_layout = QHBoxLayout()
         device_label = QLabel("Audio Device:")
         self.device_combo = QComboBox()
         self.device_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.device_combo.wheelEvent = lambda event: event.ignore()
         device_layout.addWidget(device_label)
         device_layout.addWidget(self.device_combo)
         layout.addLayout(device_layout)
-        
+
         profile_select_layout = QHBoxLayout()
         profile_label = QLabel("Device Profile:")
         self.profile_combo = QComboBox()
         self.profile_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.profile_combo.wheelEvent = lambda event: event.ignore()
         profile_select_layout.addWidget(profile_label)
         profile_select_layout.addWidget(self.profile_combo)
         layout.addLayout(profile_select_layout)
@@ -167,28 +169,20 @@ class AudioProfileGroup(QGroupBox):
         layout.addWidget(self.apply_button)
         
         # Apply group style
-        self.setLayout(layout)
-        self.setContentsMargins(QMargins(5, 10, 5, 10))
-        from PyQt6.QtGui import QFont
-        title_font = QFont()
-        title_font.setBold(True)
-        title_font.setPointSize(title_font.pointSize() + 1)
-        title_label = QLabel("Audio Profile")
-        title_label.setFont(title_font)
-        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.insertWidget(0, title_label)
+        _UiWidgetGroupStyler.apply(self, layout, "Audio Profile")
 
 class LatencyGroup(QGroupBox):
     def __init__(self, vertical_buttons: bool, apply_slot: Callable, reset_all_slot: Callable,
                  parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         layout = QVBoxLayout()
-        
+
         node_select_layout = QHBoxLayout()
         node_label = QLabel("Audio Node:")
         self.node_combo = QComboBox()
         self.node_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.node_combo.addItem("Choose Node")
+        self.node_combo.wheelEvent = lambda event: event.ignore()
         node_select_layout.addWidget(node_label)
         node_select_layout.addWidget(self.node_combo)
         layout.addLayout(node_select_layout)
@@ -221,16 +215,7 @@ class LatencyGroup(QGroupBox):
         self.latency_input.returnPressed.connect(apply_slot)
         
         # Apply group style
-        self.setLayout(layout)
-        self.setContentsMargins(QMargins(5, 10, 5, 10))
-        from PyQt6.QtGui import QFont
-        title_font = QFont()
-        title_font.setBold(True)
-        title_font.setPointSize(title_font.pointSize() + 1)
-        title_label = QLabel("Latency Offset")
-        title_label.setFont(title_font)
-        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.insertWidget(0, title_label)
+        _UiWidgetGroupStyler.apply(self, layout, "Latency Offset")
 
 class RestartGroup(QGroupBox):
     def __init__(self, vertical_buttons: bool, restart_wp_slot: Callable, restart_pw_slot: Callable,
@@ -258,13 +243,4 @@ class RestartGroup(QGroupBox):
         
         layout.addLayout(buttons_layout)
         
-        self.setLayout(layout)
-        self.setContentsMargins(QMargins(5, 10, 5, 10))
-        from PyQt6.QtGui import QFont
-        title_font = QFont()
-        title_font.setBold(True)
-        title_font.setPointSize(title_font.pointSize() + 1)
-        title_label = QLabel("Restart Services")
-        title_label.setFont(title_font)
-        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.insertWidget(0, title_label)
+        _UiWidgetGroupStyler.apply(self, layout, "Restart Services")

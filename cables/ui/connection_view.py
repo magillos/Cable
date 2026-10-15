@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING, Optional, Callable, Any
 if TYPE_CHECKING:
     from PyQt6.QtWidgets import QGraphicsScene, QWidget
     from PyQt6.QtGui import QResizeEvent
-    import jack
 
 logger = logging.getLogger(__name__)
 
@@ -119,29 +118,3 @@ class ConnectionView(QGraphicsView):
         # Schedule refresh after resize to update connection positions
         self._schedule_refresh()
     
-    def connect_to_jack(self, jack_client: 'jack.Client') -> None:
-        """
-        Connect to JACK client and initialize port monitoring.
-        
-        Args:
-            jack_client: The JACK client instance to connect to
-        """
-        self.jack_client = jack_client
-        self._port_cache = {}
-    
-    def connect_to_jack_signals(self, client: 'jack.Client') -> None:
-        """
-        Connect JACK client signals to view update handlers.
-        
-        Args:
-            client: The JACK client instance to connect signals for
-        """
-        pass
-    
-    def _on_port_registered(self, port: Any) -> None:
-        """Handle port registration events."""
-        self.refresh_requested.emit()
-    
-    def _on_connection_changed(self, port1: Any, port2: Any, is_connected: bool) -> None:
-        """Handle connection change events."""
-        self.refresh_requested.emit()

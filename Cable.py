@@ -414,7 +414,17 @@ class PipeWireSettingsApp(QWidget):
             cable_layout.addWidget(restart_group)
             cable_layout.addStretch()
 
-            self.embedded_splitter.addWidget(cable_column)
+            # Wrap cable column in a scroll area so the content keeps its
+            # natural size and scrolls instead of shrinking when the window
+            # is resized.
+            cable_scroll = QScrollArea()
+            cable_scroll.setWidget(cable_column)
+            cable_scroll.setWidgetResizable(True)
+            cable_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+            cable_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+            cable_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+            self.embedded_splitter.addWidget(cable_scroll)
 
             # Add empty spacer widget (visible when settings hidden)
             self.embedded_spacer = QWidget()

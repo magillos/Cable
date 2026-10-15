@@ -100,9 +100,19 @@ class ConnectionHistory:
         result = self.undo()
         if result is None:
             return False
-        inv_action, output_name, input_name, is_midi = result
+        self._execute_action(result, connection_handler)
+        return True
+
+    def _execute_action(
+        self, decoded_action, connection_handler: "JackConnectionHandler"
+    ) -> None:
+        """Execute a decoded undo/redo action against ``connection_handler``.
+
+        Shared tail of undo_and_execute / redo_and_execute.
+        """
+        action, output_name, input_name, is_midi = decoded_action
         if is_midi:
-            if inv_action == "connect":
+            if action == "connect":
                 connection_handler.make_midi_connection(
                     output_name, input_name, is_undo_redo=True
                 )
@@ -111,7 +121,7 @@ class ConnectionHistory:
                     output_name, input_name, is_undo_redo=True
                 )
         else:
-            if inv_action == "connect":
+            if action == "connect":
                 connection_handler.make_connection(
                     output_name, input_name, is_undo_redo=True
                 )
@@ -119,7 +129,6 @@ class ConnectionHistory:
                 connection_handler.break_connection(
                     output_name, input_name, is_undo_redo=True
                 )
-        return True
 
     def redo_and_execute(
         self, connection_handler: "JackConnectionHandler"
@@ -138,23 +147,5 @@ class ConnectionHistory:
         result = self.redo()
         if result is None:
             return False
-        action, output_name, input_name, is_midi = result
-        if is_midi:
-            if action == "connect":
-                connection_handler.make_midi_connection(
-                    output_name, input_name, is_undo_redo=True
-                )
-            else:
-                connection_handler.break_midi_connection(
-                    output_name, input_name, is_undo_redo=True
-                )
-        else:
-            if action == "connect":
-                connection_handler.make_connection(
-                    output_name, input_name, is_undo_redo=True
-                )
-            else:
-                connection_handler.break_connection(
-                    output_name, input_name, is_undo_redo=True
-                )
+        self._execute_action(result, connection_handler)
         return True

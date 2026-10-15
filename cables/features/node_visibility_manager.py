@@ -8,7 +8,7 @@ the main application, enabling better testability and reduced coupling.
 
 import os
 import json
-from typing import Any, Dict, Optional, Set, TYPE_CHECKING, List
+from typing import Any, Dict, Optional, Set, TYPE_CHECKING
 from PyQt6.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -135,17 +135,25 @@ class NodeVisibilityManager:
                     )
 
                     # If using legacy format, convert to new format
-                    if (
-                        self.audio_node_visibility or self.midi_node_visibility
-                    ) and not (
-                        self.audio_input_visibility
-                        or self.audio_output_visibility
-                        or self.midi_input_visibility
-                        or self.midi_output_visibility
-                    ):
+                    if self._has_legacy_visibility_without_io():
                         self._convert_legacy_settings()
             except Exception as e:
                 logger.error(f"Error loading node visibility settings: {e}")
+
+    def _has_legacy_visibility_without_io(self) -> bool:
+        """Check if legacy visibility settings exist without newer I/O settings.
+
+        Returns:
+            True if legacy format is used (old settings present, new I/O settings absent).
+        """
+        has_legacy = self.audio_node_visibility or self.midi_node_visibility
+        has_io = (
+            self.audio_input_visibility
+            or self.audio_output_visibility
+            or self.midi_input_visibility
+            or self.midi_output_visibility
+        )
+        return has_legacy and not has_io
 
     def _convert_legacy_settings(self) -> None:
         """Convert legacy node visibility settings to input/output format."""
@@ -245,77 +253,121 @@ class NodeVisibilityManager:
         # Get the base client name
         client_name = self._extract_client_name(node_name)
 
-        # Select the appropriate visibility dictionaries based on tab type
-        if tab_type == "graph":
-            if is_midi:
-                input_visibility_dict = self.graph_midi_input_visibility
-                output_visibility_dict = self.graph_midi_output_visibility
-            else:
-                input_visibility_dict = self.graph_audio_input_visibility
-                output_visibility_dict = self.graph_audio_output_visibility
-        else:
-            # For audio/midi tabs
-            if is_midi:
-                input_visibility_dict = self.midi_input_visibility
-                output_visibility_dict = self.midi_output_visibility
-            else:
-                input_visibility_dict = self.audio_input_visibility
-                output_visibility_dict = self.audio_output_visibility
-
-        # Check if the client has explicit visibility settings
-        has_input_setting = client_name in input_visibility_dict
-        has_output_setting = client_name in output_visibility_dict
+        # Get the appropriate visibility dictionaries
+        input_visibility_dict, output_visibility_dict = self._get_visibility_dictionaries(
+            tab_type, is_midi
+        )
 
         # Get visibility values (default to True if not set)
         input_visible = input_visibility_dict.get(client_name, True)
         output_visible = output_visibility_dict.get(client_name, True)
 
+        # Check if the client has explicit visibility settings
+        has_input_setting = client_name in input_visibility_dict
+        has_output_setting = client_name in output_visibility_dict
+
         # If both settings exist, use OR logic
         if has_input_setting and has_output_setting:
             return input_visible or output_visible
 
-        # If only one setting exists, we need to determine if the node actually has both directions
-        # Query JACK to check what ports the client has
+        # If only one setting exists, query JACK to determine node directionality
         if has_input_setting or has_output_setting:
-            try:
-                jack_service = get_jack_service()
-
-                # Check for input ports
-                input_ports = jack_service.get_ports(
-                    name_pattern=f"{client_name}:",
-                    is_input=True,
-                    is_midi=is_midi,
-                    is_audio=not is_midi,
-                )
-                has_inputs = bool(input_ports)
-
-                # Check for output ports
-                output_ports = jack_service.get_ports(
-                    name_pattern=f"{client_name}:",
-                    is_output=True,
-                    is_midi=is_midi,
-                    is_audio=not is_midi,
-                )
-                has_outputs = bool(output_ports)
-
-                # If the node only has one direction, use that direction's visibility
-                if has_inputs and not has_outputs:
-                    # Input-only node
-                    return input_visible
-                elif has_outputs and not has_inputs:
-                    # Output-only node
-                    return output_visible
-                else:
-                    # Bidirectional node - use OR logic with defaults
-                    return input_visible or output_visible
-
-            except Exception as e:
-                logger.error(f"Error querying ports for {client_name}: {e}")
-                # Fall back to OR logic with defaults
-                return input_visible or output_visible
+            return self._resolve_visibility_with_jack(
+                client_name, is_midi, input_visible, output_visible
+            )
 
         # No settings at all - visible by default
         return True
+
+    def _get_visibility_dictionaries(
+        self, tab_type: str, is_midi: bool
+    ) -> tuple[dict, dict]:
+        """
+        Get the appropriate visibility dictionaries for the given tab type and node type.
+
+        Args:
+            tab_type: The tab type ('audio', 'midi', 'graph')
+            is_midi: Whether this is a MIDI node
+
+        Returns:
+            tuple[dict, dict]: (input_visibility_dict, output_visibility_dict)
+        """
+        if tab_type == "graph":
+            if is_midi:
+                return (
+                    self.graph_midi_input_visibility,
+                    self.graph_midi_output_visibility,
+                )
+            else:
+                return (
+                    self.graph_audio_input_visibility,
+                    self.graph_audio_output_visibility,
+                )
+        else:
+            # For audio/midi tabs
+            if is_midi:
+                return self.midi_input_visibility, self.midi_output_visibility
+            else:
+                return self.audio_input_visibility, self.audio_output_visibility
+
+    def _resolve_visibility_with_jack(
+        self,
+        client_name: str,
+        is_midi: bool,
+        input_visible: bool,
+        output_visible: bool,
+    ) -> bool:
+        """
+        Query JACK to determine node directionality and resolve visibility.
+
+        When only one direction has an explicit setting, this method checks what
+        ports the client actually has in JACK to determine the correct visibility.
+
+        Args:
+            client_name: The client name to query
+            is_midi: Whether this is a MIDI node
+            input_visible: The input visibility setting
+            output_visible: The output visibility setting
+
+        Returns:
+            bool: The resolved visibility value
+        """
+        try:
+            jack_service = get_jack_service()
+
+            # Check for input ports
+            input_ports = jack_service.get_ports(
+                name_pattern=f"{client_name}:",
+                is_input=True,
+                is_midi=is_midi,
+                is_audio=not is_midi,
+            )
+            has_inputs = bool(input_ports)
+
+            # Check for output ports
+            output_ports = jack_service.get_ports(
+                name_pattern=f"{client_name}:",
+                is_output=True,
+                is_midi=is_midi,
+                is_audio=not is_midi,
+            )
+            has_outputs = bool(output_ports)
+
+            # If the node only has one direction, use that direction's visibility
+            if has_inputs and not has_outputs:
+                # Input-only node
+                return input_visible
+            elif has_outputs and not has_inputs:
+                # Output-only node
+                return output_visible
+            else:
+                # Bidirectional node - use OR logic with defaults
+                return input_visible or output_visible
+
+        except Exception as e:
+            logger.error(f"Error querying ports for {client_name}: {e}")
+            # Fall back to OR logic with defaults
+            return input_visible or output_visible
 
     def is_input_visible(
         self, node_name: str, is_midi: bool = False, tab_type: str = "audio"
@@ -669,7 +721,10 @@ class NodeVisibilityManager:
 
             # Log changes from dialog to help with debugging
             logger.debug("Applying visibility settings to graph. Current settings:")
-            nodes_to_split = []  # Track nodes that need to be split
+            # Map client name -> which directions have partial visibility
+            # (one part hidden, one visible). Partial visibility requires the
+            # node to be split so the hidden direction can stay hidden.
+            split_candidates: Dict[str, Dict[str, bool]] = {}
 
             # Use graph-specific visibility settings
             for client_name in set(
@@ -691,12 +746,10 @@ class NodeVisibilityManager:
                     client_name, True
                 )
 
-                # Check for partial visibility (one part hidden, one visible).
-                # Track audio and MIDI variants separately so that audio/MIDI-split
-                # clients (keyed as "client (Audio)" / "client (MIDI)") can be
-                # split independently when only one variant has partial visibility.
                 audio_partial = audio_in_visible != audio_out_visible
                 midi_partial = midi_in_visible != midi_out_visible
+
+                # Check for partial visibility (one part hidden, one visible)
                 if audio_partial or midi_partial:
                     logger.debug(
                         f"Node {client_name} has partial visibility - should be split"
@@ -707,93 +760,69 @@ class NodeVisibilityManager:
                     logger.debug(
                         f"  MIDI in: {midi_in_visible}, MIDI out: {midi_out_visible}"
                     )
-                    nodes_to_split.append(
-                        {
-                            "client_name": client_name,
-                            "audio_partial": audio_partial,
-                            "midi_partial": midi_partial,
-                        }
-                    )
+                    split_candidates[client_name] = {
+                        "audio": audio_partial,
+                        "midi": midi_partial,
+                    }
 
-            # Rebuild the graph FIRST. A previously fully-hidden node is absent
-            # from scene.nodes, so splitting it must happen *after* the refresh
-            # recreates it. full_graph_refresh() is synchronous: it runs the
-            # sync pipeline (perform_sync -> _perform_sync -> full_sync_ready ->
-            # _on_full_sync_ready -> _apply_node_sync) inline, so any now-visible
-            # node exists in scene.nodes before the split is attempted below.
+            # Refresh first so newly-visible nodes are recreated. A fully-hidden
+            # node is removed from the scene, so the split below would otherwise
+            # find no node to split. The sync pipeline is synchronous, so the node
+            # is guaranteed to exist by the time we split it.
             scene.full_graph_refresh()
 
             # Auto-split nodes that need partial visibility but aren't split yet.
-            self._auto_split_nodes_for_visibility(scene, nodes_to_split)
+            self._auto_split_nodes_for_visibility(scene, split_candidates)
 
-            # Finally hide the still-hidden split parts (e.g. uncheck Output while
-            # Input is checked). This only affects split nodes; the unsplit
-            # refresh above already removed fully-hidden nodes.
-            apply_split_part_visibility = getattr(
-                scene, "_apply_split_part_visibility", None
-            )
-            if callable(apply_split_part_visibility):
-                apply_split_part_visibility()
+            # Apply individual part visibility now that any necessary splits have
+            # happened (hides the still-unchecked part and its connections).
+            scene._apply_split_part_visibility()
 
     def _auto_split_nodes_for_visibility(
-        self, scene, nodes_to_split: List[Any]
+        self, scene, split_candidates: Dict[str, Dict[str, bool]]
     ) -> None:
         """
         Automatically split nodes that have partial visibility but are not yet split.
 
-        Handles three node identity shapes in scene.nodes:
-          - regular client: key == base client name
-          - audio/MIDI-split clients: keys "client (Audio)" / "client (MIDI)"
-          - input/output-split origin: handled implicitly via split_handler
+        A node with partial visibility (e.g. input visible, output hidden) must be
+        split so the hidden direction can stay hidden independently of the visible
+        one. Audio/MIDI-split clients are keyed by ``"client (Audio)"`` /
+        ``"client (MIDI)"`` in ``scene.nodes`` while visibility settings use the
+        base client name, so each direction is resolved to its variant before
+        splitting; regular clients fall back to the base name.
 
         Args:
             scene: The graph scene
-            nodes_to_split: List of dicts describing partial visibility:
-                {"client_name": str, "audio_partial": bool, "midi_partial": bool}
+            split_candidates: Mapping of client name -> {"audio": bool, "midi": bool}
+                describing which directions have partial visibility.
         """
-        if not nodes_to_split:
+        if not split_candidates:
             return
 
-        for entry in nodes_to_split:
-            client_name = entry["client_name"]
-            audio_partial = entry.get("audio_partial", False)
-            midi_partial = entry.get("midi_partial", False)
+        nodes = getattr(scene, "nodes", {})
 
-            # Resolve which scene.nodes key(s) correspond to this client.
-            # Try the audio/MIDI-split variants first; fall back to base name.
+        for client_name, partial in split_candidates.items():
             audio_key = f"{client_name} (Audio)"
             midi_key = f"{client_name} (MIDI)"
 
-            resolved_keys: List[str] = []
-            if audio_key in scene.nodes and audio_partial:
-                resolved_keys.append(audio_key)
-            if midi_key in scene.nodes and midi_partial:
-                resolved_keys.append(midi_key)
-            # If neither suffixed key exists, assume a regular (non-split) client
-            if not resolved_keys and client_name in scene.nodes:
-                resolved_keys.append(client_name)
+            if partial.get("audio"):
+                key = audio_key if audio_key in nodes else client_name
+                self._try_split_node(scene, key)
 
-            if not resolved_keys:
-                logger.debug(
-                    f"Node {client_name} not found in scene (or no matching variant needs splitting)"
-                )
-                continue
+            if partial.get("midi"):
+                key = midi_key if midi_key in nodes else client_name
+                self._try_split_node(scene, key)
 
-            for node_key in resolved_keys:
-                self._try_split_node(scene, node_key)
-
-    def _try_split_node(self, scene, node_key: str) -> None:
-        """Attempt to split a single node for partial visibility.
-
-        Skips nodes that are already split, are split parts, lack both input
-        and output ports, or have no split_handler. Logs and swallows errors.
+    def _try_split_node(self, scene, client_name: str) -> None:
+        """Attempt to split a single scene node, guarding on invalid states.
 
         Args:
             scene: The graph scene
-            node_key: The key of the node in scene.nodes
+            client_name: The scene node key (may be an audio/MIDI-split variant).
         """
-        node = scene.nodes.get(node_key)
+        node = scene.nodes.get(client_name)
         if node is None:
+            logger.debug(f"Cannot split {client_name}: node not in scene")
             return
 
         # Skip if already split
@@ -810,23 +839,24 @@ class NodeVisibilityManager:
 
         if not has_inputs or not has_outputs:
             logger.debug(
-                f"Node {node_key} cannot be split: missing {'inputs' if not has_inputs else 'outputs'}"
+                f"Node {client_name} cannot be split: missing "
+                f"{'inputs' if not has_inputs else 'outputs'}"
             )
             return
 
         # Check if the node has a split_handler
         if getattr(node, "split_handler", None) is None:
             logger.warning(
-                f"Node {node_key} has no split_handler, cannot auto-split"
+                f"Node {client_name} has no split_handler, cannot auto-split"
             )
             return
 
         # Perform the split
         try:
-            logger.info(f"Auto-splitting node {node_key} for partial visibility")
+            logger.info(f"Auto-splitting node {client_name} for partial visibility")
             node.split_handler.split_node(save_state=True)
         except Exception as e:
-            logger.error(f"Error auto-splitting node {node_key}: {e}")
+            logger.error(f"Error auto-splitting node {client_name}: {e}")
 
     def _update_tree_visibility(
         self, input_tree: Any, output_tree: Any, is_midi: bool = False

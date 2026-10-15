@@ -94,6 +94,41 @@ class SettingsWidgetBuilder:
         if apply_button is not None:
             apply_button.setEnabled(False)
 
+        # Build sliders from settings map
+        self._build_slider_widgets(target_layout, label_width)
+
+        target_layout.addWidget(self._make_separator())
+
+        # Build untangle configuration field
+        self._build_untangle_field(target_layout)
+
+        # Build checkboxes
+        self._build_checkbox_widgets(target_layout)
+
+        # Build theme combo box
+        self._build_theme_selector(target_layout)
+
+        target_layout.addWidget(self._make_separator())
+
+        # Build integration checkbox
+        self.integrate_checkbox = self._create_checkbox(
+            "Integrate Cable and Cables",
+            tooltip="Show Cable as the first tab in Cables window.\n"
+            "Simplifies tray menu to single 'Open' option.\n"
+            "Requires application restart.",
+            requires_restart=True,
+        )
+        target_layout.addWidget(self.integrate_checkbox)
+
+        target_layout.addWidget(self._make_separator())
+
+    def _build_slider_widgets(self, target_layout: QLayout, label_width: int) -> None:
+        """Build all slider widgets from SETTINGS_MAP.
+
+        Args:
+            target_layout: The layout to add widgets to
+            label_width: Fixed width for labels
+        """
         for key, setting_info in SETTINGS_MAP.items():
             h_layout = QHBoxLayout()
 
@@ -124,9 +159,12 @@ class SettingsWidgetBuilder:
             if key in SEPARATOR_AFTER:
                 target_layout.addWidget(self._make_separator())
 
-        target_layout.addWidget(self._make_separator())
+    def _build_untangle_field(self, target_layout: QLayout) -> None:
+        """Build the untangle configuration text field.
 
-        # Untangle field
+        Args:
+            target_layout: The layout to add widgets to
+        """
         untangle_layout = QHBoxLayout()
         untangle_label = QLabel(
             "Graph Untangle configuration\n(clients in a row and cycle order)"
@@ -144,106 +182,89 @@ class SettingsWidgetBuilder:
         untangle_field.textChanged.connect(lambda _: self._mark_settings_modified())
         target_layout.addLayout(untangle_layout)
 
-        # Checkboxes
-        self.monochrome_tray_checkbox = QCheckBox("Monochrome tray icon")
-        self.monochrome_tray_checkbox.stateChanged.connect(
-            lambda _: self._mark_settings_modified(requires_restart=False)
-        )
-        self.monochrome_tray_checkbox.stateChanged.connect(
-            self._on_monochrome_tray_changed
+    def _build_checkbox_widgets(self, target_layout: QLayout) -> None:
+        """Build all checkbox widgets.
+
+        Args:
+            target_layout: The layout to add widgets to
+        """
+        # Monochrome tray icon checkbox
+        self.monochrome_tray_checkbox = self._create_checkbox(
+            "Monochrome tray icon",
+            requires_restart=False,
+            extra_callback=self._on_monochrome_tray_changed,
         )
         target_layout.addWidget(self.monochrome_tray_checkbox)
 
         # Indented invert-icon checkbox (only active when monochrome is ON)
-        self.invert_tray_icon_checkbox = QCheckBox("Invert icon colours")
-        self.invert_tray_icon_checkbox.setEnabled(False)
-        self.invert_tray_icon_checkbox.stateChanged.connect(
-            lambda _: self._mark_settings_modified(requires_restart=False)
+        self.invert_tray_icon_checkbox = self._create_checkbox(
+            "Invert icon colours",
+            enabled=False,
+            requires_restart=False,
         )
         invert_layout = QHBoxLayout()
         invert_layout.setContentsMargins(20, 0, 0, 0)  # 20px left indent
         invert_layout.addWidget(self.invert_tray_icon_checkbox)
         target_layout.addLayout(invert_layout)
 
-        self.midi_matrix_checkbox = QCheckBox("Enable MIDI Matrix - EXPERIMENTAL")
-        self.midi_matrix_checkbox.setToolTip(
-            "May require Pipewire 1.5.81 (1.6 RC1) or later"
-        )
-        self.midi_matrix_checkbox.stateChanged.connect(
-            lambda _: self._mark_settings_modified()
+        # Matrix checkboxes
+        self.midi_matrix_checkbox = self._create_checkbox(
+            "Enable MIDI Matrix - EXPERIMENTAL",
+            tooltip="May require Pipewire 1.5.81 (1.6 RC1) or later",
         )
         target_layout.addWidget(self.midi_matrix_checkbox)
 
-        self.audio_matrix_checkbox = QCheckBox("Enable Audio Matrix - EXPERIMENTAL")
-        self.audio_matrix_checkbox.setToolTip(
-            "May require Pipewire 1.5.81 (1.6 RC1) or later"
-        )
-        self.audio_matrix_checkbox.stateChanged.connect(
-            lambda _: self._mark_settings_modified()
+        self.audio_matrix_checkbox = self._create_checkbox(
+            "Enable Audio Matrix - EXPERIMENTAL",
+            tooltip="May require Pipewire 1.5.81 (1.6 RC1) or later",
         )
         target_layout.addWidget(self.audio_matrix_checkbox)
 
-        self.hide_matrix_splitters_checkbox = QCheckBox("Hide splitters in matrices")
-        self.hide_matrix_splitters_checkbox.setToolTip(
-            "When enabled, splitters in Audio and MIDI matrices are hidden.\n"
-            "(Requires application restart)"
-        )
-        self.hide_matrix_splitters_checkbox.stateChanged.connect(
-            lambda _: self._mark_settings_modified()
+        self.hide_matrix_splitters_checkbox = self._create_checkbox(
+            "Hide splitters in matrices",
+            tooltip="When enabled, splitters in Audio and MIDI matrices are hidden.\n"
+            "(Requires application restart)",
         )
         target_layout.addWidget(self.hide_matrix_splitters_checkbox)
 
-        self.straight_lines_checkbox = QCheckBox("Use straight connection lines")
-        self.straight_lines_checkbox.setToolTip(
-            "Use straight lines instead of curves in Audio/MIDI tabs"
-        )
-        self.straight_lines_checkbox.stateChanged.connect(
-            lambda _: self._mark_settings_modified()
+        self.straight_lines_checkbox = self._create_checkbox(
+            "Use straight connection lines",
+            tooltip="Use straight lines instead of curves in Audio/MIDI tabs",
         )
         target_layout.addWidget(self.straight_lines_checkbox)
 
-        self.split_audio_midi_checkbox = QCheckBox("Split Audio/MIDI clients in Graph")
-        self.split_audio_midi_checkbox.setToolTip(
-            "Show clients with both, Audio and MIDI ports as separate nodes in Graph"
-        )
-        self.split_audio_midi_checkbox.stateChanged.connect(
-            lambda _: self._mark_settings_modified()
+        self.split_audio_midi_checkbox = self._create_checkbox(
+            "Split Audio/MIDI clients in Graph",
+            tooltip="Show clients with both, Audio and MIDI ports as separate nodes in Graph",
         )
         target_layout.addWidget(self.split_audio_midi_checkbox)
 
-        self.auto_layout_split_checkbox = QCheckBox(
-            "Split nodes in Auto layout in Graph"
-        )
-        self.auto_layout_split_checkbox.setToolTip(
-            "When ON, Auto layout automatically splits nodes with connections on both sides.\n"
-            "When OFF, Auto layout preserves the current split/unsplit state of nodes."
-        )
-        self.auto_layout_split_checkbox.stateChanged.connect(
-            lambda _: self._mark_settings_modified()
+        self.auto_layout_split_checkbox = self._create_checkbox(
+            "Split nodes in Auto layout in Graph",
+            tooltip="When ON, Auto layout automatically splits nodes with connections on both sides.\n"
+            "When OFF, Auto layout preserves the current split/unsplit state of nodes.",
         )
         target_layout.addWidget(self.auto_layout_split_checkbox)
 
-        self.colored_connections_checkbox = QCheckBox("Coloured connections")
-        self.colored_connections_checkbox.setToolTip(
-            "Use per-client colors for connection lines\n"
-            "in all tabs (Audio, MIDI, and Graph)"
-        )
-        self.colored_connections_checkbox.stateChanged.connect(
-            lambda _: self._mark_settings_modified()
+        self.colored_connections_checkbox = self._create_checkbox(
+            "Coloured connections",
+            tooltip="Use per-client colors for connection lines\n"
+            "in all tabs (Audio, MIDI, and Graph)",
         )
         target_layout.addWidget(self.colored_connections_checkbox)
 
-        self.verbose_output_checkbox = QCheckBox("Verbose output")
-        self.verbose_output_checkbox.setToolTip(
-            "Show debug messages in terminal when running from command line"
-        )
-        self.verbose_output_checkbox.stateChanged.connect(
-            lambda _: self._mark_settings_modified()
+        self.verbose_output_checkbox = self._create_checkbox(
+            "Verbose output",
+            tooltip="Show debug messages in terminal when running from command line",
         )
         target_layout.addWidget(self.verbose_output_checkbox)
 
-        # Colour theme combo box
-        # Special case: colour theme is live (no restart) – see set_forced_theme + requires_restart=False
+    def _build_theme_selector(self, target_layout: QLayout) -> None:
+        """Build the colour theme combo box selector.
+
+        Args:
+            target_layout: The layout to add widgets to
+        """
         theme_layout = QHBoxLayout()
         theme_label = QLabel("Colour theme:")
         theme_layout.addWidget(theme_label)
@@ -256,20 +277,40 @@ class SettingsWidgetBuilder:
         theme_layout.addStretch()
         target_layout.addLayout(theme_layout)
 
-        target_layout.addWidget(self._make_separator())
+    def _create_checkbox(
+        self,
+        label: str,
+        enabled: bool = True,
+        tooltip: Optional[str] = None,
+        requires_restart: bool = True,
+        extra_callback: Optional[callable] = None,
+    ) -> QCheckBox:
+        """
+        Create a checkbox with standard signal connections.
 
-        self.integrate_checkbox = QCheckBox("Integrate Cable and Cables")
-        self.integrate_checkbox.setToolTip(
-            "Show Cable as the first tab in Cables window.\n"
-            "Simplifies tray menu to single 'Open' option.\n"
-            "Requires application restart."
-        )
-        self.integrate_checkbox.stateChanged.connect(
-            lambda _: self._mark_settings_modified()
-        )
-        target_layout.addWidget(self.integrate_checkbox)
+        Args:
+            label: The checkbox label text
+            enabled: Whether the checkbox is initially enabled
+            tooltip: Optional tooltip text
+            requires_restart: Whether changing this setting requires app restart
+            extra_callback: Optional additional callback for state changes
 
-        target_layout.addWidget(self._make_separator())
+        Returns:
+            QCheckBox: The created checkbox widget
+        """
+        checkbox = QCheckBox(label)
+        checkbox.setEnabled(enabled)
+        if tooltip:
+            checkbox.setToolTip(tooltip)
+
+        checkbox.stateChanged.connect(
+            lambda _: self._mark_settings_modified(requires_restart=requires_restart)
+        )
+
+        if extra_callback:
+            checkbox.stateChanged.connect(extra_callback)
+
+        return checkbox
 
     def load_settings(self) -> None:
         """Load all 'Other Settings' values from config into the widgets."""

@@ -3,7 +3,6 @@
 QGraphicsItem representing a JACK client node with ports, folding, splitting, and context menus.
 """
 
-import json
 import logging
 import traceback  # For error reporting in _split_node
 import os
@@ -181,32 +180,32 @@ class NodeItem(QGraphicsItem):
         # Store the configuration object
         self.config = {}
 
-        # Initialize unified state from config manager if needed
-        if config_manager and getattr(config_manager, "node_positions_file", None):
+        # Initialize unified state from config manager cache if needed.
+        # Use the cache (not a direct disk read) so that in-session changes
+        # (e.g. the user disabled unification) are respected for nodes that
+        # are created later in the same session.
+        if config_manager and getattr(config_manager, "_cached_data", None) is not None:
             try:
-                if config_manager.node_positions_file.exists():
-                    with open(config_manager.node_positions_file, "r") as f:
-                        saved_data = json.load(f)
-                    client_config = saved_data.get(client_name, {})
+                client_config = config_manager._cached_data.get(client_name, {})
 
-                    # Load split unified state
-                    if client_config.get(config_manager.IS_INPUT_UNIFIED_KEY, False):
-                        self.is_input_unified = True
-                        self.unified_input_sink_name = client_config.get(
-                            config_manager.UNIFIED_INPUT_SINK_NAME_KEY
-                        )
-                        self.unified_input_module_id = client_config.get(
-                            config_manager.UNIFIED_INPUT_MODULE_ID_KEY
-                        )
+                # Load split unified state
+                if client_config.get(config_manager.IS_INPUT_UNIFIED_KEY, False):
+                    self.is_input_unified = True
+                    self.unified_input_sink_name = client_config.get(
+                        config_manager.UNIFIED_INPUT_SINK_NAME_KEY
+                    )
+                    self.unified_input_module_id = client_config.get(
+                        config_manager.UNIFIED_INPUT_MODULE_ID_KEY
+                    )
 
-                    if client_config.get(config_manager.IS_OUTPUT_UNIFIED_KEY, False):
-                        self.is_output_unified = True
-                        self.unified_output_sink_name = client_config.get(
-                            config_manager.UNIFIED_OUTPUT_SINK_NAME_KEY
-                        )
-                        self.unified_output_module_id = client_config.get(
-                            config_manager.UNIFIED_OUTPUT_MODULE_ID_KEY
-                        )
+                if client_config.get(config_manager.IS_OUTPUT_UNIFIED_KEY, False):
+                    self.is_output_unified = True
+                    self.unified_output_sink_name = client_config.get(
+                        config_manager.UNIFIED_OUTPUT_SINK_NAME_KEY
+                    )
+                    self.unified_output_module_id = client_config.get(
+                        config_manager.UNIFIED_OUTPUT_MODULE_ID_KEY
+                    )
 
             except Exception as e:
                 # Silently fail, unified state will be set by apply_configuration later
@@ -508,21 +507,36 @@ class NodeItem(QGraphicsItem):
             # Rebuild per-pair bulk areas after port removal
             self._rebuild_bulk_areas()
         
-            # If input unification is active but no input ports remain, temporarily unload the sink
+            # If input unification is active but no input ports remain, temporarily
+            # unload the sink — unless another node in the same client family still
+            # needs it.  The sink must survive until the last family member is gone.
             if port_item.is_input and not self.input_ports:
                 if self.is_input_unified:
-                    logger.info(
-                        f"No input ports remaining for {self.client_name}, temporarily unloading unified input sink."
-                    )
-                    self.unify_handler._unload_unified_sink(is_input=True)
+                    if self.unify_handler.has_other_family_member(require_ports_input=True):
+                        logger.info(
+                            f"No input ports remaining for {self.client_name}, but sibling "
+                            f"family nodes still use the unified input sink. Keeping it alive."
+                        )
+                    else:
+                        logger.info(
+                            f"No input ports remaining for {self.client_name}, temporarily unloading unified input sink."
+                        )
+                        self.unify_handler._unload_unified_sink(is_input=True)
         
-            # If output unification is active but no output ports remain, temporarily unload the sink
+            # If output unification is active but no output ports remain, temporarily
+            # unload the sink — unless a sibling family node still needs it.
             elif not port_item.is_input and not self.output_ports:
                 if self.is_output_unified:
-                    logger.info(
-                        f"No output ports remaining for {self.client_name}, temporarily unloading unified output sink."
-                    )
-                    self.unify_handler._unload_unified_sink(is_input=False)
+                    if self.unify_handler.has_other_family_member(require_ports_input=False):
+                        logger.info(
+                            f"No output ports remaining for {self.client_name}, but sibling "
+                            f"family nodes still use the unified output sink. Keeping it alive."
+                        )
+                    else:
+                        logger.info(
+                            f"No output ports remaining for {self.client_name}, temporarily unloading unified output sink."
+                        )
+                        self.unify_handler._unload_unified_sink(is_input=False)
 
             # Only try to lay out ports if we're in a scene
             if self.scene():
@@ -686,163 +700,6 @@ class NodeItem(QGraphicsItem):
                 logger.error(
                     f"Error in _disconnect_all_connections for {client_to_disconnect}: {e}"
                 )
-
-    # _disconnect_all_inputs and _disconnect_all_outputs are no longer needed.
-
-    # --- Context Menu Helper Methods ---
-    def _hide_node(self) -> None:
-        """Hides this node or part based on the NodeVisibilityManager settings."""
-        current_scene = self.scene()
-        node_vis_mgr = (
-            getattr(current_scene, "node_visibility_manager", None)
-            if current_scene
-            else None
-        )
-        if not node_vis_mgr:
-            logger.warning("Cannot hide node: NodeVisibilityManager not available")
-            return
-
-        # Determine the client name to hide
-        client_name = None
-
-        # For split parts, use the original client name from origin node
-        if self.is_split_part and self.split_origin_node:
-            # Get the original name from the origin node
-            client_name = self.split_origin_node.client_name
-        # For split origin, use its own client name
-        elif self.is_split_origin:
-            client_name = self.client_name
-        # For normal nodes, use the client name
-        else:
-            client_name = self.client_name
-
-        # Use original_client_name if set (for any node type)
-        if self.original_client_name:
-            client_name = self.original_client_name
-
-        # Determine if this is a MIDI node using the is_midi property
-        # For split parts, check the origin node which covers all parts
-        if self.is_split_part and self.split_origin_node:
-            is_midi = self.split_origin_node.is_midi
-        else:
-            is_midi = self.is_midi
-
-        if not client_name:
-            logger.warning("Cannot hide node: Unable to determine client name")
-            return
-
-        # Get a parent widget for the dialog (the view)
-        parent_widget = None
-        if current_scene.views():
-            parent_widget = current_scene.views()[0]
-
-        # Check if we should show the confirmation dialog
-        show_dialog = True
-        app_config = None
-
-        # Try to get the global config from the connection_manager
-        connection_manager = getattr(current_scene, "connection_manager", None)
-        if connection_manager:
-            config_manager = getattr(connection_manager, "config_manager", None)
-            if config_manager:
-                # Use the application-level config_manager which has get_bool method
-                app_config = current_scene.connection_manager.config_manager
-                show_dialog = app_config.get_bool(
-                    keys.SHOW_HIDE_NODE_CONFIRMATION, default=True
-                )
-
-        # Determine what to hide based on node type
-        hide_inputs = False
-        hide_outputs = False
-
-        if self.is_split_part:
-            # For split parts, only hide the specific part (input or output)
-            if bool(self.input_ports) and not bool(self.output_ports):
-                # This is the input part
-                hide_inputs = True
-                message_type = "input" + (" MIDI" if is_midi else " audio")
-            elif bool(self.output_ports) and not bool(self.input_ports):
-                # This is the output part
-                hide_outputs = True
-                message_type = "output" + (" MIDI" if is_midi else " audio")
-            else:
-                # This should not happen, but handle it anyway
-                hide_inputs = True
-                hide_outputs = True
-                message_type = "MIDI" if is_midi else "audio"
-        else:
-            # For regular nodes or split origins, hide both input and output
-            hide_inputs = True
-            hide_outputs = True
-            message_type = "MIDI" if is_midi else "audio"
-
-        if show_dialog and parent_widget:
-            # Build custom message based on what's being hidden
-            if hide_inputs and hide_outputs:
-                message = f"Hide {client_name} {message_type} node?"
-            elif hide_inputs:
-                message = f"Hide {client_name} input ports?"
-            elif hide_outputs:
-                message = f"Hide {client_name} output ports?"
-            else:
-                message = f"Hide {client_name}?"  # Fallback
-
-            from cable_core.dialogs import show_hide_node_confirmation_dialog
-
-            result = show_hide_node_confirmation_dialog(
-                parent=parent_widget,
-                node_name=client_name,
-                message_type=message_type,
-                config_manager=app_config,
-                custom_message=message,
-            )
-            if not result:
-                return
-
-        # When hiding both inputs and outputs (default Hide action), use hide_client to fully hide
-        if hide_inputs and hide_outputs:
-            current_scene.node_visibility_manager.hide_client(
-                client_name, is_midi, "graph"
-            )
-        else:
-            # Only update specific directions if hiding individual parts
-            if is_midi:
-                if hide_inputs:
-                    current_scene.node_visibility_manager.graph_midi_input_visibility[
-                        client_name
-                    ] = False
-                if hide_outputs:
-                    current_scene.node_visibility_manager.graph_midi_output_visibility[
-                        client_name
-                    ] = False
-            else:
-                if hide_inputs:
-                    current_scene.node_visibility_manager.graph_audio_input_visibility[
-                        client_name
-                    ] = False
-                if hide_outputs:
-                    current_scene.node_visibility_manager.graph_audio_output_visibility[
-                        client_name
-                    ] = False
-
-            # Save and apply the updated settings for partial hide
-            current_scene.node_visibility_manager.save_visibility_settings()
-
-        # When hiding a node part, also hide its connections if this is a split part
-        if self.is_split_part:
-            # For split parts, hide connections before applying visibility settings
-            # which will eventually hide the node
-            connection_mgr = getattr(current_scene, "connection_mgr", None)
-            if connection_mgr:
-                connection_mgr.update_node_connections_visibility(self, False)
-
-        # Apply the changes which will hide the node(s)
-        current_scene.node_visibility_manager.apply_visibility_settings()
-
-        # Do a full refresh of all connection visibility to ensure consistency
-        connection_mgr = getattr(current_scene, "connection_mgr", None)
-        if connection_mgr:
-            connection_mgr.refresh_all_connection_visibility()
 
     def _build_context_menu_for_split_part(
         self, menu: QMenu, disconnect_is_enabled: bool
@@ -1196,6 +1053,11 @@ class NodeItem(QGraphicsItem):
         ):
             self.unify_handler.apply_preset(config)
             self.unify_handler.ensure_sink_exists()
+        else:
+            # Adopt any family-level unification.  This is what makes a newly
+            # appearing sibling node (e.g. "Application-119" after "Application"
+            # was unified) automatically connect to the shared unified sink.
+            self.unify_handler.apply_family_unification()
 
         self._internal_state_change_in_progress = False
 

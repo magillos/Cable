@@ -4,7 +4,7 @@ Graph tab main window with toolbar, search, and layout controls.
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                              QLineEdit, QSpacerItem, QSizePolicy, QMessageBox, QToolButton, QMenu, QApplication, QCheckBox)
 from PyQt6.QtCore import pyqtSlot, QSize, Qt, QTimer, QEvent # Added QTimer for debounce
-from PyQt6.QtGui import QAction, QKeySequence, QIcon, QActionGroup # Added QActionGroup for radio buttons
+from PyQt6.QtGui import QAction, QActionGroup, QKeySequence, QIcon # Added for shortcuts and icons
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import logging
@@ -162,6 +162,10 @@ class MainWindow(QMainWindow):
         self.untangle_menu = QMenu(self)
         self.untangle_action.setMenu(self.untangle_menu)
         self.untangle_menu.aboutToShow.connect(self._populate_untangle_menu)
+
+        # Group for radio-button (exclusive) behaviour in the layout menu
+        self.untangle_layout_group = QActionGroup(self)
+        self.untangle_layout_group.setExclusive(True)
         
         self.untangle_button = create_action_button(
             self,
@@ -469,9 +473,6 @@ class MainWindow(QMainWindow):
         """Populates the untangle layout menu with available layouts."""
         self.untangle_menu.clear()
         
-        layout_group = QActionGroup(self.untangle_menu)
-        layout_group.setExclusive(True)
-        
         for value in self.untangle_values:
             if value == ORIGINAL_LAYOUT:
                 label = "Autosaved layout"
@@ -482,21 +483,25 @@ class MainWindow(QMainWindow):
             else:
                 label = f"{value} nodes per row"
             
-            action = QAction(label, self.untangle_menu)
-            action.setCheckable(True)
-            action.setChecked(value == self.current_untangle_setting and self.untangle_button_clicked)
+            action = QAction(label, self)
             
             # Grey out Auto layout when graphviz is not installed
             if value == AUTO_LAYOUT and not _graphviz_available:
                 action.setEnabled(False)
                 action.setToolTip("Requires python-graphviz and graphviz")
             
+            # Indicate active layout with a radio button (consistent with presets menu)
+            action.setCheckable(True)
+            action.setChecked(
+                value == self.current_untangle_setting and self.untangle_button_clicked
+            )
+            
             # Store the value in the action for retrieval when triggered
             action.setData(value)
             action.triggered.connect(lambda checked, v=value: self._apply_untangle_layout(v))
             
             self.untangle_menu.addAction(action)
-            layout_group.addAction(action)
+            self.untangle_layout_group.addAction(action)
     
     def _update_persistent_layout_button_state(self) -> None:
         """Updates the enabled state of the 'Persistent layout' button based on current layout."""
@@ -834,6 +839,32 @@ class MainWindow(QMainWindow):
             self.graph_disconnect_action.setEnabled(can_disconnect)
 
 
+    def _connect_port_pairs(self, output_ports: List[PortItem], input_ports: List[PortItem]) -> int:
+        """Connect each selected output port to each selected input port."""
+        connections_made = 0
+        for output_port in output_ports:
+            for input_port in input_ports:
+                if output_port == input_port:
+                    logger.debug(
+                        f"Skipping self-connection for port: {output_port.port_name}"
+                    )
+                    continue
+
+                logger.debug(
+                    f"Attempting to connect: {output_port.port_name} -> {input_port.port_name}"
+                )
+                if output_port.is_midi:
+                    connected = self.scene.jack_connection_handler.make_midi_connection(
+                        output_port.port_name, input_port.port_name
+                    )
+                else:
+                    connected = self.scene.jack_connection_handler.make_connection(
+                        output_port.port_name, input_port.port_name
+                    )
+                if connected:
+                    connections_made += 1
+        return connections_made
+
     @pyqtSlot()
     def handle_connect_action(self) -> None:
         selected_items = self.scene.selectedItems()
@@ -914,36 +945,14 @@ class MainWindow(QMainWindow):
                                     connections_made += 1
         
         # Handle port-to-port connections (only if not bulk-to-port or port-to-bulk)
-        elif len(selected_output_ports) == 1 and len(selected_input_ports) >= 1:
-            output_port_item = selected_output_ports[0]
-            for input_port_item in selected_input_ports:
-                # Prevent connecting a port to itself
-                if output_port_item == input_port_item:
-                    logger.debug(f"Skipping self-connection for port: {output_port_item.port_name}")
-                    continue
-                logger.debug(f"Attempting to connect: {output_port_item.port_name} -> {input_port_item.port_name}")
-                # Use JackConnectionHandler
-                if output_port_item.is_midi: # Assuming PortItem has is_midi
-                    if self.scene.jack_connection_handler.make_midi_connection(output_port_item.port_name, input_port_item.port_name):
-                        connections_made +=1
-                else:
-                    if self.scene.jack_connection_handler.make_connection(output_port_item.port_name, input_port_item.port_name):
-                        connections_made +=1
-        elif len(selected_input_ports) == 1 and len(selected_output_ports) >= 1:
-            input_port_item = selected_input_ports[0]
-            for output_port_item in selected_output_ports:
-                 # Prevent connecting a port to itself
-                if output_port_item == input_port_item:
-                    logger.debug(f"Skipping self-connection for port: {output_port_item.port_name}")
-                    continue
-                logger.debug(f"Attempting to connect: {output_port_item.port_name} -> {input_port_item.port_name}")
-                # Use JackConnectionHandler
-                if output_port_item.is_midi: # Assuming PortItem has is_midi
-                    if self.scene.jack_connection_handler.make_midi_connection(output_port_item.port_name, input_port_item.port_name):
-                        connections_made += 1
-                else:
-                    if self.scene.jack_connection_handler.make_connection(output_port_item.port_name, input_port_item.port_name):
-                        connections_made += 1
+        elif (
+            len(selected_output_ports) == 1 and len(selected_input_ports) >= 1
+        ) or (
+            len(selected_input_ports) == 1 and len(selected_output_ports) >= 1
+        ):
+            connections_made = self._connect_port_pairs(
+                selected_output_ports, selected_input_ports
+            )
         
         # Handle bulk area connections
         elif len(selected_input_bulk_areas) >= 1 and len(selected_output_bulk_areas) >= 1:
@@ -983,6 +992,25 @@ class MainWindow(QMainWindow):
                      self.statusBar().showMessage("No new connections were made (possibly already connected or error).", 3000)
         # self.update_graph_connection_buttons_state() # No longer needed here, scene signal will trigger it
         self._update_graph_undo_redo_buttons_state() # Update undo/redo buttons
+
+    def _attempt_disconnect(self, source_port, dest_port, *, label: str) -> int:
+        """Try to break a single source_port -> dest_port JACK connection.
+
+        Returns 1 if the connection was tracked on the scene and the
+        corresponding JACK break call succeeded, 0 otherwise. Shared
+        inner body of :meth:`handle_disconnect_action` for the port→port,
+        bulk→port, port→bulk and bulk→bulk disconnection paths.
+        """
+        if (source_port.port_name, dest_port.port_name) not in self.scene.connections:
+            return 0
+        logger.debug(f"Attempting {label}: {source_port.port_name} -> {dest_port.port_name}")
+        if source_port.is_midi:
+            if self.scene.jack_connection_handler.break_midi_connection(source_port.port_name, dest_port.port_name):
+                return 1
+            return 0
+        if self.scene.jack_connection_handler.break_connection(source_port.port_name, dest_port.port_name):
+            return 1
+        return 0
 
 
     @pyqtSlot()
@@ -1030,16 +1058,10 @@ class MainWindow(QMainWindow):
             if selected_input_ports and selected_output_ports: # Ensure both lists have items
                 for output_port_item in selected_output_ports:
                     for input_port_item in selected_input_ports:
-                        connection_key = (output_port_item.port_name, input_port_item.port_name)
-                        if connection_key in self.scene.connections:
-                            logger.debug(f"Attempting to disconnect via PortItems: {output_port_item.port_name} -> {input_port_item.port_name}")
-                            # Use JackConnectionHandler
-                            if output_port_item.is_midi: # Assuming PortItem has is_midi
-                                if self.scene.jack_connection_handler.break_midi_connection(output_port_item.port_name, input_port_item.port_name):
-                                    disconnections_made += 1
-                            else:
-                                if self.scene.jack_connection_handler.break_connection(output_port_item.port_name, input_port_item.port_name):
-                                    disconnections_made += 1
+                        disconnections_made += self._attempt_disconnect(
+                            output_port_item, input_port_item,
+                            label="to disconnect via PortItems",
+                        )
         
         # Handle bulk-to-port disconnections (OUT bulk + IN port)
         elif len(selected_output_bulk_areas) == 1 and len(selected_input_ports) == 1:
@@ -1052,14 +1074,10 @@ class MainWindow(QMainWindow):
             if source_ports:
                 # Disconnect all source ports from the single target port
                 for s_port in source_ports:
-                    if (s_port.port_name, target_port.port_name) in self.scene.connections:
-                        logger.debug(f"Attempting bulk-to-port disconnection: {s_port.port_name} -> {target_port.port_name}")
-                        if s_port.is_midi:
-                            if self.scene.jack_connection_handler.break_midi_connection(s_port.port_name, target_port.port_name):
-                                disconnections_made += 1
-                        else:
-                            if self.scene.jack_connection_handler.break_connection(s_port.port_name, target_port.port_name):
-                                disconnections_made += 1
+                    disconnections_made += self._attempt_disconnect(
+                        s_port, target_port,
+                        label="bulk-to-port disconnection",
+                    )
         
         # Handle port-to-bulk disconnections (OUT port + IN bulk)
         elif len(selected_output_ports) == 1 and len(selected_input_bulk_areas) == 1:
@@ -1072,14 +1090,10 @@ class MainWindow(QMainWindow):
             if target_ports:
                 # Disconnect the single source port from all target ports
                 for t_port in target_ports:
-                    if (source_port.port_name, t_port.port_name) in self.scene.connections:
-                        logger.debug(f"Attempting port-to-bulk disconnection: {source_port.port_name} -> {t_port.port_name}")
-                        if source_port.is_midi:
-                            if self.scene.jack_connection_handler.break_midi_connection(source_port.port_name, t_port.port_name):
-                                disconnections_made += 1
-                        else:
-                            if self.scene.jack_connection_handler.break_connection(source_port.port_name, t_port.port_name):
-                                disconnections_made += 1
+                    disconnections_made += self._attempt_disconnect(
+                        source_port, t_port,
+                        label="port-to-bulk disconnection",
+                    )
         
         # Handle bulk area disconnections
         elif len(selected_input_bulk_areas) >= 1 and len(selected_output_bulk_areas) >= 1:
@@ -1102,15 +1116,10 @@ class MainWindow(QMainWindow):
                     for i in range(min(len(in_ports), len(out_ports))):
                         output_port = out_ports[i]
                         input_port = in_ports[i]
-                        connection_key = (output_port.port_name, input_port.port_name)
-                        if connection_key in self.scene.connections:
-                            logger.debug(f"Attempting bulk disconnection: {output_port.port_name} -> {input_port.port_name}")
-                            if output_port.is_midi:
-                                if self.scene.jack_connection_handler.break_midi_connection(output_port.port_name, input_port.port_name):
-                                    disconnections_made += 1
-                            else:
-                                if self.scene.jack_connection_handler.break_connection(output_port.port_name, input_port.port_name):
-                                    disconnections_made += 1
+                        disconnections_made += self._attempt_disconnect(
+                            output_port, input_port,
+                            label="bulk disconnection",
+                        )
 
         if disconnections_made > 0:
             if self.statusBar() is not None:

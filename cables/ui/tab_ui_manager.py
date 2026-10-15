@@ -57,6 +57,22 @@ class TabUIManager:
     in the application, including the port tabs, pw-top tab, and latency test tab.
     """
 
+    def _create_undo_redo_buttons(
+        self, button_widget: QWidget, manager: "JackConnectionManager"
+    ):
+        """Create the shared per-tab undo/redo action buttons."""
+        undo_button = create_action_button(
+            parent_widget=button_widget,
+            action=manager.action_manager.global_undo_action,
+            tooltip="Undo last connection <span style='color:grey'>Ctrl+Z</span>",
+        )
+        redo_button = create_action_button(
+            parent_widget=button_widget,
+            action=manager.action_manager.global_redo_action,
+            tooltip="Redo last connection <span style='color:grey'>Shift+Ctrl+Z/Ctrl+Y</span>",
+        )
+        return undo_button, redo_button
+
     def setup_port_tab(
         self,
         manager: "JackConnectionManager",
@@ -106,16 +122,7 @@ class TabUIManager:
         )
 
         # Create per-tab undo/redo buttons
-        undo_button = create_action_button(
-            parent_widget=button_widget,
-            action=manager.action_manager.global_undo_action,
-            tooltip="Undo last connection <span style='color:grey'>Ctrl+Z</span>",
-        )
-        redo_button = create_action_button(
-            parent_widget=button_widget,
-            action=manager.action_manager.global_redo_action,
-            tooltip="Redo last connection <span style='color:grey'>Shift+Ctrl+Z/Ctrl+Y</span>",
-        )
+        undo_button, redo_button = self._create_undo_redo_buttons(button_widget, manager)
 
         # Add buttons to layout with stretches for centering
         button_layout.addStretch()
@@ -172,7 +179,6 @@ class TabUIManager:
 
         connection_scene = QGraphicsScene()
         connection_view = ConnectionView(connection_scene)
-        connection_view.connect_to_jack_signals(manager.client)
 
         # Apply styles
         input_tree.setStyleSheet(manager.ui_manager.list_stylesheet())
@@ -223,16 +229,11 @@ class TabUIManager:
         )
         config_key = f"{port_type}_splitter_sizes"
         saved_sizes = manager.config_manager.get_str(config_key, "")
+        sizes = self._parse_splitter_sizes(saved_sizes)
 
-        if saved_sizes:
-            try:
-                sizes = [int(s) for s in saved_sizes.split(",")]
-                if len(sizes) == 3:
-                    splitter.setSizes(sizes)
-            except ValueError:
-                logger.debug("ValueError suppressed")
-
-        if not saved_sizes or len(saved_sizes.split(",")) != 3:
+        if sizes:
+            splitter.setSizes(sizes)
+        else:
             # Default: equal space for trees, configured width for middle
             total_width = 1200  # Approximate initial width
             tree_width = (total_width - connection_view_initial_width) // 2
@@ -268,6 +269,19 @@ class TabUIManager:
         # Connect tree signals to trigger connection view refresh on scroll/expand/collapse
         self._connect_tree_refresh_signals(input_tree, connection_view)
         self._connect_tree_refresh_signals(output_tree, connection_view)
+
+    @staticmethod
+    def _parse_splitter_sizes(saved_sizes: str) -> Optional[List[int]]:
+        """Parse three positive splitter sizes from persisted configuration."""
+        if not saved_sizes:
+            return None
+        try:
+            sizes = [int(value.strip()) for value in saved_sizes.split(",")]
+        except ValueError:
+            return None
+        if len(sizes) != 3 or any(size < 0 for size in sizes):
+            return None
+        return sizes
 
     def _connect_tree_refresh_signals(
         self, tree: "PortTreeWidget", connection_view: "ConnectionView"
@@ -338,16 +352,7 @@ class TabUIManager:
         )
 
         # Add Undo/Redo buttons
-        undo_button = create_action_button(
-            parent_widget=button_widget,
-            action=manager.action_manager.global_undo_action,
-            tooltip="Undo last connection <span style='color:grey'>Ctrl+Z</span>",
-        )
-        redo_button = create_action_button(
-            parent_widget=button_widget,
-            action=manager.action_manager.global_redo_action,
-            tooltip="Redo last connection <span style='color:grey'>Shift+Ctrl+Z/Ctrl+Y</span>",
-        )
+        undo_button, redo_button = self._create_undo_redo_buttons(button_widget, manager)
 
         # Add zoom buttons
         zoom_in_button = QPushButton("+")

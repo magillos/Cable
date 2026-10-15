@@ -8,8 +8,10 @@ Each module should use: logger = logging.getLogger(__name__)
 import logging
 import os
 import sys
-import configparser
 from typing import List
+
+# Load the verbose setting from the canonical module to avoid DRY duplication
+from .verbose import _load_verbose_setting
 
 
 class JackErrorFilter:
@@ -99,20 +101,6 @@ def _install_jack_error_filter() -> None:
     """Install the JackErrorFilter on stderr if not already installed."""
     if not isinstance(sys.stderr, JackErrorFilter):
         sys.stderr = JackErrorFilter(sys.stderr)
-
-
-def _load_verbose_setting() -> bool:
-    """Load verbose setting from config file to determine log level."""
-    config_file = os.path.expanduser("~/.config/cable/config.ini")
-    if os.path.exists(config_file):
-        try:
-            config = configparser.ConfigParser()
-            config.read(config_file, encoding='utf-8')
-            if config.has_option('DEFAULT', 'verbose_output'):
-                return config.getboolean('DEFAULT', 'verbose_output')
-        except (configparser.Error, ValueError):
-            pass
-    return False  # Default to verbose off
 
 
 def setup_logging(verbose_override: int = 0) -> None:

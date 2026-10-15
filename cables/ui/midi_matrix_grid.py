@@ -1397,19 +1397,8 @@ class _OutputLabelsWidget(QWidget):
                     )
 
                     # Draw port name on every row
-                    painter.setFont(current_port_font)
-                    painter.setPen(
-                        QPen(
-                            self.parent_matrix.model.client_colors.get(
-                                client_name, QColor(Qt.GlobalColor.black)
-                            )
-                        )
-                    )
-                    port_rect = QRect(0, int(port_y), self.width() - 4, port_text_h)
-                    painter.drawText(
-                        port_rect,
-                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-                        port_text,
+                    self._draw_right_aligned_port_label(
+                        painter, client_name, port_text, port_y, port_text_h, current_port_font
                     )
                 else:
                     # This is a subsequent port, draw only the port name, centered and shifted.
@@ -1417,24 +1406,42 @@ class _OutputLabelsWidget(QWidget):
                     port_y = row_y + (row_height - port_text_h) / 2 - 3  # 3px up
 
                     # Draw port name
-                    painter.setFont(current_port_font)
-                    painter.setPen(
-                        QPen(
-                            self.parent_matrix.model.client_colors.get(
-                                client_name, QColor(Qt.GlobalColor.black)
-                            )
-                        )
-                    )
-                    port_rect = QRect(0, int(port_y), self.width() - 4, port_text_h)
-                    painter.drawText(
-                        port_rect,
-                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-                        port_text,
+                    self._draw_right_aligned_port_label(
+                        painter, client_name, port_text, port_y, port_text_h, current_port_font
                     )
 
                 painter.restore()
 
             idx += count
+
+    def _draw_right_aligned_port_label(
+        self,
+        painter: QPainter,
+        client_name: str,
+        port_text: str,
+        port_y: float,
+        port_text_h: int,
+        port_font,
+    ) -> None:
+        """Draw a right-aligned port label on the output labels widget.
+
+        Shared by the first-port and subsequent-port branches of the output
+        labels paint routine.
+        """
+        painter.setFont(port_font)
+        painter.setPen(
+            QPen(
+                self.parent_matrix.model.client_colors.get(
+                    client_name, QColor(Qt.GlobalColor.black)
+                )
+            )
+        )
+        port_rect = QRect(0, int(port_y), self.width() - 4, port_text_h)
+        painter.drawText(
+            port_rect,
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+            port_text,
+        )
 
     def _draw_client_separators(self, painter: QPainter) -> None:
         """Draw dashed line separators around each output port entry."""
@@ -1561,6 +1568,37 @@ class _InputLabelsWidget(QWidget):
         self.sync_with_grid()
         self.update()
 
+    def _draw_left_aligned_input_label(
+        self,
+        painter: QPainter,
+        client_name: str,
+        display_name: str,
+        port_text_rect: QRect,
+        port_font,
+        is_hovered: bool,
+    ) -> None:
+        """Draw a left-aligned input label with the client colour and hover bolding.
+
+        Shared by the client+port and port-only branches of the input labels
+        paint routine.
+        """
+        current_port_font = QFont(port_font)
+        if is_hovered:
+            current_port_font.setBold(True)
+        painter.setFont(current_port_font)
+        painter.setPen(
+            QPen(
+                self.parent_matrix.model.client_colors.get(
+                    client_name, QColor(Qt.GlobalColor.black)
+                )
+            )
+        )
+        painter.drawText(
+            port_text_rect,
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+            display_name,
+        )
+
     def paintEvent(self, event: Optional["QEvent"]) -> None:
         """Paint the input labels."""
         painter = QPainter(self)
@@ -1663,27 +1701,14 @@ class _InputLabelsWidget(QWidget):
                     )
 
                     # Port name below client name
-                    current_port_font = QFont(port_font)
-                    if is_hovered:
-                        current_port_font.setBold(True)
-                    painter.setFont(current_port_font)
-                    painter.setPen(
-                        QPen(
-                            self.parent_matrix.model.client_colors.get(
-                                client_name, QColor(Qt.GlobalColor.black)
-                            )
-                        )
-                    )
-
                     port_y_start = (
                         client_text_rect.height()
                         + self.parent_matrix.style_config.input_label_port_y_offset
                     )
-                    port_text_rect = QRect(0, port_y_start, 500, 100)
-                    painter.drawText(
-                        port_text_rect,
-                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
-                        display_name,
+                    self._draw_left_aligned_input_label(
+                        painter, client_name, display_name,
+                        QRect(0, port_y_start, 500, 100),
+                        port_font, is_hovered,
                     )
                 else:
                     # Port-only label
@@ -1695,23 +1720,10 @@ class _InputLabelsWidget(QWidget):
                     painter.translate(x_pos, label_start_y)
                     painter.rotate(self.parent_matrix.style_config.input_label_rotation)
 
-                    current_port_font = QFont(port_font)
-                    if is_hovered:
-                        current_port_font.setBold(True)
-                    painter.setFont(current_port_font)
-                    painter.setPen(
-                        QPen(
-                            self.parent_matrix.model.client_colors.get(
-                                client_name, QColor(Qt.GlobalColor.black)
-                            )
-                        )
-                    )
-
-                    port_text_rect = QRect(5, 0, 500, 100)
-                    painter.drawText(
-                        port_text_rect,
-                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
-                        display_name,
+                    self._draw_left_aligned_input_label(
+                        painter, client_name, display_name,
+                        QRect(5, 0, 500, 100),
+                        port_font, is_hovered,
                     )
 
                 painter.restore()

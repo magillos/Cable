@@ -215,6 +215,10 @@ class EmbeddedSettingsPanel(QWidget):
         if state == Qt.CheckState.Checked.value:
             self.tray_checkbox.setChecked(True)
 
+    def _sync_app_checkbox(self, state: int, attr: str) -> None:
+        """Mirror a Qt.CheckState into self.app.<attr> via setChecked."""
+        getattr(self.app, attr).setChecked(state == Qt.CheckState.Checked.value)
+
     def _on_remember_changed(self, state: int) -> None:
         self.app.remember_settings_checkbox.setChecked(
             state == Qt.CheckState.Checked.value
@@ -222,19 +226,13 @@ class EmbeddedSettingsPanel(QWidget):
         self.restore_minimized_checkbox.setEnabled(state == Qt.CheckState.Checked.value)
 
     def _on_restore_minimized_changed(self, state: int) -> None:
-        self.app.restore_only_minimized_checkbox.setChecked(
-            state == Qt.CheckState.Checked.value
-        )
+        self._sync_app_checkbox(state, "restore_only_minimized_checkbox")
 
     def _on_apply_immediately_changed(self, state: int) -> None:
-        self.app.apply_immediately_checkbox.setChecked(
-            state == Qt.CheckState.Checked.value
-        )
+        self._sync_app_checkbox(state, "apply_immediately_checkbox")
 
     def _on_show_confirmation_changed(self, state: int) -> None:
-        self.app.show_confirmation_checkbox.setChecked(
-            state == Qt.CheckState.Checked.value
-        )
+        self._sync_app_checkbox(state, "show_confirmation_checkbox")
 
     def _on_check_updates_changed(self, state: int) -> None:
         checked = state == Qt.CheckState.Checked.value

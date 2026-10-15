@@ -43,17 +43,7 @@ class ThemeManager(QObject):
         
         # Capture native system palette/style exactly once, before any forced override.
         # This enables runtime restore when switching back to "Automatic".
-        app = QApplication.instance()
-        if app is not None and self._native_palette is None:
-            logger.info("Capturing native QPalette...")
-            self._native_palette = QPalette(app.palette())
-            try:
-                logger.info("Capturing native style name...")
-                self._native_style = app.style().objectName()
-                logger.info(f"Captured native style name: {self._native_style}")
-            except Exception as e:
-                logger.error(f"Error capturing native style name: {e}")
-                self._native_style = None
+        self._capture_native_palette()
 
         self._forced_theme = forced_theme_val
 
@@ -294,55 +284,127 @@ class ThemeManager(QObject):
         """
         is_dark = self.is_dark_mode()
 
-        # If a QApplication instance is running, dynamically extract the colors
-        # from its QPalette to ensure seamless system/style integration.
+        colour_from_palette = self._lookup_color_from_palette(token, is_dark)
+        if colour_from_palette is not None:
+            return colour_from_palette
+
+        return self._fallback_color(token, is_dark)
+
+    def _lookup_color_from_palette(self, token: str, is_dark: bool) -> Optional[QColor]:
+        """Resolve *token* against the active QApplication QPalette.
+
+        Returns the QColor if a matching palette role exists, otherwise None
+        to signal that the caller should fall back to the hardcoded tokens.
+        """
         from PyQt6.QtWidgets import QApplication
         app = QApplication.instance()
-        if app is not None:
-            palette = app.palette()
-            if token == "background":
-                return palette.color(QPalette.ColorRole.Base)
-            elif token == "text":
-                return palette.color(QPalette.ColorRole.Text)
-            elif token == "highlight":
-                return palette.color(QPalette.ColorRole.Highlight)
-            elif token == "button":
-                return palette.color(QPalette.ColorRole.Button)
-            elif token == "connection":
-                return palette.color(QPalette.ColorRole.Link)
-            elif token == "drag_highlight":
-                alt = palette.color(QPalette.ColorRole.AlternateBase)
-                if alt.isValid():
-                    return alt
-            elif token == "matrix_disconnected":
-                return palette.color(QPalette.ColorRole.Window)
-            elif token == "matrix_self_connection":
-                return palette.color(QPalette.ColorRole.AlternateBase)
-            elif token == "matrix_hover_highlight":
-                highlight = palette.color(QPalette.ColorRole.Highlight)
-                if is_dark:
-                    return QColor(highlight.red(), highlight.green(), highlight.blue(), 60)
-                else:
-                    return QColor(highlight.red(), highlight.green(), highlight.blue(), 40)
+        if app is None:
+            return None
+        palette = app.palette()
 
-        # Fallback values meticulously tuned to match KDE Plasma 6 Breeze Light & Dark
-        tokens: Dict[str, QColor] = {
+        if token == "background":
+            return palette.color(QPalette.ColorRole.Base)
+        if token == "text":
+            return palette.color(QPalette.ColorRole.Text)
+        if token == "highlight":
+            return palette.color(QPalette.ColorRole.Highlight)
+        if token == "button":
+            return palette.color(QPalette.ColorRole.Button)
+        if token == "connection":
+            return palette.color(QPalette.ColorRole.Link)
+        if token == "drag_highlight":
+            alt = palette.color(QPalette.ColorRole.AlternateBase)
+            if alt.isValid():
+                return alt
+            return None  # fall through to fallback dict when palette role is invalid
+        if token == "matrix_disconnected":
+            return palette.color(QPalette.ColorRole.Window)
+        if token == "matrix_self_connection":
+            return palette.color(QPalette.ColorRole.AlternateBase)
+        if token == "matrix_hover_highlight":
+            highlight = palette.color(QPalette.ColorRole.Highlight)
+            alpha = 60 if is_dark else 40
+            return QColor(highlight.red(), highlight.green(), highlight.blue(), alpha)
+
+        return None
+
+    def _fallback_color(self, token: str, is_dark: bool) -> QColor:
+        """Return the hardcoded KDE Plasma 6 Breeze Light/Dark fallback colour
+        for *token*, or a neutral grey when the token is unknown.
+        """
+        return self._fallback_tokens(is_dark).get(token, QColor(128, 128, 128))
+
+    def _fallback_tokens(self, is_dark: bool) -> Dict[str, QColor]:
+        """Return the hardcoded KDE Plasma 6 Breeze Light/Dark fallback token map.
+
+        Fallback values meticulously tuned to match KDE Plasma 6 Breeze Light & Dark.
+        """
+        if is_dark:
+            return {
+                # --- General Cables UI Colors ---
+                "background": QColor(27, 30, 32),
+                "text": QColor(252, 252, 252),
+                "highlight": QColor(61, 174, 233),
+                "button": QColor(49, 54, 59),
+                "connection": QColor(29, 153, 243),
+                "auto_highlight": QColor(246, 116, 0),
+                "drag_highlight": QColor(41, 44, 48),
+
+                # --- Matrix Custom Grid Square Colors ---
+                "matrix_disconnected": QColor(32, 35, 38),
+                "matrix_self_connection": QColor(41, 44, 48),
+                "matrix_hover_highlight": QColor(61, 174, 233, 60),
+            }
+        return {
             # --- General Cables UI Colors ---
-            "background": QColor(27, 30, 32) if is_dark else QColor(255, 255, 255),
-            "text": QColor(252, 252, 252) if is_dark else QColor(35, 38, 41),
-            "highlight": QColor(61, 174, 233) if is_dark else QColor(61, 174, 233),
-            "button": QColor(49, 54, 59) if is_dark else QColor(252, 252, 252),
-            "connection": QColor(29, 153, 243) if is_dark else QColor(0, 100, 200),
-            "auto_highlight": QColor(246, 116, 0) if is_dark else QColor(255, 140, 0),
-            "drag_highlight": QColor(41, 44, 48) if is_dark else QColor(227, 229, 231),
+            "background": QColor(255, 255, 255),
+            "text": QColor(35, 38, 41),
+            "highlight": QColor(61, 174, 233),
+            "button": QColor(252, 252, 252),
+            "connection": QColor(0, 100, 200),
+            "auto_highlight": QColor(255, 140, 0),
+            "drag_highlight": QColor(227, 229, 231),
 
             # --- Matrix Custom Grid Square Colors ---
-            "matrix_disconnected": QColor(32, 35, 38) if is_dark else QColor(239, 240, 241),
-            "matrix_self_connection": QColor(41, 44, 48) if is_dark else QColor(227, 229, 231),
-            "matrix_hover_highlight": QColor(61, 174, 233, 60) if is_dark else QColor(61, 174, 233, 40),
+            "matrix_disconnected": QColor(239, 240, 241),
+            "matrix_self_connection": QColor(227, 229, 231),
+            "matrix_hover_highlight": QColor(61, 174, 233, 40),
         }
 
-        return tokens.get(token, QColor(128, 128, 128))
+    def _capture_native_palette(self) -> None:
+        """Capture the native system palette/style exactly once, before any forced
+        override. This enables runtime restore when switching back to "Automatic".
+        """
+        app = QApplication.instance()
+        if app is not None and self._native_palette is None:
+            logger.info("Capturing native QPalette...")
+            self._native_palette = QPalette(app.palette())
+            try:
+                logger.info("Capturing native style name...")
+                self._native_style = app.style().objectName()
+                logger.info(f"Captured native style name: {self._native_style}")
+            except Exception as e:
+                logger.error(f"Error capturing native style name: {e}")
+                self._native_style = None
+
+    def _apply_matching_native_palette(self, app, sys_palette: QPalette) -> None:
+        """Reuse the system's native style (e.g. Breeze) and exact native palette
+        when the forced theme matches the system's dark/light state.
+        """
+        self._restore_native_style(app)
+        app.setPalette(sys_palette)
+
+    def _restore_native_style(self, app) -> None:
+        """Restore the captured native Qt style if the app is not already using it."""
+        if not self._native_style:
+            return
+        current_style = app.style().objectName() if app.style() else ""
+        if current_style.lower() == self._native_style.lower():
+            return
+        try:
+            app.setStyle(self._native_style)
+        except Exception as e:
+            logger.error(f"Error restoring native style in apply_theme_palette: {e}")
 
     def apply_theme_palette(self) -> None:
         """Apply a forced QPalette to Fusion style on startup or at runtime
@@ -389,14 +451,7 @@ class ThemeManager(QObject):
         if (self._forced_theme == THEME_DARK and system_is_dark) or (
             self._forced_theme == THEME_LIGHT and not system_is_dark
         ):
-            if self._native_style:
-                current_style = app.style().objectName() if app.style() else ""
-                if current_style.lower() != self._native_style.lower():
-                    try:
-                        app.setStyle(self._native_style)
-                    except Exception as e:
-                        logger.error(f"Error restoring native style in apply_theme_palette: {e}")
-            app.setPalette(sys_palette)
+            self._apply_matching_native_palette(app, sys_palette)
             self._applying_palette = False
             return
 
@@ -406,10 +461,20 @@ class ThemeManager(QObject):
         if current_style.lower() != "fusion":
             app.setStyle("Fusion")
 
-        # Otherwise, fall back to our beautiful and precise KDE Plasma 6 Breeze palettes
+        palette = self._build_breeze_fallback_palette(self._forced_theme)
+        app.setPalette(palette)
+        self._applying_palette = False
+
+    def _build_breeze_fallback_palette(self, forced_theme: str) -> QPalette:
+        """Construct the hardcoded KDE Plasma 6 Breeze Light/Dark QPalette used
+        when the forced theme does NOT match the system dark/light state.
+
+        Kept as a pure factory so reviewers can compare it against the
+        KDE Breeze color schemes without wading through control-flow.
+        """
         palette = QPalette()
 
-        if self._forced_theme == THEME_DARK:
+        if forced_theme == THEME_DARK:
             # KDE Plasma 6 Breeze Dark Color Scheme
             palette.setColor(QPalette.ColorRole.Window, QColor(32, 35, 38))
             palette.setColor(QPalette.ColorRole.WindowText, QColor(252, 252, 252))
@@ -440,8 +505,7 @@ class ThemeManager(QObject):
             palette.setColor(QPalette.ColorRole.Highlight, QColor(61, 174, 233))
             palette.setColor(QPalette.ColorRole.HighlightedText, Qt.GlobalColor.white)
 
-        app.setPalette(palette)
-        self._applying_palette = False
+        return palette
 
     def set_forced_theme(self, forced_theme_val: str) -> None:
         """Update forced theme at runtime and refresh the entire UI (no restart).

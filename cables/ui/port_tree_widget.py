@@ -663,44 +663,31 @@ class PortTreeWidget(QTreeWidget):
         """Returns the tree item for a given port name."""
         return self.port_items.get(port_name)
 
+    def _is_valid_drag(self, mime_data: QMimeData) -> bool:
+        """Return whether a drag payload can target this tree."""
+        has_role = mime_data.hasFormat("application/x-port-role")
+        has_payload = (
+            mime_data.hasFormat("application/x-port-list")
+            or mime_data.hasFormat("application/x-port-group")
+            or mime_data.hasText()
+        )
+        if not has_role or not has_payload:
+            return False
+
+        expected_source_role = b"input" if self.port_role == "output" else b"output"
+        return mime_data.data("application/x-port-role") == expected_source_role
+
     def dragEnterEvent(self, event: "QDragEnterEvent") -> None:
         """Accept drops only if the source role is the opposite of this tree's role."""
-        mime_data = event.mimeData()
-        has_role = mime_data.hasFormat("application/x-port-role")
-        has_list = mime_data.hasFormat("application/x-port-list")
-        has_group = mime_data.hasFormat("application/x-port-group")
-
-        if has_role and (
-            has_list or has_group or mime_data.hasText()
-        ):  # Check text for single port drag
-            source_role_bytes = mime_data.data("application/x-port-role")
-            # Determine the expected opposite role
-            expected_source_role = b"input" if self.port_role == "output" else b"output"
-
-            # Accept if the source role is the expected opposite role
-            if source_role_bytes == expected_source_role:
-                event.acceptProposedAction()
-                return
+        if self._is_valid_drag(event.mimeData()):
+            event.acceptProposedAction()
+            return
 
         event.ignore()
 
     def dragMoveEvent(self, event: "QDragMoveEvent") -> None:
         """Provide visual feedback during drag, accepting if roles are compatible."""
-        mime_data = event.mimeData()
-        has_role = mime_data.hasFormat("application/x-port-role")
-        has_list = mime_data.hasFormat("application/x-port-list")
-        has_group = mime_data.hasFormat("application/x-port-group")
-
-        # Check if it's a valid drag type with the correct opposite role
-        valid_drag = False
-        if has_role and (
-            has_list or has_group or mime_data.hasText()
-        ):  # Check text for single port drag
-            source_role_bytes = mime_data.data("application/x-port-role")
-            expected_source_role = b"input" if self.port_role == "output" else b"output"
-            if source_role_bytes == expected_source_role:  # Opposite role check
-                valid_drag = True
-
+        valid_drag = self._is_valid_drag(event.mimeData())
         target_item = self.itemAt(event.position().toPoint())
 
         if valid_drag and target_item:
@@ -846,6 +833,30 @@ class PortTreeWidget(QTreeWidget):
         else:
             return hm.midi_input_tree if is_midi else hm.input_tree
 
+    @staticmethod
+    def _has_existing_connection(
+        output_ports: List[str],
+        input_ports: List[str],
+        connections: List[Dict[str, Any]],
+        is_midi: bool,
+    ) -> bool:
+        """Return whether any output/input pair is already connected.
+
+        Build the filtered connection set once so drop handling does not scan
+        every connection for every output/input pair.
+        """
+        connection_type = "midi" if is_midi else "audio"
+        existing_pairs = {
+            (connection.get("output", ""), connection.get("input", ""))
+            for connection in connections
+            if connection.get("type", "audio") == connection_type
+        }
+        return any(
+            (output_port, input_port) in existing_pairs
+            for output_port in output_ports
+            for input_port in input_ports
+        )
+
     def startDrag(self, supportedActions: Optional[Qt.DropAction] = None) -> None:
         """
         Start drag operation, setting the correct port role based on self.port_role.
@@ -944,12 +955,7 @@ class PortTreeWidget(QTreeWidget):
         has_group = mime_data.hasFormat("application/x-port-group")
 
         # 1. Check validity (Source role must be opposite of target role)
-        expected_source_role = b"input" if self.port_role == "output" else b"output"
-        if not (
-            has_role
-            and (has_list or has_group or mime_data.hasText())
-            and mime_data.data("application/x-port-role") == expected_source_role
-        ):
+        if not self._is_valid_drag(mime_data):
             event.ignore()
             self.highlight_manager.clear_drop_target_highlight(self)
             self.current_drag_highlight_item = None
@@ -1087,24 +1093,13 @@ class PortTreeWidget(QTreeWidget):
                             self.window().jack_handler.make_connection(out_p, in_p)
         else:
             # Standard logic for group→group, port→port, etc.
-            # Check if there's already an existing connection between any source and target port
-            existing_connection = False
-            for out_port in actual_output_ports:
-                for in_port in actual_input_ports:
-                    for conn in current_connections:
-                        conn_out = conn.get("output", "")
-                        conn_in = conn.get("input", "")
-                        conn_type = conn.get("type", "audio")
-                        if conn_out == out_port and conn_in == in_port:
-                            if (is_midi and conn_type == "midi") or (
-                                not is_midi and conn_type == "audio"
-                            ):
-                                existing_connection = True
-                                break
-                    if existing_connection:
-                        break
-                if existing_connection:
-                    break
+            # Check if there's already an existing connection between any source and target port.
+            existing_connection = self._has_existing_connection(
+                actual_output_ports,
+                actual_input_ports,
+                current_connections,
+                is_midi,
+            )
 
             if existing_connection:
                 logger.debug(

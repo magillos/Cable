@@ -32,6 +32,114 @@ class NodeSplitHandler:
         # Split-related attributes (is_split_origin, is_split_part, etc.)
         # are stored on the node_item itself and manipulated by this handler.
 
+    def _transfer_connections(
+        self,
+        scene: typing.Any,
+        port_items: typing.Iterable[typing.Any],
+        *,
+        from_output_node: NodeItem,
+        from_input_node: NodeItem,
+        to_output_ports: Dict[str, typing.Any],
+        to_input_ports: Dict[str, typing.Any],
+        missing_warning_label: str = "port items",
+    ) -> None:
+        """Recreate every ConnectionItem whose endpoints live on *port_items*.
+
+        Shared body of :meth:`split_node` and :meth:`unsplit_node`. For each
+        discovered connection the endpoint belonging to one of the *from_*
+        nodes is rewritten to the matching port in the *to_* port maps; the
+        other endpoint is preserved verbatim. The old item is destroyed and
+        a fresh :class:`ConnectionItem` is registered on *scene*.
+        """
+        # Local import to avoid a circular import at module load time.
+        from .connection_item import ConnectionItem
+
+        unique_connections_to_transfer: set = set()
+        for port_item in port_items:
+            for conn in port_item.connections:
+                unique_connections_to_transfer.add(conn)
+
+        for conn_item in unique_connections_to_transfer:
+            if not conn_item.source_port or not conn_item.dest_port:
+                continue
+
+            old_source_port_name = conn_item.source_port.port_name
+            old_dest_port_name = conn_item.dest_port.port_name
+            conn_key = (old_source_port_name, old_dest_port_name)
+
+            if conn_item.source_port.parent_node == from_output_node:
+                new_source_item = to_output_ports.get(old_source_port_name)
+            else:
+                new_source_item = conn_item.source_port
+
+            if conn_item.dest_port.parent_node == from_input_node:
+                new_dest_item = to_input_ports.get(old_dest_port_name)
+            else:
+                new_dest_item = conn_item.dest_port
+
+            scene.connections.pop(conn_key, None)
+            conn_item.destroy()
+
+            if new_source_item and new_dest_item:
+                try:
+                    new_conn = ConnectionItem(new_source_item, new_dest_item)
+                    scene.addItem(new_conn)
+                    scene.connections[conn_key] = new_conn
+                except Exception as e:
+                    logger.error(
+                        f"Error creating new ConnectionItem for "
+                        f"{old_source_port_name} -> {old_dest_port_name}: {e}"
+                    )
+                    traceback.print_exc()
+            else:
+                logger.warning(
+                    f"Could not find {missing_warning_label} to recreate "
+                    f"connection: {old_source_port_name} -> {old_dest_port_name}"
+                )
+
+    def _finalize_split_state(
+        self,
+        ni: NodeItem,
+        original_client_name: str,
+        save_state: bool,
+        scene: typing.Any,
+    ) -> None:
+        """Recalculate layouts, persist the split config, and notify listeners.
+
+        Extracted from :meth:`split_node`; runs the post-connection-transfer
+        finalization: relayout the origin and its split parts, mark the split
+        in ``scene.node_configs`` (and the node's own config when ``save_state``
+        is set), drop the in-progress guard, then ask the scene to save state
+        and emit ``node_states_changed`` where it supports either.
+        """
+        ni.layout_ports() # Recalculate original node size (title bar)
+        ni.update()
+
+        if getattr(scene, "node_configs", None) is not None:
+            if original_client_name not in scene.node_configs:
+                scene.node_configs[original_client_name] = {}
+            scene.node_configs[original_client_name]['is_split'] = True
+
+            # If this is a manual split (save_state=True), mark it so it won't be auto-unsplit
+            if save_state:
+                scene.node_configs[original_client_name]['manual_split'] = True
+
+                # Also update the node's own config
+                if getattr(ni, "config", None) is not None:
+                    ni.config['manual_split'] = True
+
+        ni.layout_ports()
+        ni.update()
+        if ni.split_input_node: ni.split_input_node.layout_ports(); ni.split_input_node.update()
+        if ni.split_output_node: ni.split_output_node.layout_ports(); ni.split_output_node.update()
+
+        ni._internal_state_change_in_progress = False
+        if save_state and scene and getattr(scene, "request_specific_node_save", None) is not None:
+            scene.request_specific_node_save(ni) # Save state of the original node
+        # Notify listeners that node states changed
+        if save_state and scene and getattr(scene, "node_states_changed", None) is not None:
+            scene.node_states_changed.emit()
+
     def split_node(self, save_state: bool = True) -> None:
         """
         Visually splits the associated node_item into two parts: one for inputs, one for outputs.
@@ -181,76 +289,16 @@ class NodeSplitHandler:
         ni.hide()
 
         # 6. Transfer visual connections
-        # Local import for ConnectionItem
-        from .connection_item import ConnectionItem
+        self._transfer_connections(
+            scene, all_original_port_items,
+            from_output_node=ni,
+            from_input_node=ni,
+            to_output_ports=output_node.output_ports,
+            to_input_ports=input_node.input_ports,
+            missing_warning_label="port items",
+        )
 
-        unique_connections_to_transfer = set()
-        for port_item in all_original_port_items:
-            for conn in port_item.connections:
-                unique_connections_to_transfer.add(conn)
-
-        for conn_item in unique_connections_to_transfer:
-            if not conn_item.source_port or not conn_item.dest_port:
-                continue
-
-            old_source_port_name = conn_item.source_port.port_name
-            old_dest_port_name = conn_item.dest_port.port_name
-            conn_key = (old_source_port_name, old_dest_port_name)
-
-            new_source_item = None
-            new_dest_item = None
-
-            if conn_item.source_port.parent_node == ni:
-                new_source_item = output_node.output_ports.get(old_source_port_name)
-            else:
-                new_source_item = conn_item.source_port
-
-            if conn_item.dest_port.parent_node == ni:
-                new_dest_item = input_node.input_ports.get(old_dest_port_name)
-            else:
-                new_dest_item = conn_item.dest_port
-            
-            scene.connections.pop(conn_key, None)
-            conn_item.destroy()
-
-            if new_source_item and new_dest_item:
-                try:
-                    new_conn = ConnectionItem(new_source_item, new_dest_item)
-                    scene.addItem(new_conn)
-                    scene.connections[conn_key] = new_conn
-                except Exception as e:
-                    logger.error(f"Error creating new ConnectionItem for {old_source_port_name} -> {old_dest_port_name}: {e}")
-                    traceback.print_exc()
-            else:
-                logger.warning(f"Could not find port items to recreate connection: {old_source_port_name} -> {old_dest_port_name}")
-
-        ni.layout_ports() # Recalculate original node size (title bar)
-        ni.update()
-
-        if getattr(scene, "node_configs", None) is not None:
-            if original_client_name not in scene.node_configs:
-                scene.node_configs[original_client_name] = {}
-            scene.node_configs[original_client_name]['is_split'] = True
-            
-            # If this is a manual split (save_state=True), mark it so it won't be auto-unsplit
-            if save_state:
-                scene.node_configs[original_client_name]['manual_split'] = True
-                
-                # Also update the node's own config
-                if getattr(ni, "config", None) is not None:
-                    ni.config['manual_split'] = True
-        
-        ni.layout_ports()
-        ni.update()
-        if ni.split_input_node: ni.split_input_node.layout_ports(); ni.split_input_node.update()
-        if ni.split_output_node: ni.split_output_node.layout_ports(); ni.split_output_node.update()
-
-        ni._internal_state_change_in_progress = False
-        if save_state and scene and getattr(scene, "request_specific_node_save", None) is not None:
-            scene.request_specific_node_save(ni) # Save state of the original node
-        # Notify listeners that node states changed
-        if save_state and scene and getattr(scene, "node_states_changed", None) is not None:
-            scene.node_states_changed.emit()
+        self._finalize_split_state(ni, original_client_name, save_state, scene)
 
     def unsplit_node(self, save_state: bool = True) -> None:
         """
@@ -306,51 +354,15 @@ class NodeSplitHandler:
             logger.info(f"Restored visibility for both input and output of node {client_name}")
 
         # Transfer visual connections back
-        # Local import for ConnectionItem
-        from .connection_item import ConnectionItem
-        
-        unique_connections_to_transfer = set()
-        for port_item in list(input_part.input_ports.values()):
-            for conn in port_item.connections:
-                unique_connections_to_transfer.add(conn)
-        for port_item in list(output_part.output_ports.values()):
-            for conn in port_item.connections:
-                unique_connections_to_transfer.add(conn)
-
-        for conn_item in unique_connections_to_transfer:
-            if not conn_item.source_port or not conn_item.dest_port:
-                continue
-
-            old_source_port_name = conn_item.source_port.port_name
-            old_dest_port_name = conn_item.dest_port.port_name
-            conn_key = (old_source_port_name, old_dest_port_name)
-
-            new_source_item = None
-            new_dest_item = None
-
-            if conn_item.source_port.parent_node == output_part:
-                new_source_item = ni.output_ports.get(old_source_port_name)
-            else:
-                new_source_item = conn_item.source_port
-
-            if conn_item.dest_port.parent_node == input_part:
-                new_dest_item = ni.input_ports.get(old_dest_port_name)
-            else:
-                new_dest_item = conn_item.dest_port
-
-            scene.connections.pop(conn_key, None)
-            conn_item.destroy()
-
-            if new_source_item and new_dest_item:
-                try:
-                    new_conn = ConnectionItem(new_source_item, new_dest_item)
-                    scene.addItem(new_conn)
-                    scene.connections[conn_key] = new_conn
-                except Exception as e:
-                    logger.error(f"Error creating new ConnectionItem for {old_source_port_name} -> {old_dest_port_name}: {e}")
-                    traceback.print_exc()
-            else:
-                logger.warning(f"Could not find original port items to recreate connection: {old_source_port_name} -> {old_dest_port_name}")
+        self._transfer_connections(
+            scene,
+            list(input_part.input_ports.values()) + list(output_part.output_ports.values()),
+            from_output_node=output_part,
+            from_input_node=input_part,
+            to_output_ports=ni.output_ports,
+            to_input_ports=ni.input_ports,
+            missing_warning_label="original port items",
+        )
 
         scene.removeItem(input_part)
         scene.removeItem(output_part)

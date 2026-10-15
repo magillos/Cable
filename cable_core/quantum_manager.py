@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Optional, Any, Dict, List, Callable
 from PyQt6.QtWidgets import QComboBox, QMessageBox, QDialog
 from PyQt6.QtCore import QTimer, Qt
 
+from cable_core import config_keys as keys
 from cable_core.app_config import EDIT_LIST_TEXT
 from cable_core.dialogs import ValueSelectorDialog
 
@@ -44,24 +45,8 @@ class QuantumManager:
         manager.apply_sample_rate_settings()
     """
 
-    DEFAULT_QUANTUM_VALUES = [
-        16,
-        32,
-        48,
-        64,
-        96,
-        128,
-        144,
-        192,
-        240,
-        256,
-        512,
-        1024,
-        2048,
-        4096,
-        8192,
-    ]
-    DEFAULT_SAMPLE_RATE_VALUES = [44100, 48000, 88200, 96000, 176400, 192000]
+    DEFAULT_QUANTUM_VALUES = keys.DEFAULT_QUANTUM_VALUES
+    DEFAULT_SAMPLE_RATE_VALUES = keys.DEFAULT_SAMPLE_RATE_VALUES
 
     def __init__(
         self,
@@ -269,28 +254,47 @@ class QuantumManager:
                 )
             return True
         else:
-            ui = result.get("ui", {})
-            if ui.get("edit_list") == "quantum":
-                self.edit_quantum_list()
+            return self._handle_apply_settings_failure(
+                result,
+                combo=self.quantum_combo,
+                last_valid_index_attr="last_valid_quantum_index",
+                edit_list_method=self.edit_quantum_list,
+                edit_list_key="quantum",
+            )
 
-                def reset_quantum_index():
-                    self.quantum_combo.blockSignals(True)
-                    self.quantum_combo.setCurrentIndex(self.last_valid_quantum_index)
-                    self.quantum_combo.blockSignals(False)
+    def _handle_apply_settings_failure(
+        self,
+        result: dict,
+        *,
+        combo,
+        last_valid_index_attr: str,
+        edit_list_method,
+        edit_list_key: str,
+    ) -> bool:
+        """Shared failure-recovery tail of apply_quantum_settings / apply_sample_rate_settings.
 
-                QTimer.singleShot(0, reset_quantum_index)
-                return False
-            if ui.get("revert"):
-                QTimer.singleShot(
-                    0,
-                    lambda: self.quantum_combo.setCurrentIndex(
-                        self.last_valid_quantum_index
-                    ),
-                )
-            error = result.get("error")
-            if error:
-                QMessageBox.warning(self.parent, error["title"], error["message"])
+        Handles edit-list opening, combo reversion, and error display.
+        """
+        ui = result.get("ui", {})
+        if ui.get("edit_list") == edit_list_key:
+            edit_list_method()
+
+            def _reset_combo_index():
+                combo.blockSignals(True)
+                combo.setCurrentIndex(getattr(self, last_valid_index_attr))
+                combo.blockSignals(False)
+
+            QTimer.singleShot(0, _reset_combo_index)
             return False
+        if ui.get("revert"):
+            QTimer.singleShot(
+                0,
+                lambda: combo.setCurrentIndex(getattr(self, last_valid_index_attr)),
+            )
+        error = result.get("error")
+        if error:
+            QMessageBox.warning(self.parent, error["title"], error["message"])
+        return False
 
     def apply_sample_rate_settings(
         self, skip_save: bool = False, remember_settings: bool = False
@@ -330,30 +334,13 @@ class QuantumManager:
                 )
             return True
         else:
-            ui = result.get("ui", {})
-            if ui.get("edit_list") == "sample_rate":
-                self.edit_sample_rate_list()
-
-                def reset_sample_rate_index():
-                    self.sample_rate_combo.blockSignals(True)
-                    self.sample_rate_combo.setCurrentIndex(
-                        self.last_valid_sample_rate_index
-                    )
-                    self.sample_rate_combo.blockSignals(False)
-
-                QTimer.singleShot(0, reset_sample_rate_index)
-                return False
-            if ui.get("revert"):
-                QTimer.singleShot(
-                    0,
-                    lambda: self.sample_rate_combo.setCurrentIndex(
-                        self.last_valid_sample_rate_index
-                    ),
-                )
-            error = result.get("error")
-            if error:
-                QMessageBox.warning(self.parent, error["title"], error["message"])
-            return False
+            return self._handle_apply_settings_failure(
+                result,
+                combo=self.sample_rate_combo,
+                last_valid_index_attr="last_valid_sample_rate_index",
+                edit_list_method=self.edit_sample_rate_list,
+                edit_list_key="sample_rate",
+            )
 
     def reset_quantum(self) -> bool:
         """

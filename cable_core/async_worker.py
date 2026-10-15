@@ -40,6 +40,15 @@ class Worker(QRunnable):
         self.kwargs = kwargs
         self.signals = WorkerSignals()
 
+    def _safe_emit(self, signal: pyqtSignal, value: Any) -> None:
+        """Emit a signal if not shutting down, safely handling deleted QObjects."""
+        if is_shutting_down():
+            return
+        try:
+            signal.emit(value)
+        except RuntimeError:
+            pass  # QObject already deleted
+
     @pyqtSlot()
     def run(self) -> None:
         # Early exit if we're shutting down
@@ -50,22 +59,12 @@ class Worker(QRunnable):
         except Exception as e:
             tb = traceback.format_exc()
             logger.error(f"Background worker error: {e}\n{tb}")
-            # Only emit if not shutting down
-            if not is_shutting_down():
-                try:
-                    self.signals.error.emit({
-                        "ok": False,
-                        "error": {"title": "Background Error", "message": str(e)}
-                    })
-                except RuntimeError:
-                    pass  # QObject already deleted
+            self._safe_emit(self.signals.error, {
+                "ok": False,
+                "error": {"title": "Background Error", "message": str(e)}
+            })
         else:
-            # Only emit if not shutting down
-            if not is_shutting_down():
-                try:
-                    self.signals.finished.emit(result)
-                except RuntimeError:
-                    pass  # QObject already deleted
+            self._safe_emit(self.signals.finished, result)
 
 
 class AsyncRunner(QObject):

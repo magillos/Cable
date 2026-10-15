@@ -234,48 +234,46 @@ class PortItem(QGraphicsItem):
 
                 self._is_handling_selection_change = True
                 try:
-                    # Determine if this level can propagate port-to-port selection
-                    can_propagate_port_to_port = False
-                    if not handler._is_in_auto_selection_cascade:
-                        can_propagate_port_to_port = True
-                        handler._is_in_auto_selection_cascade = True
-                    
-                    try:
-                        if can_propagate_port_to_port:
-                            # 1. Port-to-Port connection highlighting
-                            if value: # Current port (self) is being SELECTED
-                                # Set connection highlighting on connected ports instead of selecting them
-                                for conn in self.connections:
-                                    other_port = conn.source_port if conn.dest_port == self else conn.dest_port
-                                    if other_port and not other_port.isSelected():
-                                        other_port.set_connection_highlighted(True)
-
-                            else: # Current port (self) is being DESELECTED
-                                # Clear connection highlighting from connected ports instead of deselecting them
-                                for conn in self.connections:
-                                    other_port = conn.source_port if conn.dest_port == self else conn.dest_port
-                                    if other_port and not other_port.isSelected():
-                                        other_port.set_connection_highlighted(False)
-                        # If not can_propagate_port_to_port, the above block is skipped, preventing cascade.
-                    finally:
-                        # Reset the flag only if this level was the one that set it.
-                        if can_propagate_port_to_port: # This implies it was False before, and this level set it to True.
-                            handler._is_in_auto_selection_cascade = False
-                    # End of controlled port-to-port cascade. The original empty line (256) is now covered.
-
-                    # 2. Update parent BulkAreaItem's selection state (per-pair)
-                    bulk_area_to_update = self.parent_node._port_to_bulk_area.get(self.port_name)
-                    if bulk_area_to_update:
-                        all_paired_selected = all(p.isSelected() for p in bulk_area_to_update.paired_ports)
-            
-                        if bulk_area_to_update.isSelected() != all_paired_selected:
-                            # This will trigger BulkAreaItem.itemChange, which will then handle
-                            # its own cascades (to its ports and other bulk areas)
-                            bulk_area_to_update.setSelected(all_paired_selected)
+                    self._propagate_selection_change(handler, value)
                 finally:
                     self._is_handling_selection_change = False
             
         return super().itemChange(change, value)
+
+    def _propagate_selection_change(self, handler, value: bool) -> None:
+        """Propagate a port selection change to connected ports (highlighting)
+        and to the parent BulkAreaItem's paired selection state.
+        """
+        if handler._is_in_auto_selection_cascade:
+            # Already inside a cascade: only sync the bulk area, skip port-to-port
+            # highlighting to prevent infinite recursion.
+            self._sync_bulk_area_selection()
+            return
+
+        handler._is_in_auto_selection_cascade = True
+        try:
+            self._set_connected_port_highlighting(value)
+            self._sync_bulk_area_selection()
+        finally:
+            handler._is_in_auto_selection_cascade = False
+
+    def _set_connected_port_highlighting(self, value: bool) -> None:
+        """Set connection highlighting on connected ports instead of selecting them."""
+        for conn in self.connections:
+            other_port = conn.source_port if conn.dest_port == self else conn.dest_port
+            if other_port and not other_port.isSelected():
+                other_port.set_connection_highlighted(value)
+
+    def _sync_bulk_area_selection(self) -> None:
+        """Update the parent BulkAreaItem's selection state to match its paired ports."""
+        bulk_area_to_update = self.parent_node._port_to_bulk_area.get(self.port_name)
+        if not bulk_area_to_update:
+            return
+        all_paired_selected = all(p.isSelected() for p in bulk_area_to_update.paired_ports)
+        if bulk_area_to_update.isSelected() != all_paired_selected:
+            # This will trigger BulkAreaItem.itemChange, which will then handle
+            # its own cascades (to its ports and other bulk areas)
+            bulk_area_to_update.setSelected(all_paired_selected)
 
     def mousePressEvent(self, event: QGraphicsSceneMouseEvent) -> None:
         """Handle selection and start potential drag connection."""

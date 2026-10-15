@@ -4,10 +4,12 @@ Handler for unifying multiple sink/source nodes into combined virtual devices vi
 from __future__ import annotations
 import logging
 import traceback
-from typing import TYPE_CHECKING, Optional, List, Dict, Any
+from typing import TYPE_CHECKING, Optional, List, Dict, Any, Set
 
 from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QRadioButton, QDialogButtonBox
 from PyQt6.QtCore import QTimer, Qt
+
+from cables.unified_sink_manager import client_family_base
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +34,84 @@ class NodeUnifyHandler:
             return None
         cm = getattr(scene, 'connection_manager', None)
         return getattr(cm, 'unified_sink_manager', None) if cm else None
+
+    def get_family_base(self) -> str:
+        """Return the logical client family base name for this node.
+
+        Clients that recreate themselves per stream/recording appear as
+        e.g. ``Application``, ``Application-119``, ``Application-89``.  All of
+        these share the same family base (``Application``) so their ports can
+        be funnelled into a single unified sink.
+        """
+        ni = self.node_item
+        name = ni.original_client_name or ni.client_name
+        return client_family_base(name)
+
+    @staticmethod
+    def _sink_name_for(is_input: bool, base_name: str) -> str:
+        """Build the unified sink name for a given family base name."""
+        prefix = "unified-input-" if is_input else "unified-output-"
+        return f"{prefix}{base_name.replace(' ', '_')}"
+
+    def has_other_family_member(self, require_ports_input: Optional[bool] = None) -> bool:
+        """Return True if another real node of the same client family exists.
+
+        Used to decide whether a unified sink may be unloaded when one node of
+        a family disappears.  The sink must stay alive until the *last* family
+        member is gone.
+
+        Args:
+            require_ports_input: If ``True``, only count siblings that currently
+                have input ports.  If ``False``, only count siblings with output
+                ports.  If ``None``, count any sibling.
+        """
+        ni = self.node_item
+        base = self.get_family_base()
+        scene = ni.scene()
+        if not scene:
+            return False
+        for node in getattr(scene, 'nodes', {}).values():
+            if node is ni or getattr(node, 'is_virtual_sink', False):
+                continue
+            if node.is_split_origin or node.is_split_part:
+                continue
+            node_base = client_family_base(
+                node.original_client_name or node.client_name
+            )
+            if node_base != base:
+                continue
+            if require_ports_input is True and not node.input_ports:
+                continue
+            if require_ports_input is False and not node.output_ports:
+                continue
+            return True
+        return False
+
+    def find_family_nodes(self) -> List['NodeItem']:
+        """Return all normal nodes in the scene that belong to this client family.
+
+        Virtual sinks, split origins and split parts are excluded — only real,
+        visible client nodes participate in unification.  The originating node
+        is always included even if the scene is unavailable.
+        """
+        ni = self.node_item
+        scene = ni.scene()
+        base = self.get_family_base()
+        family: List['NodeItem'] = []
+        if scene:
+            for node in getattr(scene, 'nodes', {}).values():
+                if getattr(node, 'is_virtual_sink', False):
+                    continue
+                if node.is_split_origin or node.is_split_part:
+                    continue
+                node_base = client_family_base(
+                    node.original_client_name or node.client_name
+                )
+                if node_base == base:
+                    family.append(node)
+        if ni not in family:
+            family.append(ni)
+        return family
 
     def ensure_sink_exists(self) -> None:
         """Check if the unified sinks exist and recreate them if not or if broken."""
@@ -75,8 +155,17 @@ class NodeUnifyHandler:
 
         if not has_ports:
             if sink_ports:
-                logger.debug(f"Unified {'input' if is_input else 'output'} sink {sink_name} exists but node has no ports. Unloading...")
-                self._unload_unified_sink(is_input=is_input)
+                # Keep the sink alive while any sibling family node still has
+                # ports routed through it.
+                if self.has_other_family_member(require_ports_input=is_input):
+                    logger.debug(
+                        f"Unified {'input' if is_input else 'output'} sink {sink_name} "
+                        f"has no ports on {ni.client_name}, but sibling family nodes "
+                        f"still use it. Keeping it alive."
+                    )
+                else:
+                    logger.debug(f"Unified {'input' if is_input else 'output'} sink {sink_name} exists but node has no ports. Unloading...")
+                    self._unload_unified_sink(is_input=is_input)
             return
 
         if not sink_ports:
@@ -332,25 +421,46 @@ class NodeUnifyHandler:
                 if ni.unify_input_action:
                     ni.unify_input_action.setChecked(False)
                 return
-            if checked:
-                if not ni.input_ports:
-                    logger.debug("Node has no input ports, cannot unify inputs")
-                    if ni.unify_input_action: ni.unify_input_action.setChecked(False)
-                    return
 
+            base = self.get_family_base()
+
+            if checked:
+                # Enabling: configure THIS node and then apply the same unified
+                # sink to every other node in the client family.
                 ni.is_input_unified = True
-                base_name = (ni.original_client_name or ni.client_name).replace(' ', '_')
-                ni.unified_input_sink_name = f"unified-input-{base_name}"
+                ni.unified_input_sink_name = self._sink_name_for(True, base)
+                self._persist_family_state()
                 self._create_unified_sink(is_input=True)
                 self._wait_for_sink_and_connect(is_input=True)
+                self._propagate_to_family(is_input=True, source=ni)
             else:
-                ni.is_input_unified = False
-                sink_name_to_remove = ni.unified_input_sink_name
-                module_id_to_remove = ni.unified_input_module_id
-                
-                self._unload_unified_sink(is_input=True)
-                ni.unified_input_sink_name = None
-                ni.unified_input_module_id = None
+                # Disabling: tear down the family's unified sink completely and
+                # clear the unified flag on all sibling nodes.
+                sink_name = ni.unified_input_sink_name or self._sink_name_for(True, base)
+                family = self.find_family_nodes()
+                self._unload_unified_sink_for_name(sink_name, is_input=True)
+                for node in family:
+                    try:
+                        if node is ni:
+                            node.is_input_unified = False
+                            node.unified_input_sink_name = None
+                            node.unified_input_module_id = None
+                        else:
+                            node.unify_handler.disable_input_unification(
+                                sink_name=sink_name
+                            )
+                    except Exception as e:
+                        logger.error(
+                            f"Error clearing input unification on family node "
+                            f"{getattr(node, 'client_name', '?')}: {e}"
+                        )
+                # Clear any preserved unified state in the scene's node_configs
+                # so it is not resurrected when the client reappears.
+                self._clear_preserved_unified_state(is_input=True)
+                # Always persist, even if a sibling failed to clear, so the
+                # family entry does not linger and resurrect unification on
+                # the next app start.
+                self._persist_family_state(clearing_input=True)
 
             ni.update()
             self.update_config_state()
@@ -367,25 +477,46 @@ class NodeUnifyHandler:
                 if ni.unify_output_action:
                     ni.unify_output_action.setChecked(False)
                 return
-            if checked:
-                if not ni.output_ports:
-                    logger.debug("Node has no output ports, cannot unify outputs")
-                    if ni.unify_output_action: ni.unify_output_action.setChecked(False)
-                    return
 
+            base = self.get_family_base()
+
+            if checked:
+                # Enabling: configure THIS node and then apply the same unified
+                # sink to every other node in the client family.
                 ni.is_output_unified = True
-                base_name = (ni.original_client_name or ni.client_name).replace(' ', '_')
-                ni.unified_output_sink_name = f"unified-output-{base_name}"
+                ni.unified_output_sink_name = self._sink_name_for(False, base)
+                self._persist_family_state()
                 self._create_unified_sink(is_input=False)
                 self._wait_for_sink_and_connect(is_input=False)
+                self._propagate_to_family(is_input=False, source=ni)
             else:
-                ni.is_output_unified = False
-                sink_name_to_remove = ni.unified_output_sink_name
-                module_id_to_remove = ni.unified_output_module_id
-                
-                self._unload_unified_sink(is_input=False)
-                ni.unified_output_sink_name = None
-                ni.unified_output_module_id = None
+                # Disabling: tear down the family's unified sink completely and
+                # clear the unified flag on all sibling nodes.
+                sink_name = ni.unified_output_sink_name or self._sink_name_for(False, base)
+                family = self.find_family_nodes()
+                self._unload_unified_sink_for_name(sink_name, is_input=False)
+                for node in family:
+                    try:
+                        if node is ni:
+                            node.is_output_unified = False
+                            node.unified_output_sink_name = None
+                            node.unified_output_module_id = None
+                        else:
+                            node.unify_handler.disable_output_unification(
+                                sink_name=sink_name
+                            )
+                    except Exception as e:
+                        logger.error(
+                            f"Error clearing output unification on family node "
+                            f"{getattr(node, 'client_name', '?')}: {e}"
+                        )
+                # Clear any preserved unified state in the scene's node_configs
+                # so it is not resurrected when the client reappears.
+                self._clear_preserved_unified_state(is_input=False)
+                # Always persist, even if a sibling failed to clear, so the
+                # family entry does not linger and resurrect unification on
+                # the next app start.
+                self._persist_family_state(clearing_output=True)
 
             ni.update()
             self.update_config_state()
@@ -393,6 +524,236 @@ class NodeUnifyHandler:
         except Exception as e:
             logger.error(f"Error toggling output unification: {e}")
             traceback.print_exc()
+
+    # --- Client-family unification helpers ---
+
+    def _propagate_to_family(self, is_input: bool, source: 'NodeItem') -> None:
+        """Mirror the enabled unified state onto all sibling family nodes.
+
+        The sink always keeps the family-base name (independent of which
+        sibling was toggled) so that new siblings appearing later connect to
+        the same sink.
+        """
+        base = self.get_family_base()
+        sink_name = self._sink_name_for(is_input, base)
+        direction = 'input' if is_input else 'output'
+
+        for node in self.find_family_nodes():
+            if node is source:
+                continue
+            # Respect per-node capability: skip nodes without ports of the
+            # relevant direction (they may gain them later and be picked up
+            # by ensure_sink_exists).
+            if is_input and not node.input_ports:
+                continue
+            if not is_input and not node.output_ports:
+                continue
+
+            if is_input:
+                node.is_input_unified = True
+                node.unified_input_sink_name = sink_name
+            else:
+                node.is_output_unified = True
+                node.unified_output_sink_name = sink_name
+
+            # The sink may still be materialising (created asynchronously by
+            # the toggling node).  Poll for it so late siblings connect too.
+            node.unify_handler._wait_for_sink_and_connect(is_input=is_input)
+            node.unify_handler.update_config_state()
+            node.update()
+            logger.debug(
+                f"Family-unified {direction} for sibling node {node.client_name} "
+                f"-> {sink_name}"
+            )
+
+    def disable_input_unification(self, sink_name: Optional[str] = None) -> None:
+        """Clear input-unified state on this node without unloading the sink.
+
+        Used when a sibling node in the same client family is toggled off; the
+        sink is unloaded once by the toggling node.
+        """
+        ni = self.node_item
+        ni.is_input_unified = False
+        ni.unified_input_sink_name = None
+        ni.unified_input_module_id = None
+        ni.update()
+        self.update_config_state()
+
+    def disable_output_unification(self, sink_name: Optional[str] = None) -> None:
+        """Clear output-unified state on this node without unloading the sink."""
+        ni = self.node_item
+        ni.is_output_unified = False
+        ni.unified_output_sink_name = None
+        ni.unified_output_module_id = None
+        ni.update()
+        self.update_config_state()
+
+    def _clear_preserved_unified_state(self, is_input: bool) -> None:
+        """Clear preserved unified state from the scene's node_configs.
+
+        When a node is removed (e.g. its JACK client disappears), the scene
+        preserves the unified state in ``node_configs`` so it can be restored
+        when the client reappears.  If the user has explicitly disabled
+        unification, that preserved state must be cleared or the node will
+        resurrect as unified on the next client restart.
+
+        Args:
+            is_input: True to clear input-unified state, False for output.
+        """
+        ni = self.node_item
+        scene = ni.scene()
+        if scene is None:
+            return
+        node_configs = getattr(scene, 'node_configs', None)
+        if node_configs is None:
+            return
+
+        base = self.get_family_base()
+        key = 'is_input_unified' if is_input else 'is_output_unified'
+        sink_key = 'unified_input_sink_name' if is_input else 'unified_output_sink_name'
+
+        # Clear preserved state for every known family member.
+        for client_name, config in node_configs.items():
+            if client_family_base(client_name) != base:
+                continue
+            if key in config:
+                config.pop(key, None)
+                config.pop(sink_key, None)
+                logger.debug(
+                    f"Cleared preserved unified state in node_configs for {client_name}"
+                )
+
+    def _unload_unified_sink_for_name(self, sink_name: Optional[str], is_input: bool) -> None:
+        """Unload a unified sink identified by an explicit sink name.
+
+        ``_unload_unified_sink`` reads the name from the node's attributes.  When
+        disabling an inherited family unification the node may only have its own
+        name populated, so set it temporarily to ensure the correct sink is
+        removed.
+        """
+        ni = self.node_item
+        attr = 'unified_input_sink_name' if is_input else 'unified_output_sink_name'
+        previous = getattr(ni, attr, None)
+        setattr(ni, attr, sink_name)
+        try:
+            self._unload_unified_sink(is_input=is_input)
+        finally:
+            setattr(ni, attr, previous)
+
+    def _persist_family_state(self, clearing_input: bool = False, clearing_output: bool = False) -> None:
+        """Persist (or clear) the family-level unified state in the config manager.
+
+        Args:
+            clearing_input: True when called from the input-disable path. The
+                toggling node's own flag has already been cleared, so force the
+                persisted input flag to False regardless of any stale sibling
+                state that could not be cleared (e.g. a node whose client
+                disappeared mid-operation).
+            clearing_output: Same as ``clearing_input`` for the output direction.
+        """
+        ni = self.node_item
+        cm = getattr(ni, 'config_manager', None)
+        if cm is None or not hasattr(cm, 'set_family_unified_state'):
+            return
+        try:
+            base = self.get_family_base()
+            is_input_unified = False if clearing_input else bool(
+                ni.is_input_unified
+                or self._family_has_input_unified()
+            )
+            is_output_unified = False if clearing_output else bool(
+                ni.is_output_unified
+                or self._family_has_output_unified()
+            )
+            logger.debug(
+                f"_persist_family_state {ni.client_name}: base={base}, "
+                f"is_input_unified={is_input_unified}, is_output_unified={is_output_unified}, "
+                f"clearing_input={clearing_input}, clearing_output={clearing_output}"
+            )
+            cm.set_family_unified_state(
+                base,
+                is_input_unified=is_input_unified,
+                is_output_unified=is_output_unified,
+                unified_input_sink_name=(
+                    ni.unified_input_sink_name
+                    if ni.unified_input_sink_name
+                    else self._sink_name_for(True, base) if is_input_unified else None
+                ),
+                unified_output_sink_name=(
+                    ni.unified_output_sink_name
+                    if ni.unified_output_sink_name
+                    else self._sink_name_for(False, base) if is_output_unified else None
+                ),
+            )
+        except Exception as e:
+            logger.error(f"Error persisting family unified state: {e}")
+
+    def _family_has_input_unified(self) -> bool:
+        return any(node.is_input_unified for node in self.find_family_nodes())
+
+    def _family_has_output_unified(self) -> bool:
+        return any(node.is_output_unified for node in self.find_family_nodes())
+
+    def apply_family_unification(self) -> None:
+        """Auto-unify this node if a sibling in its client family is unified.
+
+        Called when a node is created/applied from config.  Handles the case
+        where e.g. ``Application`` was unified and a new ``Application-119``
+        node appears later — it is picked up automatically.
+        """
+        ni = self.node_item
+        if getattr(ni, 'is_virtual_sink', False):
+            return
+
+        base = self.get_family_base()
+        state = None
+        cm = getattr(ni, 'config_manager', None)
+        if cm is not None and hasattr(cm, 'get_family_unified_state'):
+            state = cm.get_family_unified_state(base)
+
+        # First preference: live sibling state in the current scene.
+        input_sink = None
+        output_sink = None
+        family_has_input = self._family_has_input_unified()
+        family_has_output = self._family_has_output_unified()
+        if family_has_input:
+            input_sink = self._sink_name_for(True, base)
+        if family_has_output:
+            output_sink = self._sink_name_for(False, base)
+
+        logger.debug(
+            f"apply_family_unification {ni.client_name}: base={base}, "
+            f"family_has_input={family_has_input}, family_has_output={family_has_output}, "
+            f"persisted_state={state}, "
+            f"ni.is_input_unified={ni.is_input_unified}, ni.is_output_unified={ni.is_output_unified}"
+        )
+
+        # Fall back to persisted family state (e.g. after a restart).
+        if state:
+            if state.get('is_input_unified'):
+                input_sink = state.get('unified_input_sink_name') or self._sink_name_for(True, base)
+            if state.get('is_output_unified'):
+                output_sink = state.get('unified_output_sink_name') or self._sink_name_for(False, base)
+
+        if input_sink and ni.input_ports and not ni.is_input_unified:
+            ni.is_input_unified = True
+            ni.unified_input_sink_name = input_sink
+            logger.info(
+                f"Auto-unified input for family sibling {ni.client_name} -> {input_sink}"
+            )
+            self.update_config_state()
+            self._create_unified_sink(is_input=True)
+            self._wait_for_sink_and_connect(is_input=True)
+
+        if output_sink and ni.output_ports and not ni.is_output_unified:
+            ni.is_output_unified = True
+            ni.unified_output_sink_name = output_sink
+            logger.info(
+                f"Auto-unified output for family sibling {ni.client_name} -> {output_sink}"
+            )
+            self.update_config_state()
+            self._create_unified_sink(is_input=False)
+            self._wait_for_sink_and_connect(is_input=False)
 
     def update_config_state(self) -> None:
         """Updates the unified state in the saved configuration.

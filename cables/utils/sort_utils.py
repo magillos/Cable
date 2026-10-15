@@ -182,22 +182,6 @@ def natural_sort_key(
             return ([0], base_name_key, [])
 
 
-def simple_natural_sort_key(text: str) -> List[Union[int, str]]:
-    """
-    Simple natural sort key for strings.
-    Splits text into alphabetic and numeric parts for proper sorting.
-
-    Example: "port10" comes after "port2" (not before, as with string sort)
-
-    Args:
-        text: The string to create a sort key for.
-
-    Returns:
-        A list suitable for sorting.
-    """
-    return _split_for_sort(text.lower())
-
-
 def natural_sort_key_for_port_item(port_item: object) -> Tuple[List[int], ...]:
     """
     Wrapper for natural_sort_key that works with PortItem objects.
@@ -371,29 +355,75 @@ def detect_stereo_pairs(
     if pair_suffixes is None:
         pair_suffixes = _DEFAULT_STEREO_PAIR_SUFFIXES
 
-    # Separate audio from MIDI ports — MIDI never gets bulk areas.
-    audio_ports: list = []
-    unpaired: list = []
-    for port in ports:
-        if getattr(port, 'is_midi', False):
-            unpaired.append(port)
-        else:
-            audio_ports.append(port)
-
-    # Sort audio ports by natural key for deterministic ordering.
+    # Separate MIDI from audio ports and sort audio ports
+    audio_ports, unpaired = _separate_midi_ports(ports)
     audio_ports_sorted = sorted(audio_ports, key=natural_sort_key_for_port_item)
 
-    pairs: List[Tuple] = []
-    matched: set = set()  # indices into audio_ports_sorted
+    # Phase 1: Match ports by L/R suffixes
+    pairs, matched_indices = _match_suffix_pairs(
+        audio_ports_sorted, pair_suffixes
+    )
 
-    # ------------------------------------------------------------------
-    # Phase 1: Explicit L/R suffix matching (case-insensitive)
-    # ------------------------------------------------------------------
-    # Build a multi-valued lookup keyed on the lowercased name so that
-    # 'Monitor L', 'monitor L', 'MONITOR L' all resolve to the same key.
-    # Both the original short_name and its numeric-postfix-stripped form
-    # are registered so that ports like "output_FL-115" can be found
-    # via the key "output_fl".
+    # Phase 2: Match remaining ports by consecutive numbering
+    numbered_pairs, remaining_unpaired = _match_numbered_pairs(
+        audio_ports_sorted, matched_indices
+    )
+
+    pairs.extend(numbered_pairs)
+    unpaired.extend(remaining_unpaired)
+
+    return pairs, unpaired
+
+
+def _separate_midi_ports(ports: list) -> tuple[list, list]:
+    """
+    Separate MIDI ports from audio ports.
+
+    Args:
+        ports: List of PortItem objects
+
+    Returns:
+        tuple[list, list]: (audio_ports, midi_ports)
+    """
+    audio_ports: list = []
+    midi_ports: list = []
+    for port in ports:
+        if getattr(port, 'is_midi', False):
+            midi_ports.append(port)
+        else:
+            audio_ports.append(port)
+    return audio_ports, midi_ports
+
+
+def _match_left_suffix(short_l: str, stripped_l: str, left_suf: str) -> Optional[str]:
+    """Return the lowercased name variant (plain or numeric-postfix-stripped)
+    that ends with *left_suf*, or None when neither matches.
+    """
+    if short_l.endswith(left_suf):
+        return short_l
+    if stripped_l != short_l and stripped_l.endswith(left_suf):
+        return stripped_l
+    return None
+
+
+def _match_suffix_pairs(
+    audio_ports_sorted: list,
+    pair_suffixes: List[Tuple[str, str]],
+) -> Tuple[List[Tuple], set]:
+    """
+    Match audio ports by L/R suffixes (Phase 1).
+
+    Args:
+        audio_ports_sorted: Sorted list of audio ports
+        pair_suffixes: List of (left_suffix, right_suffix) tuples
+
+    Returns:
+        tuple[list, set]: (pairs, matched_indices)
+    """
+    pairs: List[Tuple] = []
+    matched: set = set()
+
+    # Build a multi-valued lookup keyed on the lowercased name
     name_to_indices: dict[str, list[int]] = {}
     for idx, port in enumerate(audio_ports_sorted):
         if idx in matched:
@@ -401,10 +431,7 @@ def detect_stereo_pairs(
         for name in (port.short_name, _strip_numeric_postfix(port.short_name)):
             name_to_indices.setdefault(name.lower(), []).append(idx)
 
-    # Lowercase the suffixes once so the per-port endswith() checks don't
-    # redo the work on every iteration; suffixes in
-    # _DEFAULT_STEREO_PAIR_SUFFIXES are already lowercase, but a caller may
-    # pass mixed-case custom suffixes.
+    # Normalize suffixes to lowercase once
     norm_suffixes = [(ls.lower(), rs.lower()) for ls, rs in pair_suffixes]
 
     for left_suf, right_suf in norm_suffixes:
@@ -417,12 +444,7 @@ def detect_stereo_pairs(
             stripped_l = stripped.lower()
 
             # Determine which name variant matches the left suffix
-            match_name = None
-            if short_l.endswith(left_suf):
-                match_name = short_l
-            elif stripped_l != short_l and stripped_l.endswith(left_suf):
-                match_name = stripped_l
-
+            match_name = _match_left_suffix(short_l, stripped_l, left_suf)
             if match_name is None:
                 continue
 
@@ -448,13 +470,29 @@ def detect_stereo_pairs(
                     if not name_to_indices[key]:
                         del name_to_indices[key]
 
-    # ------------------------------------------------------------------
-    # Phase 2: Consecutive numbered pair matching
-    # ------------------------------------------------------------------
-    # Collect remaining unmatched audio ports and extract (base, number).
+    return pairs, matched
+
+
+def _match_numbered_pairs(
+    audio_ports_sorted: list, matched_indices: set
+) -> Tuple[List[Tuple], List]:
+    """
+    Match remaining audio ports by consecutive numbering (Phase 2).
+
+    Args:
+        audio_ports_sorted: Sorted list of audio ports
+        matched_indices: Set of indices already paired in Phase 1
+
+    Returns:
+        tuple[list, list]: (pairs, unpaired_ports)
+    """
+    pairs: List[Tuple] = []
+    unpaired: list = []
+
+    # Collect remaining unmatched audio ports and extract (base, number)
     remaining: list = []
     for idx, port in enumerate(audio_ports_sorted):
-        if idx not in matched:
+        if idx not in matched_indices:
             remaining.append(port)
 
     # Group by base name

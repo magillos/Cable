@@ -65,39 +65,30 @@ class PortManager:
 
         # Connect filter signals now that trees and filters exist
         if self.input_filter_edit:
-            # Style to match Graph tab's filter
-            self.input_filter_edit.setFrame(False)
-            self.input_filter_edit.setStyleSheet("""
-                QLineEdit {
-                    border: 1px solid rgba(0, 0, 0, 0.1);
-                    border-radius: 3px;
-                    padding: 2px 5px;
-                }
-                QLineEdit:focus {
-                    border: 1px solid rgba(0, 85, 255, 0.3);
-                }
-            """)
-            # Ensure no duplicate connections if called multiple times
-            try: self.input_filter_edit.textChanged.disconnect(self._handle_filter_change)
-            except TypeError: pass
-            self.input_filter_edit.textChanged.connect(self._handle_filter_change)
+            self._connect_filter_edit(self.input_filter_edit)
 
         if self.output_filter_edit:
-            # Style to match Graph tab's filter
-            self.output_filter_edit.setFrame(False)
-            self.output_filter_edit.setStyleSheet("""
-                QLineEdit {
-                    border: 1px solid rgba(0, 0, 0, 0.1);
-                    border-radius: 3px;
-                    padding: 2px 5px;
-                }
-                QLineEdit:focus {
-                    border: 1px solid rgba(0, 85, 255, 0.3);
-                }
-            """)
-            try: self.output_filter_edit.textChanged.disconnect(self._handle_filter_change)
-            except TypeError: pass
-            self.output_filter_edit.textChanged.connect(self._handle_filter_change)
+            self._connect_filter_edit(self.output_filter_edit)
+
+    def _connect_filter_edit(self, filter_edit) -> None:
+        """Style a filter QLineEdit to match the Graph tab's filter and wire its signal.
+
+        Ensures no duplicate connections if called multiple times.
+        """
+        filter_edit.setFrame(False)
+        filter_edit.setStyleSheet("""
+            QLineEdit {
+                border: 1px solid rgba(0, 0, 0, 0.1);
+                border-radius: 3px;
+                padding: 2px 5px;
+            }
+            QLineEdit:focus {
+                border: 1px solid rgba(0, 85, 255, 0.3);
+            }
+        """)
+        try: filter_edit.textChanged.disconnect(self._handle_filter_change)
+        except TypeError: pass
+        filter_edit.textChanged.connect(self._handle_filter_change)
 
     def set_node_visibility_manager(self, node_visibility_manager: 'NodeVisibilityManager') -> None:
         """
@@ -205,57 +196,94 @@ class PortManager:
         if not tree_widget: # Guard against None tree during initialization phases
              return
 
-        filter_text_lower = filter_text.lower()
-        terms = filter_text_lower.split()
-        include_terms = [term for term in terms if not term.startswith('-')]
-        exclude_terms = [term[1:] for term in terms if term.startswith('-') and len(term) > 1]  # Remove '-'
+        include_terms, exclude_terms = self._parse_filter_terms(filter_text)
 
         # Iterate through all top-level items (groups)
         for i in range(tree_widget.topLevelItemCount()):
             group_item = tree_widget.topLevelItem(i)
-            group_visible = False  # Assume group is hidden unless a child matches
-
-            # Iterate through children (ports) of the group
-            for j in range(group_item.childCount()):
-                port_item = group_item.child(j)
-                port_name = port_item.data(0, Qt.ItemDataRole.UserRole)  # Get full port name
-                if not port_name:  # Skip if port name is invalid
-                    port_item.setHidden(True)
-                    continue
-
-                port_name_lower = port_name.lower()
-
-                # 1. Check exclusion terms
-                excluded = False
-                for term in exclude_terms:
-                    if term in port_name_lower:
-                        excluded = True
-                        break
-                if excluded:
-                    port_item.setHidden(True)
-                    continue  # Skip to next port if excluded
-
-                # 2. Check inclusion terms (all must match)
-                included = True
-                if include_terms:  # Only check if there are inclusion terms
-                    for term in include_terms:
-                        if term not in port_name_lower:
-                            included = False
-                            break
-
-                if included:
-                    port_item.setHidden(False)
-                    group_visible = True  # Make group visible if this port is visible
-                else:
-                    port_item.setHidden(True)
+            group_visible = self._filter_group_items(
+                group_item, include_terms, exclude_terms
+            )
 
             # Set the visibility of the group item
             group_item.setHidden(not group_visible)
 
         # After filtering, we need to refresh the connection visualization
         # because hidden items might affect line drawing positions.
-        # Call the method on the connection_manager instance
         self.connection_manager.refresh_visualizations()
+
+    def _parse_filter_terms(self, filter_text: str) -> tuple[list[str], list[str]]:
+        """
+        Parse filter text into include and exclude terms.
+
+        Args:
+            filter_text: The raw filter text
+
+        Returns:
+            tuple[list[str], list[str]]: (include_terms, exclude_terms)
+        """
+        filter_text_lower = filter_text.lower()
+        terms = filter_text_lower.split()
+        include_terms = [term for term in terms if not term.startswith('-')]
+        exclude_terms = [term[1:] for term in terms if term.startswith('-') and len(term) > 1]
+        return include_terms, exclude_terms
+
+    def _port_matches_filter(self, port_name: str, include_terms: list[str], exclude_terms: list[str]) -> bool:
+        """
+        Check if a port name matches the filter criteria.
+
+        Args:
+            port_name: The full port name
+            include_terms: Terms that must all be present (AND logic)
+            exclude_terms: Terms that must not be present
+
+        Returns:
+            True if the port matches the filter, False otherwise
+        """
+        if not port_name:
+            return False
+
+        port_name_lower = port_name.lower()
+
+        # Check exclusion terms (any match excludes the port)
+        for term in exclude_terms:
+            if term in port_name_lower:
+                return False
+
+        # Check inclusion terms (all must match)
+        if include_terms:
+            for term in include_terms:
+                if term not in port_name_lower:
+                    return False
+
+        return True
+
+    def _filter_group_items(self, group_item, include_terms: list[str], exclude_terms: list[str]) -> bool:
+        """
+        Filter all child items in a group and return whether any are visible.
+
+        Args:
+            group_item: The QTreeWidgetItem representing the group
+            include_terms: Terms that must all be present
+            exclude_terms: Terms that must not be present
+
+        Returns:
+            True if at least one child item is visible
+        """
+        group_visible = False
+
+        # Iterate through children (ports) of the group
+        for j in range(group_item.childCount()):
+            port_item = group_item.child(j)
+            port_name = port_item.data(0, Qt.ItemDataRole.UserRole)
+
+            if self._port_matches_filter(port_name, include_terms, exclude_terms):
+                port_item.setHidden(False)
+                group_visible = True
+            else:
+                port_item.setHidden(True)
+
+        return group_visible
 
     def _handle_filter_change(self) -> None:
         """Handles text changes in the shared filter boxes."""

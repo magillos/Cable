@@ -99,6 +99,26 @@ __all__ = [
 # --- Audio Settings ---
 QUANTUM_VALUES = "quantum_values"
 SAMPLE_RATE_VALUES = "sample_rate_values"
+
+# Default quantum / sample-rate value lists (single source of truth)
+DEFAULT_QUANTUM_VALUES = [
+    16,
+    32,
+    48,
+    64,
+    96,
+    128,
+    144,
+    192,
+    240,
+    256,
+    512,
+    1024,
+    2048,
+    4096,
+    8192,
+]
+DEFAULT_SAMPLE_RATE_VALUES = [44100, 48000, 88200, 96000, 176400, 192000]
 QUANTUM = "quantum"
 SAMPLE_RATE = "sample_rate"
 VIRTUAL_SINK_MODULE_IDS = "virtual_sink_module_ids"

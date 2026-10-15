@@ -29,6 +29,12 @@ logger = logging.getLogger(__name__)
 # e.g. "my-sink Audio/Sink sink" becomes "my-sink Audio/Sink sink-122"
 _SINK_SUFFIX_RE = re.compile(r' Audio/Sink sink(?:-\d+)?$')
 
+# Clients that recreate themselves per stream/recording (e.g. "Application",
+# "Application-119", "Application-89") are given a numeric rename suffix by
+# PipeWire/JACK.  The base name identifies all nodes belonging to the same
+# logical client so their ports can be funnelled into one unified sink.
+_NUMERIC_SUFFIX_RE = re.compile(r'^(?P<base>.+?)-(?P<num>\d+)$')
+
 
 def _has_sink_suffix(name: str) -> bool:
     """Check if name ends with ' Audio/Sink sink' with optional PipeWire rename postfix."""
@@ -38,6 +44,29 @@ def _has_sink_suffix(name: str) -> bool:
 def _strip_sink_suffix(name: str) -> str:
     """Remove the ' Audio/Sink sink[-N]' suffix from a client name."""
     return _SINK_SUFFIX_RE.sub('', name)
+
+
+def client_family_base(name: str) -> str:
+    """Return the logical client base name for a JACK client.
+
+    Strips a trailing numeric rename suffix that PipeWire/JACK appends when a
+    client recreates itself with a duplicate name, so that all of these map to
+    the same family::
+
+        Application      -> Application
+        Application-119  -> Application
+        Application-89   -> Application
+
+    The suffix is only stripped when the remaining base is non-empty and the
+    name does not look like a virtual sink (whose own naming already encodes
+    the owner).  Names without a numeric suffix are returned unchanged.
+    """
+    if not name or _has_sink_suffix(name):
+        return name
+    m = _NUMERIC_SUFFIX_RE.match(name)
+    if m and m.group('base'):
+        return m.group('base')
+    return name
 
 
 class UnifiedSinkManager:
@@ -340,16 +369,7 @@ class UnifiedSinkManager:
         if result['is_virtual_sink']:
             sink_base_name = _strip_sink_suffix(client_name)
             normalized_sink_base = sink_base_name.replace(' ', '_').lower()
-            if (
-                normalized_sink_base.startswith('unified-input-')
-                or normalized_sink_base.startswith('unified_output-')
-                or normalized_sink_base.startswith('unified-output-')
-                or normalized_sink_base.startswith('unified_input-')
-                or normalized_sink_base.startswith('unified-input_')
-                or normalized_sink_base.startswith('unified-output_')
-                or normalized_sink_base.startswith('unified_input_')
-                or normalized_sink_base.startswith('unified_output_')
-            ):
+            if self._is_unified_sink_name(normalized_sink_base):
                 result['is_unified_sink'] = True
 
             unified_sinks_json = self.config_manager.get_str(keys.UNIFIED_VIRTUAL_SINKS, '{}')
@@ -970,7 +990,13 @@ class UnifiedSinkManager:
         return False
 
     def _original_client_exists(self, current_client_names: set, sink_name: str) -> bool:
-        """Check if the original client exists for a unified sink."""
+        """Check if the original client exists for a unified sink.
+
+        A unified sink is created for a *client family* (nodes that recreate
+        themselves per stream, e.g. ``Application`` / ``Application-119``).
+        The sink is therefore considered alive while ANY member of the family
+        is still present in ``current_client_names``.
+        """
         # The sink name format is "unified-<original_client_name_with_underscores>"
         # Or "unified-input-..." / "unified-output-..."
         
@@ -988,7 +1014,17 @@ class UnifiedSinkManager:
 
         # Convert underscores back to spaces (reverse of unify logic)
         client_name_with_spaces = original_client_name.replace('_', ' ')
-        return client_name_with_spaces in current_client_names
+        if client_name_with_spaces in current_client_names:
+            return True
+
+        # Family-aware check: the sink owner base is the client family base.
+        # If any present client shares this family base, the sink is not orphaned.
+        owner_base = client_name_with_spaces
+        for present in current_client_names:
+            if client_family_base(present) == owner_base:
+                return True
+
+        return False
 
     def _make_connection(self, connection_handler: 'JackConnectionHandler', source_port: str, dest_port: str) -> None:
         """Make a JACK connection between two ports."""
@@ -1002,3 +1038,17 @@ class UnifiedSinkManager:
     def _natural_sort_key(port_item: 'PortItem') -> Any:
         """Creates an enhanced sort key that groups ports by base name."""
         return natural_sort_key_for_port_item(port_item)
+
+    @staticmethod
+    def _is_unified_sink_name(normalized_sink_base: str) -> bool:
+        """Check if a normalized sink base name indicates a unified sink.
+
+        Args:
+            normalized_sink_base: Sink name with spaces replaced by underscores, lowercased.
+
+        Returns:
+            True if the name matches unified sink naming patterns.
+        """
+        return bool(
+            re.match(r'unified[_-](input|output)[_-]', normalized_sink_base)
+        )

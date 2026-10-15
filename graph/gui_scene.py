@@ -334,6 +334,9 @@ class JackGraphScene(QGraphicsScene):
                 self.nodes[client_name].check_if_virtual_sink(client_name)
                 self.nodes[client_name].update()
                 self.nodes[client_name].ensure_unified_sink_exists()
+                # Adopt family-level unification if a sibling node is unified
+                # (handles ports that appeared after the family was unified).
+                self.nodes[client_name].unify_handler.apply_family_unification()
             else:
                 node = self.add_node(
                     client_name, ports_to_process, original_client_name
@@ -631,12 +634,30 @@ class JackGraphScene(QGraphicsScene):
 
             # Preserve unified state in node_configs so it is restored
             # when the client reappears (e.g. audio stream restarts).
-            if node.is_input_unified or node.is_output_unified:
+            # Only preserve if the family state still says unified — the user
+            # may have explicitly disabled unification before the client
+            # disappeared.
+            family_state = None
+            if node.unify_handler:
+                base = node.unify_handler.get_family_base()
+                cm = getattr(node, 'config_manager', None)
+                if cm is not None and hasattr(cm, 'get_family_unified_state'):
+                    family_state = cm.get_family_unified_state(base)
+
+            preserve_input = node.is_input_unified
+            preserve_output = node.is_output_unified
+            if family_state:
+                if not family_state.get('is_input_unified'):
+                    preserve_input = False
+                if not family_state.get('is_output_unified'):
+                    preserve_output = False
+
+            if preserve_input or preserve_output:
                 config = self.node_configs.get(client_name, {})
-                if node.is_input_unified:
+                if preserve_input:
                     config["is_input_unified"] = True
                     config["unified_input_sink_name"] = node.unified_input_sink_name
-                if node.is_output_unified:
+                if preserve_output:
                     config["is_output_unified"] = True
                     config["unified_output_sink_name"] = node.unified_output_sink_name
                 # Save current position so the node reappears in the same spot
@@ -649,26 +670,46 @@ class JackGraphScene(QGraphicsScene):
                 )
 
             if unload_unified_sinks:
-                # These properties always exist on NodeItem
+                # These properties always exist on NodeItem.
+                # Only unload a unified sink if no other node in the same client
+                # family still needs it — the sink lives until the last sibling
+                # disappears.  (The node was already popped from self.nodes, so
+                # the family query naturally excludes it.)
                 if node.is_input_unified:
-                    logger.debug(
-                        f"Unloading input unified sink for node {client_name} before removal"
-                    )
-                    try:
-                        if node.unify_handler:
-                            node.unify_handler._unload_unified_sink(is_input=True)
-                    except Exception as e:
-                        logger.error(f"Error unloading input unified sink: {e}")
+                    if node.unify_handler and node.unify_handler.has_other_family_member(
+                        require_ports_input=True
+                    ):
+                        logger.debug(
+                            f"Keeping unified input sink for {client_name}: sibling "
+                            f"family nodes still present"
+                        )
+                    else:
+                        logger.debug(
+                            f"Unloading input unified sink for node {client_name} before removal"
+                        )
+                        try:
+                            if node.unify_handler:
+                                node.unify_handler._unload_unified_sink(is_input=True)
+                        except Exception as e:
+                            logger.error(f"Error unloading input unified sink: {e}")
 
                 if node.is_output_unified:
-                    logger.debug(
-                        f"Unloading output unified sink for node {client_name} before removal"
-                    )
-                    try:
-                        if node.unify_handler:
-                            node.unify_handler._unload_unified_sink(is_input=False)
-                    except Exception as e:
-                        logger.error(f"Error unloading output unified sink: {e}")
+                    if node.unify_handler and node.unify_handler.has_other_family_member(
+                        require_ports_input=False
+                    ):
+                        logger.debug(
+                            f"Keeping unified output sink for {client_name}: sibling "
+                            f"family nodes still present"
+                        )
+                    else:
+                        logger.debug(
+                            f"Unloading output unified sink for node {client_name} before removal"
+                        )
+                        try:
+                            if node.unify_handler:
+                                node.unify_handler._unload_unified_sink(is_input=False)
+                        except Exception as e:
+                            logger.error(f"Error unloading output unified sink: {e}")
 
             # Check if this is a split origin node - if so, also remove its split parts
             if node.is_split_origin:
